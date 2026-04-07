@@ -11,13 +11,13 @@
  *
  * Import module: "wapi_kv"
  *
- * Query availability with wapi_capability_supported("wapi.kv_storage", 13)
+ * Query availability with wapi_capability_supported("wapi.kvstorage", 14)
  */
 
-#ifndef WAPI_KV_STORAGE_H
-#define WAPI_KV_STORAGE_H
+#ifndef WAPI_KVSTORAGE_H
+#define WAPI_KVSTORAGE_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,40 +27,38 @@ extern "C" {
  * Get a value by key.
  *
  * @param key       Key string (UTF-8).
- * @param key_len   Key length.
  * @param buf       Buffer for value.
  * @param buf_len   Buffer capacity.
  * @param val_len   [out] Actual value length.
  * @return WAPI_OK on success, WAPI_ERR_NOENT if key not found.
  */
 WAPI_IMPORT(wapi_kv, get)
-wapi_result_t wapi_kv_get(const char* key, wapi_size_t key_len,
+wapi_result_t wapi_kv_get(wapi_string_view_t key,
                        void* buf, wapi_size_t buf_len, wapi_size_t* val_len);
 
 /**
  * Set a value for a key.
  *
  * @param key       Key string (UTF-8).
- * @param key_len   Key length.
  * @param value     Value data.
  * @param val_len   Value length.
  * @return WAPI_OK on success.
  */
 WAPI_IMPORT(wapi_kv, set)
-wapi_result_t wapi_kv_set(const char* key, wapi_size_t key_len,
+wapi_result_t wapi_kv_set(wapi_string_view_t key,
                        const void* value, wapi_size_t val_len);
 
 /**
  * Delete a key.
  */
 WAPI_IMPORT(wapi_kv, delete)
-wapi_result_t wapi_kv_delete(const char* key, wapi_size_t key_len);
+wapi_result_t wapi_kv_delete(wapi_string_view_t key);
 
 /**
  * Check if a key exists.
  */
 WAPI_IMPORT(wapi_kv, has)
-wapi_bool_t wapi_kv_has(const char* key, wapi_size_t key_len);
+wapi_bool_t wapi_kv_has(wapi_string_view_t key);
 
 /**
  * Clear all keys.
@@ -90,4 +88,4 @@ wapi_result_t wapi_kv_key_at(int32_t index, char* buf, wapi_size_t buf_len,
 }
 #endif
 
-#endif /* WAPI_KV_STORAGE_H */
+#endif /* WAPI_KVSTORAGE_H */

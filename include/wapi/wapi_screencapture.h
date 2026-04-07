@@ -9,13 +9,13 @@
  *
  * Import module: "wapi_capture"
  *
- * Query availability with wapi_capability_supported("wapi.screen_capture", 17)
+ * Query availability with wapi_capability_supported("wapi.screencapture", 18)
  */
 
-#ifndef WAPI_SCREEN_CAPTURE_H
-#define WAPI_SCREEN_CAPTURE_H
+#ifndef WAPI_SCREENCAPTURE_H
+#define WAPI_SCREENCAPTURE_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,4 +80,4 @@ wapi_result_t wapi_capture_stop(wapi_handle_t capture);
 }
 #endif
 
-#endif /* WAPI_SCREEN_CAPTURE_H */
+#endif /* WAPI_SCREENCAPTURE_H */

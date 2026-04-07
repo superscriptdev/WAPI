@@ -15,8 +15,7 @@
 #ifndef WAPI_HOTKEY_H
 #define WAPI_HOTKEY_H
 
-#include "wapi_types.h"
-#include "wapi_event.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -21,7 +21,7 @@
 #ifndef WAPI_SYNC_H
 #define WAPI_SYNC_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

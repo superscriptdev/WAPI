@@ -12,7 +12,7 @@
 #ifndef WAPI_USB_H
 #define WAPI_USB_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -13,7 +13,7 @@
 #ifndef WAPI_SHARE_H
 #define WAPI_SHARE_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,24 +23,16 @@ extern "C" {
  * Share data descriptor.
  *
  * Layout (32 bytes, align 4):
- *   Offset  0: ptr      title
- *   Offset  4: uint32_t title_len
- *   Offset  8: ptr      text
- *   Offset 12: uint32_t text_len
- *   Offset 16: ptr      url
- *   Offset 20: uint32_t url_len
- *   Offset 24: ptr      file_path      (NULL for no file)
- *   Offset 28: uint32_t file_path_len
+ *   Offset  0: wapi_string_view_t title
+ *   Offset  8: wapi_string_view_t text
+ *   Offset 16: wapi_string_view_t url
+ *   Offset 24: wapi_string_view_t file_path  (NULL for no file)
  */
 typedef struct wapi_share_data_t {
-    const char* title;
-    wapi_size_t   title_len;
-    const char* text;
-    wapi_size_t   text_len;
-    const char* url;
-    wapi_size_t   url_len;
-    const char* file_path;
-    wapi_size_t   file_path_len;
+    wapi_string_view_t title;
+    wapi_string_view_t text;
+    wapi_string_view_t url;
+    wapi_string_view_t file_path;
 } wapi_share_data_t;
 
 /**

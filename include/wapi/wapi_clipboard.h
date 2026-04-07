@@ -18,7 +18,7 @@
 #ifndef WAPI_CLIPBOARD_H
 #define WAPI_CLIPBOARD_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,8 +40,7 @@ extern "C" {
  * ============================================================ */
 
 typedef struct wapi_clipboard_item_t {
-    const char*     mime;       /* Offset  0: MIME type string (e.g. "text/plain") */
-    wapi_size_t     mime_len;   /* Offset  4: Length of MIME string (no NUL) */
+    wapi_string_view_t mime;    /* Offset  0: MIME type string (e.g. "text/plain") */
     const void*     data;       /* Offset  8: Pointer to data */
     wapi_size_t     data_len;   /* Offset 12: Data length in bytes */
 } wapi_clipboard_item_t;        /* 16 bytes, align 4 */
@@ -87,28 +86,26 @@ wapi_result_t wapi_clipboard_format_name(wapi_size_t index, char* buf,
  * Check if the clipboard contains data in a given MIME type.
  *
  * @param mime      MIME type string.
- * @param mime_len  Length of MIME string.
  * @return 1 if data is available, 0 if not.
  *
- * Wasm signature: (i32, i32) -> i32
+ * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_clipboard, has_format)
-wapi_bool_t wapi_clipboard_has_format(const char* mime, wapi_size_t mime_len);
+wapi_bool_t wapi_clipboard_has_format(wapi_string_view_t mime);
 
 /**
  * Read data from the clipboard in a specific format.
  *
  * @param mime          MIME type string.
- * @param mime_len      Length of MIME string.
  * @param buf           Buffer to receive data.
  * @param buf_len       Buffer capacity.
  * @param bytes_written [out] Actual bytes written.
  * @return WAPI_OK on success, WAPI_ERR_NOENT if format not available.
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_clipboard, read)
-wapi_result_t wapi_clipboard_read(const char* mime, wapi_size_t mime_len,
+wapi_result_t wapi_clipboard_read(wapi_string_view_t mime,
                                   void* buf, wapi_size_t buf_len,
                                   wapi_size_t* bytes_written);
 

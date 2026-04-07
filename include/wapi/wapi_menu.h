@@ -12,7 +12,7 @@
 #ifndef WAPI_MENU_H
 #define WAPI_MENU_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,15 +34,16 @@ extern "C" {
 /**
  * Menu item descriptor.
  *
- * Layout (32 bytes, align 4):
- *   Offset  0: uint32_t id
- *   Offset  4: uint32_t label_ptr      (pointer to label string)
- *   Offset  8: uint32_t label_len
- *   Offset 12: uint32_t shortcut_ptr   (pointer to shortcut string)
- *   Offset 16: uint32_t shortcut_len
- *   Offset 20: uint32_t icon_ptr       (pointer to icon data)
- *   Offset 24: uint32_t icon_len
- *   Offset 28: uint32_t flags
+ * Layout (40 bytes, align 8):
+ *   Offset  0: uint32_t     id
+ *   Offset  4: uint32_t     label_ptr      (pointer to label string)
+ *   Offset  8: uint32_t     label_len
+ *   Offset 12: uint32_t     shortcut_ptr   (pointer to shortcut string)
+ *   Offset 16: uint32_t     shortcut_len
+ *   Offset 20: uint32_t     icon_ptr       (pointer to icon data)
+ *   Offset 24: uint32_t     icon_len
+ *   Offset 28: (4 bytes padding)
+ *   Offset 32: wapi_flags_t flags
  */
 typedef struct wapi_menu_item_t {
     uint32_t id;
@@ -52,11 +53,11 @@ typedef struct wapi_menu_item_t {
     uint32_t shortcut_len;
     uint32_t icon_ptr;
     uint32_t icon_len;
-    uint32_t flags;
+    wapi_flags_t flags;
 } wapi_menu_item_t;
 
-_Static_assert(sizeof(wapi_menu_item_t) == 32,
-               "wapi_menu_item_t must be 32 bytes");
+_Static_assert(sizeof(wapi_menu_item_t) == 40,
+               "wapi_menu_item_t must be 40 bytes");
 
 /* ============================================================
  * Menu Functions
@@ -90,17 +91,15 @@ wapi_result_t wapi_menu_add_item(wapi_handle_t menu,
  * Add a submenu to a menu.
  *
  * @param menu       Parent menu handle.
- * @param label_ptr  Pointer to submenu label string.
- * @param label_len  Length of label string in bytes.
+ * @param label_ptr  Submenu label string.
  * @param submenu    Submenu handle.
  * @return WAPI_OK on success, WAPI_ERR_BADF if invalid handle.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_menu, menu_add_submenu)
 wapi_result_t wapi_menu_add_submenu(wapi_handle_t menu,
-                                    const char* label_ptr,
-                                    wapi_size_t label_len,
+                                    wapi_string_view_t label_ptr,
                                     wapi_handle_t submenu);
 
 /**

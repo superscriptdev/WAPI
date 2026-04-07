@@ -15,7 +15,7 @@
 #ifndef WAPI_WINDOW_H
 #define WAPI_WINDOW_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,15 +39,13 @@ extern "C" {
  *
  * Layout (20 bytes on wasm32, align 4):
  *   Offset  0: wapi_chained_struct_t chain
- *   Offset  8: ptr      title        Window title (UTF-8, NULL = untitled)
- *   Offset 12: uint32_t title_len
+ *   Offset  8: wapi_string_view_t title  Window title (UTF-8, NULL = untitled)
  *   Offset 16: uint32_t window_flags WAPI_WINDOW_FLAG_*
  */
 
 typedef struct wapi_window_config_t {
     wapi_chained_struct_t   chain;
-    const char*             title;
-    wapi_size_t             title_len;
+    wapi_string_view_t      title;
     uint32_t                window_flags;
 } wapi_window_config_t;
 
@@ -77,11 +75,11 @@ typedef enum wapi_window_event_type_t {
 /**
  * Set the window title (ignored on non-desktop platforms).
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_window, set_title)
 wapi_result_t wapi_window_set_title(wapi_handle_t surface,
-                                    const char* title, wapi_size_t title_len);
+                                    wapi_string_view_t title);
 
 /**
  * Get the surface size in device-independent (logical) units.

@@ -26,7 +26,7 @@
 #ifndef WAPI_INPUT_H
 #define WAPI_INPUT_H
 
-#include "wapi_event.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

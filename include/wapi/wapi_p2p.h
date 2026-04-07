@@ -15,7 +15,7 @@
 #ifndef WAPI_P2P_H
 #define WAPI_P2P_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,24 +48,16 @@ typedef enum wapi_p2p_state_t {
  * P2P connection configuration.
  *
  * Layout (32 bytes, align 4):
- *   Offset  0: ptr      stun_server
- *   Offset  4: uint32_t stun_server_len
- *   Offset  8: ptr      turn_server
- *   Offset 12: uint32_t turn_server_len
- *   Offset 16: ptr      turn_user
- *   Offset 20: uint32_t turn_user_len
- *   Offset 24: ptr      turn_pass
- *   Offset 28: uint32_t turn_pass_len
+ *   Offset  0: wapi_string_view_t stun_server
+ *   Offset  8: wapi_string_view_t turn_server
+ *   Offset 16: wapi_string_view_t turn_user
+ *   Offset 24: wapi_string_view_t turn_pass
  */
 typedef struct wapi_p2p_config_t {
-    const char* stun_server;
-    wapi_size_t   stun_server_len;
-    const char* turn_server;
-    wapi_size_t   turn_server_len;
-    const char* turn_user;
-    wapi_size_t   turn_user_len;
-    const char* turn_pass;
-    wapi_size_t   turn_pass_len;
+    wapi_string_view_t stun_server;
+    wapi_string_view_t turn_server;
+    wapi_string_view_t turn_user;
+    wapi_string_view_t turn_pass;
 } wapi_p2p_config_t;
 
 #ifdef __wasm__
@@ -124,15 +116,13 @@ wapi_result_t wapi_p2p_create_answer(wapi_handle_t conn, void* sdp_buf);
  * Set the remote SDP description.
  *
  * @param conn     P2P connection handle.
- * @param sdp      Pointer to remote SDP string.
- * @param sdp_len  Length of the SDP string.
+ * @param sdp      Remote SDP string.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_p2p, set_remote_desc)
-wapi_result_t wapi_p2p_set_remote_desc(wapi_handle_t conn, const char* sdp,
-                                       wapi_size_t sdp_len);
+wapi_result_t wapi_p2p_set_remote_desc(wapi_handle_t conn, wapi_string_view_t sdp);
 
 /**
  * Add an ICE candidate to the connection.
@@ -140,16 +130,14 @@ wapi_result_t wapi_p2p_set_remote_desc(wapi_handle_t conn, const char* sdp,
  * @see WAPI_IO_OP_P2P_ADD_ICE_CANDIDATE
  *
  * @param conn           P2P connection handle.
- * @param candidate      Pointer to ICE candidate string.
- * @param candidate_len  Length of the candidate string.
+ * @param candidate      ICE candidate string.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_p2p, add_ice_candidate)
 wapi_result_t wapi_p2p_add_ice_candidate(wapi_handle_t conn,
-                                         const char* candidate,
-                                         wapi_size_t candidate_len);
+                                         wapi_string_view_t candidate);
 
 /**
  * Send data over the P2P data channel.

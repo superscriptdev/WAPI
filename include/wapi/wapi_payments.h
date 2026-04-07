@@ -13,7 +13,7 @@
 #ifndef WAPI_PAYMENTS_H
 #define WAPI_PAYMENTS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,39 +22,31 @@ extern "C" {
 /**
  * Payment item (line item in the order).
  *
- * Layout (20 bytes, align 4):
- *   Offset  0: ptr      label
- *   Offset  4: uint32_t label_len
- *   Offset  8: ptr      amount         e.g., "9.99"
- *   Offset 12: uint32_t amount_len
- *   Offset 16: ptr      currency       ISO 4217 (e.g., "USD")
- *   Offset 20: uint32_t currency_len
+ * Layout (24 bytes, align 4):
+ *   Offset  0: wapi_string_view_t label
+ *   Offset  8: wapi_string_view_t amount    e.g., "9.99"
+ *   Offset 16: wapi_string_view_t currency  ISO 4217 (e.g., "USD")
  */
 typedef struct wapi_pay_item_t {
-    const char* label;
-    wapi_size_t   label_len;
-    const char* amount;
-    wapi_size_t   amount_len;
-    const char* currency;
-    wapi_size_t   currency_len;
+    wapi_string_view_t label;
+    wapi_string_view_t amount;
+    wapi_string_view_t currency;
 } wapi_pay_item_t;
 
 /**
  * Payment request descriptor.
  *
- * Layout (20 bytes, align 4):
- *   Offset  0: ptr      merchant_id
- *   Offset  4: uint32_t merchant_id_len
- *   Offset  8: ptr      items          Array of wapi_pay_item_t
- *   Offset 12: uint32_t item_count
- *   Offset 16: uint32_t flags
+ * Layout (24 bytes, align 8):
+ *   Offset  0: wapi_string_view_t merchant_id
+ *   Offset  8: ptr          items          Array of wapi_pay_item_t
+ *   Offset 12: uint32_t     item_count
+ *   Offset 16: wapi_flags_t flags
  */
 typedef struct wapi_pay_request_t {
-    const char*           merchant_id;
-    wapi_size_t             merchant_id_len;
+    wapi_string_view_t      merchant_id;
     const wapi_pay_item_t*  items;
     uint32_t              item_count;
-    uint32_t              flags;
+    wapi_flags_t          flags;
 } wapi_pay_request_t;
 
 #define WAPI_PAY_FLAG_REQUEST_SHIPPING  0x0001

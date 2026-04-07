@@ -8,10 +8,10 @@
  * Import module: "wapi_mediacaps"
  */
 
-#ifndef WAPI_MEDIA_CAPS_H
-#define WAPI_MEDIA_CAPS_H
+#ifndef WAPI_MEDIACAPS_H
+#define WAPI_MEDIACAPS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -97,4 +97,4 @@ wapi_result_t wapi_mediacaps_query_encode(const wapi_media_caps_query_t* query,
 }
 #endif
 
-#endif /* WAPI_MEDIA_CAPS_H */
+#endif /* WAPI_MEDIACAPS_H */

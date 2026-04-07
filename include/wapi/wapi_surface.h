@@ -18,7 +18,7 @@
 #ifndef WAPI_SURFACE_H
 #define WAPI_SURFACE_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,18 +35,19 @@ extern "C" {
  * Surface Descriptor
  * ============================================================
  *
- * Layout (16 bytes on wasm32, align 4):
- *   Offset  0: ptr      nextInChain  (chain wapi_window_config_t for windowed)
- *   Offset  4: int32_t  width        Requested width (0 = host default)
- *   Offset  8: int32_t  height       Requested height (0 = host default)
- *   Offset 12: uint32_t flags        WAPI_SURFACE_FLAG_*
+ * Layout (24 bytes on wasm32, align 8):
+ *   Offset  0: ptr          nextInChain  (chain wapi_window_config_t for windowed)
+ *   Offset  4: int32_t      width        Requested width (0 = host default)
+ *   Offset  8: int32_t      height       Requested height (0 = host default)
+ *   Offset 12: (4 bytes padding)
+ *   Offset 16: wapi_flags_t flags        WAPI_SURFACE_FLAG_*
  */
 
 typedef struct wapi_surface_desc_t {
     wapi_chained_struct_t*  nextInChain;
     int32_t                 width;
     int32_t                 height;
-    uint32_t                flags;
+    wapi_flags_t            flags;
 } wapi_surface_desc_t;
 
 /* ============================================================

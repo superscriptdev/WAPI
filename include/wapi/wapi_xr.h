@@ -17,7 +17,7 @@
 #ifndef WAPI_XR_H
 #define WAPI_XR_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

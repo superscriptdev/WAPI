@@ -15,7 +15,7 @@
 #ifndef WAPI_EYEDROPPER_H
 #define WAPI_EYEDROPPER_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

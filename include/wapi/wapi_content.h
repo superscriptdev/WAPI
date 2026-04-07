@@ -25,7 +25,7 @@
 #ifndef WAPI_CONTENT_H
 #define WAPI_CONTENT_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,8 +80,7 @@ typedef enum wapi_content_node_type_t {
  *   Offset 12: uint32_t first_child    Index (UINT32_MAX = none)
  *   Offset 16: uint32_t next_sibling   Index (UINT32_MAX = none)
  *   Offset 20: uint32_t state_flags    WAPI_CONTENT_STATE_* bitmask
- *   Offset 24: ptr      label          Accessible name (UTF-8)
- *   Offset 28: uint32_t label_len
+ *   Offset 24: wapi_string_view_t label  Accessible name (UTF-8)
  *   Offset 32: ptr      value          Type-specific value
  *   Offset 36: uint32_t value_len
  *   Offset 40: float    bounds_x       Bounding rect X
@@ -108,8 +107,7 @@ typedef struct wapi_content_node_t {
     uint32_t    first_child;
     uint32_t    next_sibling;
     uint32_t    state_flags;
-    const char* label;
-    wapi_size_t label_len;
+    wapi_string_view_t label;
     const void* value;
     wapi_size_t value_len;
     float       bounds_x;

@@ -16,7 +16,7 @@
 #ifndef WAPI_CAMERA_H
 #define WAPI_CAMERA_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

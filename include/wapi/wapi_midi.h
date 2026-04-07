@@ -13,7 +13,7 @@
 #ifndef WAPI_MIDI_H
 #define WAPI_MIDI_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

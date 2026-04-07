@@ -16,7 +16,7 @@
 #ifndef WAPI_FONT_H
 #define WAPI_FONT_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,8 +36,7 @@ extern "C" {
  * Describes a font family's capabilities.
  *
  * Layout (24 bytes, align 4):
- *   Offset  0: ptr      family         Font family name (UTF-8)
- *   Offset  4: uint32_t family_len     Byte length of name
+ *   Offset  0: wapi_string_view_t family  Font family name (UTF-8)
  *   Offset  8: uint32_t weight_min     Minimum weight (e.g., 100)
  *   Offset 12: uint32_t weight_max     Maximum weight (e.g., 900)
  *   Offset 16: uint32_t style_flags    Bitmask of WAPI_FONT_HAS_*
@@ -45,8 +44,7 @@ extern "C" {
  */
 
 typedef struct wapi_font_info_t {
-    const char* family;       /* Font family name */
-    wapi_size_t   family_len;
+    wapi_string_view_t family;  /* Font family name */
     uint32_t    weight_min;   /* Minimum weight (e.g., 100) */
     uint32_t    weight_max;   /* Maximum weight (e.g., 900) */
     uint32_t    style_flags;  /* Bitmask: WAPI_FONT_HAS_NORMAL | WAPI_FONT_HAS_ITALIC | WAPI_FONT_HAS_OBLIQUE */
@@ -89,13 +87,12 @@ wapi_result_t wapi_font_family_info(uint32_t index, wapi_font_info_t* info);
  * "Hans", "Deva").
  *
  * @param script_tag  ISO 15924 script tag (UTF-8).
- * @param tag_len     Length of the script tag in bytes.
  * @return 1 if supported, 0 if not.
  *
- * Wasm signature: (i32, i32) -> i32
+ * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_font, supports_script)
-wapi_bool_t wapi_font_supports_script(const char* script_tag, wapi_size_t tag_len);
+wapi_bool_t wapi_font_supports_script(wapi_string_view_t script_tag);
 
 /**
  * Check whether a font family supports an OpenType feature.
@@ -103,14 +100,13 @@ wapi_bool_t wapi_font_supports_script(const char* script_tag, wapi_size_t tag_le
  * big-endian order (e.g., 'kern' = 0x6B65726E).
  *
  * @param family        Font family name (UTF-8).
- * @param family_len    Family name length in bytes.
  * @param opentype_tag  OpenType feature tag (4-byte packed uint32).
  * @return 1 if supported, 0 if not.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_font, has_feature)
-wapi_bool_t wapi_font_has_feature(const char* family, wapi_size_t family_len,
+wapi_bool_t wapi_font_has_feature(wapi_string_view_t family,
                                uint32_t opentype_tag);
 
 /* ============================================================
@@ -121,29 +117,27 @@ wapi_bool_t wapi_font_has_feature(const char* family, wapi_size_t family_len,
  * Get the number of fallback fonts for a given family.
  *
  * @param family      Font family name (UTF-8).
- * @param family_len  Family name length in bytes.
  * @return Number of fallback fonts, or negative on error.
  *
- * Wasm signature: (i32, i32) -> i32
+ * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_font, fallback_count)
-int32_t wapi_font_fallback_count(const char* family, wapi_size_t family_len);
+int32_t wapi_font_fallback_count(wapi_string_view_t family);
 
 /**
  * Get the name of a fallback font by index.
  *
  * @param family      Font family name (UTF-8).
- * @param family_len  Family name length in bytes.
  * @param index       Fallback index (0 .. fallback_count-1).
  * @param buf         Buffer for fallback font name (UTF-8).
  * @param buf_len     Buffer capacity.
  * @param name_len    [out] Actual name length.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_font, fallback_get)
-wapi_result_t wapi_font_fallback_get(const char* family, wapi_size_t family_len,
+wapi_result_t wapi_font_fallback_get(wapi_string_view_t family,
                                   uint32_t index, char* buf,
                                   wapi_size_t buf_len, wapi_size_t* name_len);
 

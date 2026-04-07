@@ -13,7 +13,7 @@
 #ifndef WAPI_SPEECH_H
 #define WAPI_SPEECH_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,19 +27,15 @@ extern "C" {
  * Utterance descriptor.
  *
  * Layout (28 bytes, align 4):
- *   Offset  0: ptr      text
- *   Offset  4: uint32_t text_len
- *   Offset  8: ptr      lang       BCP 47 tag (e.g., "en-US"), NULL for default
- *   Offset 12: uint32_t lang_len
+ *   Offset  0: wapi_string_view_t text
+ *   Offset  8: wapi_string_view_t lang  BCP 47 tag (e.g., "en-US"), NULL for default
  *   Offset 16: float    rate       0.1-10.0, 1.0 = normal
  *   Offset 20: float    pitch      0.0-2.0, 1.0 = normal
  *   Offset 24: float    volume     0.0-1.0
  */
 typedef struct wapi_speech_utterance_t {
-    const char* text;
-    wapi_size_t   text_len;
-    const char* lang;
-    wapi_size_t   lang_len;
+    wapi_string_view_t text;
+    wapi_string_view_t lang;
     float       rate;
     float       pitch;
     float       volume;
@@ -80,12 +76,11 @@ wapi_bool_t wapi_speech_is_speaking(void);
  * Start speech recognition.
  *
  * @param lang       BCP 47 language tag (NULL for default).
- * @param lang_len   Language tag length.
  * @param continuous If true, keep recognizing until stopped.
  * @param session    [out] Recognition session handle.
  */
 WAPI_IMPORT(wapi_speech, recognize_start)
-wapi_result_t wapi_speech_recognize_start(const char* lang, wapi_size_t lang_len,
+wapi_result_t wapi_speech_recognize_start(wapi_string_view_t lang,
                                        wapi_bool_t continuous, wapi_handle_t* session);
 
 /**

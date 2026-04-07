@@ -13,7 +13,7 @@
 #ifndef WAPI_BIOMETRIC_H
 #define WAPI_BIOMETRIC_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,13 +42,11 @@ uint32_t wapi_bio_available_types(void);
  *
  * @param type       Accepted biometric types (bitmask).
  * @param reason     User-visible reason string (UTF-8).
- * @param reason_len Reason length.
  * @return WAPI_OK if authenticated, WAPI_ERR_ACCES if denied/failed,
  *         WAPI_ERR_CANCELED if user canceled.
  */
 WAPI_IMPORT(wapi_bio, authenticate)
-wapi_result_t wapi_bio_authenticate(uint32_t type, const char* reason,
-                                 wapi_size_t reason_len);
+wapi_result_t wapi_bio_authenticate(uint32_t type, wapi_string_view_t reason);
 
 /**
  * Check if biometric authentication is available and enrolled.

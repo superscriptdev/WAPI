@@ -20,7 +20,7 @@
 #ifndef WAPI_THREAD_H
 #define WAPI_THREAD_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -59,8 +59,7 @@ typedef enum wapi_thread_state_t {
  * Layout (24 bytes, align 4):
  *   Offset  0: uint32_t entry_func   Function pointer / table index
  *   Offset  4: uint32_t user_data    Opaque pointer passed to entry
- *   Offset  8: ptr      name         Thread name (UTF-8, for debugging)
- *   Offset 12: uint32_t name_len
+ *   Offset  8: wapi_string_view_t name  Thread name (UTF-8, for debugging)
  *   Offset 16: uint32_t stack_size   Requested stack size (0 = default)
  *   Offset 20: uint32_t priority     wapi_thread_priority_t
  */
@@ -68,8 +67,7 @@ typedef enum wapi_thread_state_t {
 typedef struct wapi_thread_desc_t {
     uint32_t    entry_func;
     uint32_t    user_data;
-    const char* name;
-    wapi_size_t name_len;
+    wapi_string_view_t name;
     wapi_size_t stack_size;
     uint32_t    priority;
 } wapi_thread_desc_t;

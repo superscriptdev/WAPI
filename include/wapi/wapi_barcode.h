@@ -15,7 +15,7 @@
 #ifndef WAPI_BARCODE_H
 #define WAPI_BARCODE_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

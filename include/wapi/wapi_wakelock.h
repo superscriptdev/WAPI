@@ -10,13 +10,13 @@
  *
  * Import module: "wapi_wake"
  *
- * Query availability with wapi_capability_supported("wapi.wake_lock", 13)
+ * Query availability with wapi_capability_supported("wapi.wakelock", 13)
  */
 
-#ifndef WAPI_WAKE_LOCK_H
-#define WAPI_WAKE_LOCK_H
+#ifndef WAPI_WAKELOCK_H
+#define WAPI_WAKELOCK_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,4 +63,4 @@ wapi_result_t wapi_wake_release(wapi_handle_t lock);
 }
 #endif
 
-#endif /* WAPI_WAKE_LOCK_H */
+#endif /* WAPI_WAKELOCK_H */

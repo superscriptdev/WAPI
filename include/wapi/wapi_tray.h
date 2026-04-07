@@ -15,7 +15,7 @@
 #ifndef WAPI_TRAY_H
 #define WAPI_TRAY_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,13 +36,14 @@ extern "C" {
 /**
  * Tray menu item descriptor.
  *
- * Layout (24 bytes, align 4):
- *   Offset  0: uint32_t id
- *   Offset  4: uint32_t label_ptr    (pointer to label string)
- *   Offset  8: uint32_t label_len
- *   Offset 12: uint32_t icon_ptr     (pointer to icon data)
- *   Offset 16: uint32_t icon_len
- *   Offset 20: uint32_t flags
+ * Layout (32 bytes, align 8):
+ *   Offset  0: uint32_t     id
+ *   Offset  4: uint32_t     label_ptr    (pointer to label string)
+ *   Offset  8: uint32_t     label_len
+ *   Offset 12: uint32_t     icon_ptr     (pointer to icon data)
+ *   Offset 16: uint32_t     icon_len
+ *   Offset 20: (4 bytes padding)
+ *   Offset 24: wapi_flags_t flags
  */
 typedef struct wapi_tray_menu_item_t {
     uint32_t id;
@@ -50,11 +51,11 @@ typedef struct wapi_tray_menu_item_t {
     uint32_t label_len;
     uint32_t icon_ptr;
     uint32_t icon_len;
-    uint32_t flags;
+    wapi_flags_t flags;
 } wapi_tray_menu_item_t;
 
-_Static_assert(sizeof(wapi_tray_menu_item_t) == 24,
-               "wapi_tray_menu_item_t must be 24 bytes");
+_Static_assert(sizeof(wapi_tray_menu_item_t) == 32,
+               "wapi_tray_menu_item_t must be 32 bytes");
 
 /* ============================================================
  * Tray Functions
@@ -65,16 +66,15 @@ _Static_assert(sizeof(wapi_tray_menu_item_t) == 24,
  *
  * @param icon_data    Pointer to icon image data.
  * @param icon_len     Size of icon data in bytes.
- * @param tooltip      Pointer to tooltip string.
- * @param tooltip_len  Length of tooltip string in bytes.
+ * @param tooltip      Tooltip string.
  * @param out_handle   [out] Receives the tray handle.
  * @return WAPI_OK on success, WAPI_ERR_NOTSUP if not supported.
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_tray, tray_create)
 wapi_result_t wapi_tray_create(const void* icon_data, wapi_size_t icon_len,
-                               const char* tooltip, wapi_size_t tooltip_len,
+                               wapi_string_view_t tooltip,
                                wapi_handle_t* out_handle);
 
 /**
@@ -107,16 +107,14 @@ wapi_result_t wapi_tray_set_icon(wapi_handle_t handle,
  * Update the tray tooltip text.
  *
  * @param handle    Tray handle.
- * @param text      Pointer to tooltip string.
- * @param text_len  Length of tooltip string in bytes.
+ * @param text      Tooltip string.
  * @return WAPI_OK on success, WAPI_ERR_BADF if invalid handle.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_tray, tray_set_tooltip)
 wapi_result_t wapi_tray_set_tooltip(wapi_handle_t handle,
-                                    const char* text,
-                                    wapi_size_t text_len);
+                                    wapi_string_view_t text);
 
 /**
  * Set the context menu for the tray icon.

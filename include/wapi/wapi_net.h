@@ -14,7 +14,7 @@
 #ifndef WAPI_NET_H
 #define WAPI_NET_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,15 +45,13 @@ typedef enum wapi_net_stream_type_t {
  *
  * Layout (16 bytes on wasm32, align 4):
  *   Offset  0: ptr      nextInChain
- *   Offset  4: ptr      url          URL string pointer
- *   Offset  8: uint32_t url_len      URL string length
+ *   Offset  4: wapi_string_view_t url  URL string
  *   Offset 12: uint32_t transport    wapi_net_transport_t
  */
 
 typedef struct wapi_net_connect_desc_t {
     wapi_chained_struct_t*  nextInChain;
-    const char*             url;
-    wapi_size_t             url_len;
+    wapi_string_view_t      url;
     uint32_t                transport;   /* wapi_net_transport_t */
 } wapi_net_connect_desc_t;
 
@@ -78,16 +76,14 @@ typedef struct wapi_net_tls_config_t {
  * ============================================================
  *
  * Layout (20 bytes, align 4):
- *   Offset  0: ptr      addr         Bind address string pointer
- *   Offset  4: uint32_t addr_len     Bind address string length
+ *   Offset  0: wapi_string_view_t addr  Bind address string
  *   Offset  8: uint32_t port         Port number
  *   Offset 12: uint32_t transport    wapi_net_transport_t
  *   Offset 16: uint32_t backlog      Connection backlog size
  */
 
 typedef struct wapi_net_listen_desc_t {
-    const char*           addr;
-    wapi_size_t             addr_len;
+    wapi_string_view_t    addr;
     uint32_t              port;
     uint32_t              transport;   /* wapi_net_transport_t */
     uint32_t              backlog;
@@ -254,10 +250,10 @@ wapi_result_t wapi_net_recv_datagram(wapi_handle_t conn, void* buf, wapi_size_t 
  *
  * @see WAPI_IO_OP_NET_RESOLVE
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_net, resolve)
-wapi_result_t wapi_net_resolve(const char* host, wapi_size_t host_len,
+wapi_result_t wapi_net_resolve(wapi_string_view_t host,
                             void* addrs_buf, wapi_size_t buf_len,
                             wapi_size_t* count);
 

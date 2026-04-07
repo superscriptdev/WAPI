@@ -15,7 +15,7 @@
 #ifndef WAPI_PERMISSIONS_H
 #define WAPI_PERMISSIONS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,14 +40,13 @@ typedef enum wapi_permission_state_t {
  * Query permission status for a capability.
  *
  * @param capability  Capability name (e.g., "wapi.camera", "wapi.geolocation").
- * @param cap_len     Capability name length.
  * @param state       [out] Current permission state.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_perm, query)
-wapi_result_t wapi_perm_query(const char* capability, wapi_size_t cap_len,
+wapi_result_t wapi_perm_query(wapi_string_view_t capability,
                            wapi_permission_state_t* state);
 
 /**
@@ -56,14 +55,13 @@ wapi_result_t wapi_perm_query(const char* capability, wapi_size_t cap_len,
  * @see WAPI_IO_OP_PERM_REQUEST
  *
  * @param capability  Capability name (e.g., "wapi.camera", "wapi.geolocation").
- * @param cap_len     Capability name length.
  * @param state       [out] Resulting permission state after user decision.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_perm, request)
-wapi_result_t wapi_perm_request(const char* capability, wapi_size_t cap_len,
+wapi_result_t wapi_perm_request(wapi_string_view_t capability,
                              wapi_permission_state_t* state);
 
 #ifdef __cplusplus

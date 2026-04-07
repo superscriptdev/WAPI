@@ -18,7 +18,7 @@
 #ifndef WAPI_COMPRESSION_H
 #define WAPI_COMPRESSION_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

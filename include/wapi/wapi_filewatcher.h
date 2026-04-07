@@ -12,10 +12,10 @@
  * Query availability with wapi_capability_supported("wapi.fwatch", 10)
  */
 
-#ifndef WAPI_FILE_WATCHER_H
-#define WAPI_FILE_WATCHER_H
+#ifndef WAPI_FILEWATCHER_H
+#define WAPI_FILEWATCHER_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,17 +42,16 @@ typedef enum wapi_fwatch_change_t {
  *
  * When a change is detected, a file-watcher event is emitted.
  *
- * @param path_ptr    Pointer to the path string to watch.
- * @param path_len    Length of the path string in bytes.
+ * @param path_ptr    Path string to watch.
  * @param recursive   Non-zero to watch subdirectories recursively.
  * @param out_handle  [out] Receives the watcher handle.
  * @return WAPI_OK on success, WAPI_ERR_NOENT if path does not exist,
  *         WAPI_ERR_ACCES if not permitted.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fwatch, fwatch_add)
-wapi_result_t wapi_fwatch_add(const char* path_ptr, wapi_size_t path_len,
+wapi_result_t wapi_fwatch_add(wapi_string_view_t path_ptr,
                               wapi_bool_t recursive,
                               wapi_handle_t* out_handle);
 
@@ -71,4 +70,4 @@ wapi_result_t wapi_fwatch_remove(wapi_handle_t handle);
 }
 #endif
 
-#endif /* WAPI_FILE_WATCHER_H */
+#endif /* WAPI_FILEWATCHER_H */

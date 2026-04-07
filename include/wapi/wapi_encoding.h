@@ -12,7 +12,7 @@
 #ifndef WAPI_ENCODING_H
 #define WAPI_ENCODING_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

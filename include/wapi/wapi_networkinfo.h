@@ -9,13 +9,13 @@
  *
  * Import module: "wapi_netinfo"
  *
- * Query availability with wapi_capability_supported("wapi.network_info", 17)
+ * Query availability with wapi_capability_supported("wapi.networkinfo", 16)
  */
 
-#ifndef WAPI_NETWORK_INFO_H
-#define WAPI_NETWORK_INFO_H
+#ifndef WAPI_NETWORKINFO_H
+#define WAPI_NETWORKINFO_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -94,4 +94,4 @@ wapi_bool_t wapi_netinfo_is_online(void);
 }
 #endif
 
-#endif /* WAPI_NETWORK_INFO_H */
+#endif /* WAPI_NETWORKINFO_H */

@@ -3,16 +3,16 @@
  * Version 1.0.0
  *
  * Expose now-playing metadata to OS media controls.
- * Maps to: Media Session API (Web), MPNowPlayingInfoCenter (iOS),
+ * Maps to: Media Session API (Web), MPNowPlayingInfoCenter (iOS/macOS),
  *          MediaSession (Android), SMTC (Windows)
  *
  * Import module: "wapi_media"
  */
 
-#ifndef WAPI_MEDIA_SESSION_H
-#define WAPI_MEDIA_SESSION_H
+#ifndef WAPI_MEDIASESSION_H
+#define WAPI_MEDIASESSION_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,23 +41,17 @@ typedef enum wapi_media_action_t {
  * ============================================================
  *
  * Layout (32 bytes on wasm32, align 4):
- *   Offset  0: ptr      title
- *   Offset  4: uint32_t title_len
- *   Offset  8: ptr      artist
- *   Offset 12: uint32_t artist_len
- *   Offset 16: ptr      album
- *   Offset 20: uint32_t album_len
+ *   Offset  0: wapi_string_view_t title
+ *   Offset  8: wapi_string_view_t artist
+ *   Offset 16: wapi_string_view_t album
  *   Offset 24: ptr      artwork_data   (PNG/JPEG image data)
  *   Offset 28: uint32_t artwork_len
  */
 
 typedef struct wapi_media_metadata_t {
-    const char* title;
-    wapi_size_t title_len;
-    const char* artist;
-    wapi_size_t artist_len;
-    const char* album;
-    wapi_size_t album_len;
+    wapi_string_view_t title;
+    wapi_string_view_t artist;
+    wapi_string_view_t album;
     const void* artwork_data;   /* PNG/JPEG image data */
     wapi_size_t artwork_len;
 } wapi_media_metadata_t;
@@ -124,4 +118,4 @@ wapi_result_t wapi_media_set_actions(const uint32_t* actions, wapi_size_t count)
 }
 #endif
 
-#endif /* WAPI_MEDIA_SESSION_H */
+#endif /* WAPI_MEDIASESSION_H */

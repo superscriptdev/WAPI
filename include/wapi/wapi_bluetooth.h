@@ -15,7 +15,7 @@
 #ifndef WAPI_BLUETOOTH_H
 #define WAPI_BLUETOOTH_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,16 +25,12 @@ extern "C" {
  * BLE scan filter.
  *
  * Layout (16 bytes, align 4):
- *   Offset  0: ptr      service_uuid     UUID string (NULL = any)
- *   Offset  4: uint32_t service_uuid_len
- *   Offset  8: ptr      name_prefix      Device name prefix (NULL = any)
- *   Offset 12: uint32_t name_prefix_len
+ *   Offset  0: wapi_string_view_t service_uuid  UUID string (NULL = any)
+ *   Offset  8: wapi_string_view_t name_prefix   Device name prefix (NULL = any)
  */
 typedef struct wapi_bt_filter_t {
-    const char* service_uuid;
-    wapi_size_t   service_uuid_len;
-    const char* name_prefix;
-    wapi_size_t   name_prefix_len;
+    wapi_string_view_t service_uuid;
+    wapi_string_view_t name_prefix;
 } wapi_bt_filter_t;
 
 /**
@@ -68,24 +64,21 @@ wapi_result_t wapi_bt_disconnect(wapi_handle_t device);
  *
  * @param device       Device handle.
  * @param uuid         Service UUID string.
- * @param uuid_len     UUID length.
  * @param service      [out] Service handle.
  */
 WAPI_IMPORT(wapi_bt, get_service)
-wapi_result_t wapi_bt_get_service(wapi_handle_t device, const char* uuid,
-                               wapi_size_t uuid_len, wapi_handle_t* service);
+wapi_result_t wapi_bt_get_service(wapi_handle_t device, wapi_string_view_t uuid,
+                               wapi_handle_t* service);
 
 /**
  * Get a GATT characteristic by UUID.
  *
  * @param service        Service handle.
  * @param uuid           Characteristic UUID string.
- * @param uuid_len       UUID length.
  * @param characteristic [out] Characteristic handle.
  */
 WAPI_IMPORT(wapi_bt, get_characteristic)
-wapi_result_t wapi_bt_get_characteristic(wapi_handle_t service, const char* uuid,
-                                      wapi_size_t uuid_len,
+wapi_result_t wapi_bt_get_characteristic(wapi_handle_t service, wapi_string_view_t uuid,
                                       wapi_handle_t* characteristic);
 
 /**

@@ -16,7 +16,7 @@
 #ifndef WAPI_FS_H
 #define WAPI_FS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -168,16 +168,15 @@ wapi_handle_t wapi_fs_preopen_handle(int32_t index);
  *
  * @param dir_fd    Base directory handle (from preopens).
  * @param path      Relative path (UTF-8).
- * @param path_len  Path length in bytes.
  * @param oflags    Open flags (WAPI_FS_OFLAG_*).
  * @param fdflags   File descriptor flags (WAPI_FS_FDFLAG_*).
  * @param fd        [out] New file descriptor handle.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fs, open)
-wapi_result_t wapi_fs_open(wapi_handle_t dir_fd, const char* path, wapi_size_t path_len,
+wapi_result_t wapi_fs_open(wapi_handle_t dir_fd, wapi_string_view_t path,
                         uint32_t oflags, uint32_t fdflags, wapi_handle_t* fd);
 
 /**
@@ -270,11 +269,11 @@ wapi_result_t wapi_fs_stat(wapi_handle_t fd, wapi_filestat_t* stat);
 /**
  * Get file status by path.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fs, path_stat)
-wapi_result_t wapi_fs_path_stat(wapi_handle_t dir_fd, const char* path,
-                             wapi_size_t path_len, wapi_filestat_t* stat);
+wapi_result_t wapi_fs_path_stat(wapi_handle_t dir_fd, wapi_string_view_t path,
+                             wapi_filestat_t* stat);
 
 /**
  * Set file size (truncate or extend).
@@ -287,36 +286,35 @@ wapi_result_t wapi_fs_set_size(wapi_handle_t fd, wapi_filesize_t size);
 /**
  * Create a directory.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fs, mkdir)
-wapi_result_t wapi_fs_mkdir(wapi_handle_t dir_fd, const char* path, wapi_size_t path_len);
+wapi_result_t wapi_fs_mkdir(wapi_handle_t dir_fd, wapi_string_view_t path);
 
 /**
  * Remove a directory (must be empty).
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fs, rmdir)
-wapi_result_t wapi_fs_rmdir(wapi_handle_t dir_fd, const char* path, wapi_size_t path_len);
+wapi_result_t wapi_fs_rmdir(wapi_handle_t dir_fd, wapi_string_view_t path);
 
 /**
  * Remove a file.
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fs, unlink)
-wapi_result_t wapi_fs_unlink(wapi_handle_t dir_fd, const char* path, wapi_size_t path_len);
+wapi_result_t wapi_fs_unlink(wapi_handle_t dir_fd, wapi_string_view_t path);
 
 /**
  * Rename a file or directory.
  *
- * Wasm signature: (i32, i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fs, rename)
-wapi_result_t wapi_fs_rename(wapi_handle_t old_dir_fd, const char* old_path,
-                          wapi_size_t old_path_len, wapi_handle_t new_dir_fd,
-                          const char* new_path, wapi_size_t new_path_len);
+wapi_result_t wapi_fs_rename(wapi_handle_t old_dir_fd, wapi_string_view_t old_path,
+                          wapi_handle_t new_dir_fd, wapi_string_view_t new_path);
 
 /**
  * Read directory entries.

@@ -15,7 +15,7 @@
 #ifndef WAPI_VIDEO_H
 #define WAPI_VIDEO_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

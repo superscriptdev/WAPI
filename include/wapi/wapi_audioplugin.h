@@ -15,13 +15,13 @@
  *
  * Import module: "wapi_plugin"
  *
- * Query availability with wapi_capability_supported("wapi.audio_plugin", 15)
+ * Query availability with wapi_capability_supported("wapi.audioplugin", 16)
  */
 
-#ifndef WAPI_AUDIO_PLUGIN_H
-#define WAPI_AUDIO_PLUGIN_H
+#ifndef WAPI_AUDIOPLUGIN_H
+#define WAPI_AUDIOPLUGIN_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,16 +45,14 @@ typedef enum wapi_plugin_category_t {
  */
 
 typedef struct wapi_plugin_desc_t {
-    const char* name;
-    wapi_size_t   name_len;
-    const char* vendor;
-    wapi_size_t   vendor_len;
-    const char* version;
-    wapi_size_t   version_len;
-    uint32_t    category;
-    uint32_t    default_input_channels;   /* 0 for instruments */
-    uint32_t    default_output_channels;  /* Typically 2 for stereo */
-    uint32_t    flags;
+    wapi_chained_struct_t* nextInChain;
+    wapi_string_view_t  name;
+    wapi_string_view_t  vendor;
+    wapi_string_view_t  version;
+    uint32_t            category;
+    uint32_t            default_input_channels;   /* 0 for instruments */
+    uint32_t            default_output_channels;  /* Typically 2 for stereo */
+    wapi_flags_t        flags;
 } wapi_plugin_desc_t;
 
 #define WAPI_PLUGIN_FLAG_HAS_GUI         0x0001
@@ -74,14 +72,13 @@ typedef enum wapi_param_type_t {
 } wapi_param_type_t;
 
 typedef struct wapi_param_info_t {
-    uint32_t    id;
-    const char* name;
-    wapi_size_t   name_len;
-    uint32_t    type;          /* wapi_param_type_t */
-    float       default_value; /* Normalized 0.0-1.0 */
-    float       min_value;     /* For INT type */
-    float       max_value;     /* For INT type */
-    uint32_t    flags;
+    uint32_t            id;
+    wapi_string_view_t  name;
+    uint32_t            type;          /* wapi_param_type_t */
+    float               default_value; /* Normalized 0.0-1.0 */
+    float               min_value;     /* For INT type */
+    float               max_value;     /* For INT type */
+    wapi_flags_t        flags;
 } wapi_param_info_t;
 
 #define WAPI_PARAM_FLAG_AUTOMATABLE  0x0001
@@ -98,8 +95,8 @@ typedef struct wapi_transport_t {
     double   beat_position;   /* Current position in beats */
     int32_t  time_sig_num;    /* Time signature numerator */
     int32_t  time_sig_denom;  /* Time signature denominator */
-    int32_t  sample_pos;      /* Current sample position */
-    uint32_t flags;
+    int64_t  sample_pos;      /* Current sample position */
+    wapi_flags_t flags;
 } wapi_transport_t;
 
 #define WAPI_TRANSPORT_PLAYING    0x0001
@@ -139,12 +136,6 @@ typedef struct wapi_process_data_t {
 /* ============================================================
  * Host Functions (called by plugin)
  * ============================================================ */
-
-/**
- * Get the number of parameters the host expects.
- */
-WAPI_IMPORT(wapi_plugin, param_count)
-int32_t wapi_plugin_param_count(void);
 
 /**
  * Report a parameter change to the host (from GUI interaction).
@@ -197,6 +188,15 @@ wapi_result_t wapi_plugin_send_midi(uint8_t status, uint8_t data1, uint8_t data2
  *     Called for each audio block. THE hot path.
  *     Must be real-time safe: no allocation, no I/O, no blocking.
  *
+ * wapi_plugin_get_latency() -> uint32_t
+ *     Return the plugin's processing latency in samples.
+ *     The host uses this for plugin delay compensation (PDC).
+ *
+ * wapi_plugin_get_tail() -> uint32_t
+ *     Return the tail length in samples (how long output continues
+ *     after input stops). Return UINT32_MAX for infinite tail.
+ *     Used by the host to know when an effect has fully decayed.
+ *
  * wapi_plugin_param_changed(uint32_t param_id, float value) -> void
  *     Called when the host changes a parameter (automation).
  *
@@ -218,4 +218,4 @@ wapi_result_t wapi_plugin_send_midi(uint8_t status, uint8_t data1, uint8_t data2
 }
 #endif
 
-#endif /* WAPI_AUDIO_PLUGIN_H */
+#endif /* WAPI_AUDIOPLUGIN_H */

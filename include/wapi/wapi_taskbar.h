@@ -16,7 +16,7 @@
 #ifndef WAPI_TASKBAR_H
 #define WAPI_TASKBAR_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -96,15 +96,14 @@ wapi_result_t wapi_taskbar_request_attention(wapi_handle_t surface,
  * @param icon_data    Icon image data (PNG).
  * @param icon_len     Icon data length.
  * @param description  Accessible description of the overlay.
- * @param desc_len     Description length.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_taskbar, set_overlay_icon)
 wapi_result_t wapi_taskbar_set_overlay_icon(wapi_handle_t surface,
                                          const void* icon_data, wapi_size_t icon_len,
-                                         const char* description, wapi_size_t desc_len);
+                                         wapi_string_view_t description);
 
 /**
  * Clear overlay icon from taskbar icon.

@@ -16,7 +16,7 @@
 #ifndef WAPI_AUTHN_H
 #define WAPI_AUTHN_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -73,17 +73,16 @@ _Static_assert(sizeof(wapi_authn_credential_t) == 64,
  * @see WAPI_IO_OP_AUTHN_CREATE_CREDENTIAL
  *
  * @param rp_id          Relying party identifier (UTF-8, e.g., "example.com").
- * @param rp_id_len      Relying party identifier length.
  * @param user_ptr       Pointer to user entity data (opaque to host).
  * @param challenge_ptr  Pointer to challenge bytes.
  * @param challenge_len  Challenge length.
  * @return WAPI_OK on success, WAPI_ERR_CANCELED if user canceled,
  *         WAPI_ERR_NOTSUP if not supported.
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_authn, create_credential)
-wapi_result_t wapi_authn_create_credential(const char* rp_id, wapi_size_t rp_id_len,
+wapi_result_t wapi_authn_create_credential(wapi_string_view_t rp_id,
                                            const void* user_ptr,
                                            const void* challenge_ptr,
                                            wapi_size_t challenge_len);
@@ -92,16 +91,15 @@ wapi_result_t wapi_authn_create_credential(const char* rp_id, wapi_size_t rp_id_
  * Get an assertion (authenticate with an existing credential).
  *
  * @param rp_id          Relying party identifier (UTF-8).
- * @param rp_id_len      Relying party identifier length.
  * @param challenge_ptr  Pointer to challenge bytes.
  * @param challenge_len  Challenge length.
  * @return WAPI_OK on success, WAPI_ERR_CANCELED if user canceled,
  *         WAPI_ERR_NOENT if no matching credential found.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_authn, get_assertion)
-wapi_result_t wapi_authn_get_assertion(const char* rp_id, wapi_size_t rp_id_len,
+wapi_result_t wapi_authn_get_assertion(wapi_string_view_t rp_id,
                                        const void* challenge_ptr,
                                        wapi_size_t challenge_len);
 

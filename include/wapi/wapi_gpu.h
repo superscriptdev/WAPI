@@ -29,7 +29,7 @@
 #ifndef WAPI_GPU_H
 #define WAPI_GPU_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 /*
  * Include webgpu.h for the full GPU API.
@@ -233,13 +233,12 @@ typedef void (*wapi_gpu_proc_t)(void);
  * This is the WAPI equivalent of wgpuGetProcAddress.
  *
  * @param name      Function name (e.g., "wgpuDeviceCreateBuffer").
- * @param name_len  Name length.
  * @return Function pointer, or NULL if not found.
  *
- * Wasm signature: (i32, i32) -> i32
+ * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_gpu, get_proc_address)
-wapi_gpu_proc_t wapi_gpu_get_proc_address(const char* name, wapi_size_t name_len);
+wapi_gpu_proc_t wapi_gpu_get_proc_address(wapi_string_view_t name);
 
 #ifdef __cplusplus
 }

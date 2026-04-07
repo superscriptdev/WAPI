@@ -13,7 +13,7 @@
 #ifndef WAPI_NOTIFICATIONS_H
 #define WAPI_NOTIFICATIONS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,22 +31,16 @@ typedef enum wapi_notify_urgency_t {
  * Notification descriptor.
  *
  * Layout (32 bytes, align 4):
- *   Offset  0: ptr      title
- *   Offset  4: uint32_t title_len
- *   Offset  8: ptr      body
- *   Offset 12: uint32_t body_len
- *   Offset 16: ptr      icon_url       (NULL for no icon)
- *   Offset 20: uint32_t icon_url_len
+ *   Offset  0: wapi_string_view_t title
+ *   Offset  8: wapi_string_view_t body
+ *   Offset 16: wapi_string_view_t icon_url  (NULL for no icon)
  *   Offset 24: uint32_t urgency
  *   Offset 28: uint32_t _reserved
  */
 typedef struct wapi_notify_desc_t {
-    const char*   title;
-    wapi_size_t     title_len;
-    const char*   body;
-    wapi_size_t     body_len;
-    const char*   icon_url;
-    wapi_size_t     icon_url_len;
+    wapi_string_view_t title;
+    wapi_string_view_t body;
+    wapi_string_view_t icon_url;
     uint32_t      urgency;
     uint32_t      _reserved;
 } wapi_notify_desc_t;

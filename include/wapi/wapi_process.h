@@ -25,7 +25,7 @@
 #ifndef WAPI_PROCESS_H
 #define WAPI_PROCESS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,18 +46,18 @@ typedef enum wapi_process_io_t {
  * Process Descriptor
  * ============================================================
  *
- * Layout (40 bytes, align 4):
- *   Offset  0: ptr      argv         Pointer to array of wapi_string_view_t
- *   Offset  4: uint32_t argc         Argument count (argv[0] is the program)
- *   Offset  8: ptr      envp         Pointer to array of wapi_string_view_t
- *                                    ("KEY=VALUE" pairs), NULL to inherit
- *   Offset 12: uint32_t envc         Environment variable count
- *   Offset 16: ptr      cwd          Working directory (UTF-8), NULL = inherit
- *   Offset 20: uint32_t cwd_len
- *   Offset 24: uint32_t stdin_mode   wapi_process_io_t
- *   Offset 28: uint32_t stdout_mode  wapi_process_io_t
- *   Offset 32: uint32_t stderr_mode  wapi_process_io_t
- *   Offset 36: uint32_t flags
+ * Layout (48 bytes, align 8):
+ *   Offset  0: ptr          argv         Pointer to array of wapi_string_view_t
+ *   Offset  4: uint32_t     argc         Argument count (argv[0] is the program)
+ *   Offset  8: ptr          envp         Pointer to array of wapi_string_view_t
+ *                                        ("KEY=VALUE" pairs), NULL to inherit
+ *   Offset 12: uint32_t     envc         Environment variable count
+ *   Offset 16: wapi_string_view_t cwd    Working directory (UTF-8), NULL = inherit
+ *   Offset 24: uint32_t     stdin_mode   wapi_process_io_t
+ *   Offset 28: uint32_t     stdout_mode  wapi_process_io_t
+ *   Offset 32: uint32_t     stderr_mode  wapi_process_io_t
+ *   Offset 36: (4 bytes padding)
+ *   Offset 40: wapi_flags_t flags
  */
 
 typedef struct wapi_process_desc_t {
@@ -65,12 +65,11 @@ typedef struct wapi_process_desc_t {
     uint32_t                  argc;
     const wapi_string_view_t* envp;
     uint32_t                  envc;
-    const char*               cwd;
-    wapi_size_t               cwd_len;
+    wapi_string_view_t        cwd;
     uint32_t                  stdin_mode;
     uint32_t                  stdout_mode;
     uint32_t                  stderr_mode;
-    uint32_t                  flags;
+    wapi_flags_t              flags;
 } wapi_process_desc_t;
 
 /* ============================================================

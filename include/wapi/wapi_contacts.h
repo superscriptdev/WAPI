@@ -15,7 +15,7 @@
 #ifndef WAPI_CONTACTS_H
 #define WAPI_CONTACTS_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

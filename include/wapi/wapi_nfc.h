@@ -14,7 +14,7 @@
 #ifndef WAPI_NFC_H
 #define WAPI_NFC_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {

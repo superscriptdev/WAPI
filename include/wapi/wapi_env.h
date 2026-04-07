@@ -11,7 +11,7 @@
 #ifndef WAPI_ENV_H
 #define WAPI_ENV_H
 
-#include "wapi_types.h"
+#include "wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,16 +76,15 @@ wapi_result_t wapi_env_environ_get(int32_t index, char* buf, wapi_size_t buf_len
  * Look up an environment variable by name.
  *
  * @param name      Variable name (UTF-8).
- * @param name_len  Name length.
  * @param buf       Buffer to receive the value.
  * @param buf_len   Buffer capacity.
  * @param val_len   [out] Actual value length.
  * @return WAPI_OK on success, WAPI_ERR_NOENT if not found.
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_env, getenv)
-wapi_result_t wapi_env_getenv(const char* name, wapi_size_t name_len,
+wapi_result_t wapi_env_getenv(wapi_string_view_t name,
                            char* buf, wapi_size_t buf_len, wapi_size_t* val_len);
 
 /* ============================================================
@@ -132,13 +131,12 @@ _Noreturn void wapi_env_exit(int32_t code);
  *
  * @param url      URL to open (UTF-8). e.g. "https://example.com"
  *                 or "mailto:user@example.com".
- * @param url_len  URL length in bytes.
  * @return WAPI_OK on success, WAPI_ERR_NOTSUP if not available.
  *
- * Wasm signature: (i32, i32) -> i32
+ * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_env, open_url)
-wapi_result_t wapi_env_open_url(const char* url, wapi_size_t url_len);
+wapi_result_t wapi_env_open_url(wapi_string_view_t url);
 
 /* ============================================================
  * Error Messages

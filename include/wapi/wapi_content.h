@@ -3,8 +3,7 @@
  * Version 1.0.0
  *
  * A semantic content tree that the app builds in Wasm memory.
- * The host reads it for accessibility, keyboard navigation,
- * indexing/crawling, and screen reader support.
+ * The host reads it for accessibility, indexing/crawling, and screen reader support.
  *
  * The app owns the memory, writes nodes directly, and bumps
  * version numbers for change detection. The host never writes

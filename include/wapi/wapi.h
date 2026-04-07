@@ -172,27 +172,6 @@ typedef struct wapi_string_view_t {
 #define WAPI_STRN(s, n) ((wapi_string_view_t){ (s), (n) })
 
 /* ============================================================
- * Buffer View
- * ============================================================
- * Non-owning reference to a byte buffer in linear memory.
- * Used for scatter/gather I/O (like WASI's iovec).
- *
- * Layout (8 bytes, align 4):
- *   Offset 0: uint32_t data   (pointer to bytes)
- *   Offset 4: uint32_t length (byte count)
- */
-
-typedef struct wapi_buffer_t {
-    uint8_t*  data;
-    wapi_size_t length;
-} wapi_buffer_t;
-
-typedef struct wapi_const_buffer_t {
-    const uint8_t* data;
-    wapi_size_t      length;
-} wapi_const_buffer_t;
-
-/* ============================================================
  * Chained Struct (Forward Compatibility)
  * ============================================================
  * Following webgpu.h's nextInChain pattern for ABI-stable extension.
@@ -239,6 +218,17 @@ typedef struct wapi_version_t {
 #define WAPI_ABI_VERSION_MAJOR 1
 #define WAPI_ABI_VERSION_MINOR 0
 #define WAPI_ABI_VERSION_PATCH 0
+
+/* ============================================================
+ * Permission State
+ * ============================================================ */
+
+typedef enum wapi_perm_state_t {
+    WAPI_PERM_GRANTED  = 0,  /* Permission granted */
+    WAPI_PERM_DENIED   = 1,  /* Permission denied (do not prompt again) */
+    WAPI_PERM_PROMPT   = 2,  /* Permission not yet requested */
+    WAPI_PERM_FORCE32  = 0x7FFFFFFF
+} wapi_perm_state_t;
 
 /* ============================================================
  * Utility Macros
@@ -584,6 +574,10 @@ typedef enum wapi_event_type_t {
 
     /* File watcher events (0x1840-0x184F) */
     WAPI_EVENT_FILE_CHANGED     = 0x1840,
+
+    /* Font events (0x1860-0x186F) */
+    WAPI_EVENT_FONT_ADDED       = 0x1860,
+    WAPI_EVENT_FONT_REMOVED     = 0x1861,
 
     /* Menu events (0x1850-0x185F) */
     WAPI_EVENT_MENU_SELECT      = 0x1850,
@@ -964,6 +958,15 @@ typedef struct wapi_fwatch_event_t {
     uint32_t    path_len;
 } wapi_fwatch_event_t;
 
+/** Font change event */
+typedef struct wapi_font_event_t {
+    uint32_t    type;
+    uint32_t    surface_id;
+    uint64_t    timestamp;
+    uint32_t    family_ptr;  /* Pointer to family name in wasm memory (UTF-8) */
+    uint32_t    family_len;
+} wapi_font_event_t;
+
 /** Menu event */
 typedef struct wapi_menu_event_t {
     uint32_t    type;
@@ -1022,6 +1025,7 @@ typedef union wapi_event_t {
     wapi_hotkey_event_t               hotkey;
     wapi_tray_event_t                 tray;
     wapi_fwatch_event_t               fwatch;
+    wapi_font_event_t                 font;
     wapi_menu_event_t                 menu;
     wapi_content_event_t              content;
     wapi_io_event_t                   io;
@@ -1245,6 +1249,7 @@ static inline _Noreturn void wapi_panic(const wapi_context_t* ctx,
 #define WAPI_CAP_PROCESS       "wapi.process"
 #define WAPI_CAP_DIALOG        "wapi.dialog"
 #define WAPI_CAP_SYSINFO       "wapi.sysinfo"
+#define WAPI_CAP_EYEDROP       "wapi.eyedrop"
 
 /* ============================================================
  * Presets
@@ -1359,6 +1364,29 @@ wapi_result_t wapi_capability_name(uint32_t index, char* buf, wapi_size_t buf_le
  */
 WAPI_IMPORT(wapi, abi_version)
 wapi_result_t wapi_abi_version(wapi_version_t* version);
+
+/* ============================================================
+ * Permission Queries
+ * ============================================================
+ * Query the current permission state for a capability without
+ * triggering a user prompt. To actually request permission,
+ * submit WAPI_IO_OP_PERM_REQUEST through the I/O vtable.
+ */
+
+/**
+ * Query the permission state for a capability.
+ *
+ * Does not trigger a prompt. Returns the current state only.
+ *
+ * @param capability  Capability name (e.g., "wapi.geolocation").
+ * @param state       [out] Current permission state.
+ * @return WAPI_OK on success, WAPI_ERR_NOENT if capability unknown.
+ *
+ * Wasm signature: (i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi, perm_query)
+wapi_result_t wapi_perm_query(wapi_string_view_t capability,
+                              wapi_perm_state_t* state);
 
 /* ============================================================
  * Convenience: Preset Checking

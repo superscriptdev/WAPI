@@ -31,6 +31,9 @@ extern "C" {
  * Blocks until the user picks a color or cancels. The color is
  * written as a uint32_t in RGBA format (0xRRGGBBAA).
  *
+ * For non-blocking usage, submit WAPI_IO_OP_EYEDROPPER_PICK through
+ * the I/O vtable instead; the result arrives as an IO completion event.
+ *
  * @param rgba_ptr  [out] Pointer to receive the RGBA color value.
  * @return WAPI_OK on success, WAPI_ERR_CANCEL if user cancelled,
  *         WAPI_ERR_NOTSUP if not supported.

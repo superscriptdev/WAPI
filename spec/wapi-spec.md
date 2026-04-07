@@ -1351,8 +1351,6 @@ A conforming WAPI module MUST export:
 | Struct                     | Size (bytes) | Alignment |
 |----------------------------|-------------|-----------|
 | `wapi_string_view_t`         |     8       |    4      |
-| `wapi_buffer_t`              |     8       |    4      |
-| `wapi_const_buffer_t`        |     8       |    4      |
 | `wapi_chained_struct_t`      |     8       |    4      |
 | `wapi_version_t`             |     8       |    2      |
 | `wapi_audio_spec_t`          |    12       |    4      |

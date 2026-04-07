@@ -69,8 +69,7 @@ _Static_assert(sizeof(wapi_subpixel_t) == 4, "wapi_subpixel_t must be 4 bytes");
  *   Offset 16: int32_t  height             Height in pixels
  *   Offset 20: float    refresh_rate_hz    Refresh rate in Hz
  *   Offset 24: float    scale_factor       DPI scale (e.g. 2.0 for Retina)
- *   Offset 28: uint32_t name_ptr           Pointer to UTF-8 display name
- *   Offset 32: uint32_t name_len           Byte length of display name
+ *   Offset 28: wapi_string_view_t name      Display name (UTF-8)
  *   Offset 36: uint8_t  is_primary         1 if primary display
  *   Offset 37: uint8_t  orientation        0=land, 1=port, 2=land-flip, 3=port-flip
  *   Offset 38: uint8_t  subpixel_count     Number of sub-pixels per pixel (0=unknown)
@@ -87,8 +86,7 @@ typedef struct wapi_display_info_t {
     int32_t     height;
     float       refresh_rate_hz;
     float       scale_factor;
-    uint32_t    name_ptr;
-    uint32_t    name_len;
+    wapi_string_view_t name;
     uint8_t     is_primary;
     uint8_t     orientation;
     uint8_t     subpixel_count;  /* 0=unknown, typically 3-4 */
@@ -107,7 +105,7 @@ _Static_assert(sizeof(wapi_display_info_t) == 48,
 /**
  * Get the number of connected displays.
  *
- * @return Number of displays (>= 1).
+ * @return Number of displays (>= 0), or negative on error.
  *
  * Wasm signature: () -> i32
  */

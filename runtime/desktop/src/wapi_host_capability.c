@@ -208,6 +208,30 @@ static wasm_trap_t* host_abi_version(
 }
 
 /* ============================================================
+ * panic_report: (i32 msg_ptr, i32 msg_len) -> void
+ * ============================================================
+ * Records a panic message before the module traps.
+ */
+
+static wasm_trap_t* host_panic_report(
+    void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)results; (void)nresults;
+    uint32_t msg_ptr = WAPI_ARG_U32(0);
+    uint32_t msg_len = WAPI_ARG_U32(1);
+
+    const char* msg = wapi_wasm_read_string(msg_ptr, msg_len);
+    if (msg && msg_len > 0) {
+        fprintf(stderr, "WAPI PANIC: %.*s\n", (int)msg_len, msg);
+    } else {
+        fprintf(stderr, "WAPI PANIC: (no message)\n");
+    }
+    return NULL;
+}
+
+/* ============================================================
  * Registration
  * ============================================================ */
 
@@ -217,4 +241,5 @@ void wapi_host_register_capability(wasmtime_linker_t* linker) {
     WAPI_DEFINE_0_1(linker, "wapi", "capability_count",     host_capability_count);
     WAPI_DEFINE_4_1(linker, "wapi", "capability_name",      host_capability_name);
     WAPI_DEFINE_1_1(linker, "wapi", "abi_version",          host_abi_version);
+    WAPI_DEFINE_2_0(linker, "wapi", "panic_report",         host_panic_report);
 }

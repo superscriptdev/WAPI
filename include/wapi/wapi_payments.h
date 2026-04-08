@@ -22,10 +22,10 @@ extern "C" {
 /**
  * Payment item (line item in the order).
  *
- * Layout (24 bytes, align 4):
+ * Layout (48 bytes, align 8):
  *   Offset  0: wapi_string_view_t label
- *   Offset  8: wapi_string_view_t amount    e.g., "9.99"
- *   Offset 16: wapi_string_view_t currency  ISO 4217 (e.g., "USD")
+ *   Offset 16: wapi_string_view_t amount    e.g., "9.99"
+ *   Offset 32: wapi_string_view_t currency  ISO 4217 (e.g., "USD")
  */
 typedef struct wapi_pay_item_t {
     wapi_string_view_t label;
@@ -36,11 +36,11 @@ typedef struct wapi_pay_item_t {
 /**
  * Payment request descriptor.
  *
- * Layout (24 bytes, align 8):
+ * Layout (32 bytes, align 8):
  *   Offset  0: wapi_string_view_t merchant_id
- *   Offset  8: ptr          items          Array of wapi_pay_item_t
- *   Offset 12: uint32_t     item_count
- *   Offset 16: wapi_flags_t flags
+ *   Offset 16: ptr          items          Array of wapi_pay_item_t
+ *   Offset 20: uint32_t     item_count
+ *   Offset 24: wapi_flags_t flags
  */
 typedef struct wapi_pay_request_t {
     wapi_string_view_t      merchant_id;
@@ -52,12 +52,6 @@ typedef struct wapi_pay_request_t {
 #define WAPI_PAY_FLAG_REQUEST_SHIPPING  0x0001
 #define WAPI_PAY_FLAG_REQUEST_EMAIL     0x0002
 #define WAPI_PAY_FLAG_REQUEST_PHONE     0x0004
-
-/**
- * Check if payment is available.
- */
-WAPI_IMPORT(wapi_pay, can_make_payment)
-wapi_bool_t wapi_pay_can_make_payment(void);
 
 /**
  * Show the payment sheet and process payment.

@@ -35,12 +35,12 @@ extern "C" {
  * ============================================================
  * Describes a font family's capabilities.
  *
- * Layout (24 bytes, align 4):
+ * Layout (32 bytes, align 8):
  *   Offset  0: wapi_string_view_t family  Font family name (UTF-8)
- *   Offset  8: uint32_t weight_min     Minimum weight (e.g., 100)
- *   Offset 12: uint32_t weight_max     Maximum weight (e.g., 900)
- *   Offset 16: uint32_t style_flags    Bitmask of WAPI_FONT_HAS_*
- *   Offset 20: int32_t  is_variable    Variable font? (wapi_bool_t)
+ *   Offset 16: uint32_t weight_min     Minimum weight (e.g., 100)
+ *   Offset 20: uint32_t weight_max     Maximum weight (e.g., 900)
+ *   Offset 24: uint32_t style_flags    Bitmask of WAPI_FONT_HAS_*
+ *   Offset 28: int32_t  is_variable    Variable font? (wapi_bool_t)
  */
 
 typedef struct wapi_font_info_t {

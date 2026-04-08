@@ -26,12 +26,13 @@ extern "C" {
 /**
  * Utterance descriptor.
  *
- * Layout (28 bytes, align 4):
+ * Layout (48 bytes, align 8):
  *   Offset  0: wapi_string_view_t text
- *   Offset  8: wapi_string_view_t lang  BCP 47 tag (e.g., "en-US"), NULL for default
- *   Offset 16: float    rate       0.1-10.0, 1.0 = normal
- *   Offset 20: float    pitch      0.0-2.0, 1.0 = normal
- *   Offset 24: float    volume     0.0-1.0
+ *   Offset 16: wapi_string_view_t lang  BCP 47 tag (e.g., "en-US"), NULL for default
+ *   Offset 32: float    rate       0.1-10.0, 1.0 = normal
+ *   Offset 36: float    pitch      0.0-2.0, 1.0 = normal
+ *   Offset 40: float    volume     0.0-1.0
+ *   Offset 44: uint32_t _pad
  */
 typedef struct wapi_speech_utterance_t {
     wapi_string_view_t text;
@@ -39,6 +40,7 @@ typedef struct wapi_speech_utterance_t {
     float       rate;
     float       pitch;
     float       volume;
+    uint32_t    _pad;
 } wapi_speech_utterance_t;
 
 /**

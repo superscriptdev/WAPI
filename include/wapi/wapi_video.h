@@ -63,18 +63,20 @@ typedef enum wapi_video_source_t {
  * ============================================================
  * Describes the video source for creation.
  *
- * Layout (20 bytes, align 4):
- *   Offset  0: ptr      nextInChain
- *   Offset  4: uint32_t source       (wapi_video_source_t)
- *   Offset  8: ptr      data         URL string or video data pointer
- *   Offset 12: uint32_t data_len     Byte length of data
- *   Offset 16: uint32_t codec_hint   (wapi_video_codec_t, hint for decoder)
+ * Layout (32 bytes, align 8):
+ *   Offset  0: uint64_t nextInChain  Linear memory address of chained struct, or 0
+ *   Offset  8: uint32_t source       (wapi_video_source_t)
+ *   Offset 12: uint32_t _pad0
+ *   Offset 16: uint64_t data         Linear memory address of URL or video data
+ *   Offset 24: uint32_t data_len     Byte length of data
+ *   Offset 28: uint32_t codec_hint   (wapi_video_codec_t, hint for decoder)
  */
 
 typedef struct wapi_video_desc_t {
-    wapi_chained_struct_t*   nextInChain;
+    uint64_t               nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
     uint32_t               source;      /* wapi_video_source_t */
-    const void*            data;
+    uint32_t               _pad0;
+    uint64_t               data;        /* Address of data (URL or buffer) */
     wapi_size_t              data_len;
     uint32_t               codec_hint;  /* wapi_video_codec_t */
 } wapi_video_desc_t;

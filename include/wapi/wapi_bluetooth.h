@@ -24,9 +24,9 @@ extern "C" {
 /**
  * BLE scan filter.
  *
- * Layout (16 bytes, align 4):
+ * Layout (32 bytes, align 8):
  *   Offset  0: wapi_string_view_t service_uuid  UUID string (NULL = any)
- *   Offset  8: wapi_string_view_t name_prefix   Device name prefix (NULL = any)
+ *   Offset 16: wapi_string_view_t name_prefix   Device name prefix (NULL = any)
  */
 typedef struct wapi_bt_filter_t {
     wapi_string_view_t service_uuid;

@@ -58,17 +58,17 @@ extern "C" {
 /**
  * GPU device descriptor for the simplified creation path.
  *
- * Layout (16 bytes, align 4):
- *   Offset  0: ptr      nextInChain
- *   Offset  4: uint32_t power_preference (0=default, 1=low_power, 2=high_perf)
- *   Offset  8: uint32_t required_features_count
- *   Offset 12: ptr      required_features (array of uint32_t feature enums)
+ * Layout (24 bytes, align 8):
+ *   Offset  0: uint64_t nextInChain             Linear memory address, or 0
+ *   Offset  8: uint32_t power_preference        (0=default, 1=low_power, 2=high_perf)
+ *   Offset 12: uint32_t required_features_count
+ *   Offset 16: uint64_t required_features       Linear memory address of uint32_t array
  */
 typedef struct wapi_gpu_device_desc_t {
-    wapi_chained_struct_t*  nextInChain;
+    uint64_t              nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
     uint32_t              power_preference;
     uint32_t              required_features_count;
-    const uint32_t*       required_features;
+    uint64_t              required_features;  /* Address of uint32_t array */
 } wapi_gpu_device_desc_t;
 
 /** Power preference values (matching WGPUPowerPreference) */
@@ -144,21 +144,23 @@ typedef enum wapi_gpu_present_mode_t {
 /**
  * Surface GPU configuration descriptor.
  *
- * Layout (24 bytes, align 4):
- *   Offset  0: ptr      nextInChain
- *   Offset  4: int32_t  surface       WAPI surface handle
- *   Offset  8: int32_t  device        WAPI GPU device handle
- *   Offset 12: uint32_t format        Texture format
- *   Offset 16: uint32_t present_mode  Present mode
- *   Offset 20: uint32_t usage         Texture usage flags (WGPUTextureUsage)
+ * Layout (32 bytes, align 8):
+ *   Offset  0: uint64_t nextInChain   Linear memory address, or 0
+ *   Offset  8: int32_t  surface       WAPI surface handle
+ *   Offset 12: int32_t  device        WAPI GPU device handle
+ *   Offset 16: uint32_t format        Texture format
+ *   Offset 20: uint32_t present_mode  Present mode
+ *   Offset 24: uint32_t usage         Texture usage flags (WGPUTextureUsage)
+ *   Offset 28: uint32_t _pad
  */
 typedef struct wapi_gpu_surface_config_t {
-    wapi_chained_struct_t*       nextInChain;
+    uint64_t                     nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
     wapi_handle_t                surface;
     wapi_handle_t                device;
     uint32_t                   format;        /* wapi_gpu_texture_format_t */
     uint32_t                   present_mode;  /* wapi_gpu_present_mode_t */
     uint32_t                   usage;         /* WGPUTextureUsage flags */
+    uint32_t                   _pad;
 } wapi_gpu_surface_config_t;
 
 /**
@@ -216,13 +218,195 @@ wapi_result_t wapi_gpu_surface_preferred_format(wapi_handle_t surface,
                                              wapi_gpu_texture_format_t* format);
 
 /* ============================================================
- * WebGPU Function Table
+ * WebGPU Direct Imports
  * ============================================================
- * The host provides the full webgpu.h proc table. The module
- * retrieves function pointers at startup and calls them directly.
+ * Standard webgpu.h functions are imported directly, compiled
+ * to direct wasm `call` instructions with zero indirection.
+ * The module imports only the functions it uses.
  *
- * This matches webgpu.h's WGPUProcTable / wgpuGetProcAddress
- * pattern. The WAPI host simply provides the proc address resolver.
+ * This is the primary path for GPU operations. For dynamic
+ * lookup of extension functions or functions not listed here,
+ * use wapi_gpu_get_proc_address below.
+ *
+ * NOTE: These declarations require webgpu.h to be included
+ * first for the WGPUDevice, WGPUBuffer, etc. types. When
+ * webgpu.h is not included, only get_proc_address is available.
+ */
+
+#ifdef WEBGPU_H_
+
+/* --- Device --- */
+WAPI_IMPORT(wapi_wgpu, device_create_buffer)
+WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, const WGPUBufferDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_texture)
+WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, const WGPUTextureDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_sampler)
+WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, const WGPUSamplerDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_bind_group_layout)
+WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(WGPUDevice device, const WGPUBindGroupLayoutDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_bind_group)
+WGPUBindGroup wgpuDeviceCreateBindGroup(WGPUDevice device, const WGPUBindGroupDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_pipeline_layout)
+WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(WGPUDevice device, const WGPUPipelineLayoutDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_shader_module)
+WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, const WGPUShaderModuleDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_render_pipeline)
+WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, const WGPURenderPipelineDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_compute_pipeline)
+WGPUComputePipeline wgpuDeviceCreateComputePipeline(WGPUDevice device, const WGPUComputePipelineDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_command_encoder)
+WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, const WGPUCommandEncoderDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, device_create_query_set)
+WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, const WGPUQuerySetDescriptor* descriptor);
+
+/* --- Queue --- */
+WAPI_IMPORT(wapi_wgpu, queue_submit)
+void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, const WGPUCommandBuffer* commands);
+
+WAPI_IMPORT(wapi_wgpu, queue_write_buffer)
+void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, const void* data, size_t size);
+
+WAPI_IMPORT(wapi_wgpu, queue_write_texture)
+void wgpuQueueWriteTexture(WGPUQueue queue, const WGPUTexelCopyTextureInfo* destination, const void* data, size_t dataSize, const WGPUTexelCopyBufferLayout* dataLayout, const WGPUExtent3D* writeSize);
+
+/* --- Command Encoder --- */
+WAPI_IMPORT(wapi_wgpu, command_encoder_begin_render_pass)
+WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder encoder, const WGPURenderPassDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_begin_compute_pass)
+WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(WGPUCommandEncoder encoder, const WGPUComputePassDescriptor* descriptor);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_copy_buffer_to_buffer)
+void wgpuCommandEncoderCopyBufferToBuffer(WGPUCommandEncoder encoder, WGPUBuffer source, uint64_t sourceOffset, WGPUBuffer destination, uint64_t destinationOffset, uint64_t size);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_copy_buffer_to_texture)
+void wgpuCommandEncoderCopyBufferToTexture(WGPUCommandEncoder encoder, const WGPUTexelCopyBufferInfo* source, const WGPUTexelCopyTextureInfo* destination, const WGPUExtent3D* copySize);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_copy_texture_to_buffer)
+void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder encoder, const WGPUTexelCopyTextureInfo* source, const WGPUTexelCopyBufferInfo* destination, const WGPUExtent3D* copySize);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_copy_texture_to_texture)
+void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder encoder, const WGPUTexelCopyTextureInfo* source, const WGPUTexelCopyTextureInfo* destination, const WGPUExtent3D* copySize);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_finish)
+WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder encoder, const WGPUCommandBufferDescriptor* descriptor);
+
+/* --- Render Pass --- */
+WAPI_IMPORT(wapi_wgpu, render_pass_set_pipeline)
+void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder encoder, WGPURenderPipeline pipeline);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_set_bind_group)
+void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder encoder, uint32_t groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const uint32_t* dynamicOffsets);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_set_vertex_buffer)
+void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder encoder, uint32_t slot, WGPUBuffer buffer, uint64_t offset, uint64_t size);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_set_index_buffer)
+void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder encoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_set_viewport)
+void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder encoder, float x, float y, float width, float height, float minDepth, float maxDepth);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_set_scissor_rect)
+void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder encoder, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_draw)
+void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder encoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_draw_indexed)
+void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder encoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_end)
+void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder encoder);
+
+/* --- Compute Pass --- */
+WAPI_IMPORT(wapi_wgpu, compute_pass_set_pipeline)
+void wgpuComputePassEncoderSetPipeline(WGPUComputePassEncoder encoder, WGPUComputePipeline pipeline);
+
+WAPI_IMPORT(wapi_wgpu, compute_pass_set_bind_group)
+void wgpuComputePassEncoderSetBindGroup(WGPUComputePassEncoder encoder, uint32_t groupIndex, WGPUBindGroup group, size_t dynamicOffsetCount, const uint32_t* dynamicOffsets);
+
+WAPI_IMPORT(wapi_wgpu, compute_pass_dispatch_workgroups)
+void wgpuComputePassEncoderDispatchWorkgroups(WGPUComputePassEncoder encoder, uint32_t workgroupCountX, uint32_t workgroupCountY, uint32_t workgroupCountZ);
+
+WAPI_IMPORT(wapi_wgpu, compute_pass_end)
+void wgpuComputePassEncoderEnd(WGPUComputePassEncoder encoder);
+
+/* --- Buffer --- */
+WAPI_IMPORT(wapi_wgpu, buffer_get_mapped_range)
+void* wgpuBufferGetMappedRange(WGPUBuffer buffer, size_t offset, size_t size);
+
+WAPI_IMPORT(wapi_wgpu, buffer_unmap)
+void wgpuBufferUnmap(WGPUBuffer buffer);
+
+/* --- Texture --- */
+WAPI_IMPORT(wapi_wgpu, texture_create_view)
+WGPUTextureView wgpuTextureCreateView(WGPUTexture texture, const WGPUTextureViewDescriptor* descriptor);
+
+/* --- Release functions --- */
+WAPI_IMPORT(wapi_wgpu, buffer_release)
+void wgpuBufferRelease(WGPUBuffer buffer);
+
+WAPI_IMPORT(wapi_wgpu, texture_release)
+void wgpuTextureRelease(WGPUTexture texture);
+
+WAPI_IMPORT(wapi_wgpu, texture_view_release)
+void wgpuTextureViewRelease(WGPUTextureView textureView);
+
+WAPI_IMPORT(wapi_wgpu, sampler_release)
+void wgpuSamplerRelease(WGPUSampler sampler);
+
+WAPI_IMPORT(wapi_wgpu, bind_group_release)
+void wgpuBindGroupRelease(WGPUBindGroup bindGroup);
+
+WAPI_IMPORT(wapi_wgpu, bind_group_layout_release)
+void wgpuBindGroupLayoutRelease(WGPUBindGroupLayout bindGroupLayout);
+
+WAPI_IMPORT(wapi_wgpu, pipeline_layout_release)
+void wgpuPipelineLayoutRelease(WGPUPipelineLayout pipelineLayout);
+
+WAPI_IMPORT(wapi_wgpu, shader_module_release)
+void wgpuShaderModuleRelease(WGPUShaderModule shaderModule);
+
+WAPI_IMPORT(wapi_wgpu, render_pipeline_release)
+void wgpuRenderPipelineRelease(WGPURenderPipeline renderPipeline);
+
+WAPI_IMPORT(wapi_wgpu, compute_pipeline_release)
+void wgpuComputePipelineRelease(WGPUComputePipeline computePipeline);
+
+WAPI_IMPORT(wapi_wgpu, command_buffer_release)
+void wgpuCommandBufferRelease(WGPUCommandBuffer commandBuffer);
+
+WAPI_IMPORT(wapi_wgpu, command_encoder_release)
+void wgpuCommandEncoderRelease(WGPUCommandEncoder commandEncoder);
+
+WAPI_IMPORT(wapi_wgpu, render_pass_release)
+void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder encoder);
+
+WAPI_IMPORT(wapi_wgpu, compute_pass_release)
+void wgpuComputePassEncoderRelease(WGPUComputePassEncoder encoder);
+
+WAPI_IMPORT(wapi_wgpu, query_set_release)
+void wgpuQuerySetRelease(WGPUQuerySet querySet);
+
+#endif /* WEBGPU_H_ */
+
+/* ============================================================
+ * Dynamic Function Lookup (Optional)
+ * ============================================================
+ * For extension functions, runtime-discovered features, or when
+ * the module wants to build its own dispatch table. Not needed
+ * for standard webgpu.h operations (use direct imports above).
  */
 
 /** Function pointer type for wgpuGetProcAddress */
@@ -231,6 +415,10 @@ typedef void (*wapi_gpu_proc_t)(void);
 /**
  * Get a WebGPU function pointer by name.
  * This is the WAPI equivalent of wgpuGetProcAddress.
+ *
+ * Use for extension functions or dynamic dispatch. For standard
+ * operations, prefer the direct imports in the wapi_wgpu namespace
+ * which compile to direct wasm calls with zero indirection.
  *
  * @param name      Function name (e.g., "wgpuDeviceCreateBuffer").
  * @return Function pointer, or NULL if not found.

@@ -42,25 +42,23 @@ typedef enum wapi_barcode_format_t {
 /**
  * Barcode detection result.
  *
- * Layout (32 bytes, align 4):
+ * Layout (32 bytes, align 8):
  *   Offset  0: uint32_t format     (wapi_barcode_format_t)
- *   Offset  4: uint32_t value_ptr  (pointer to decoded string)
- *   Offset  8: uint32_t value_len
- *   Offset 12: float    x          (bounding box origin x)
- *   Offset 16: float    y          (bounding box origin y)
- *   Offset 20: float    w          (bounding box width)
- *   Offset 24: float    h          (bounding box height)
- *   Offset 28: uint32_t _pad
+ *   Offset  4: uint32_t value_len
+ *   Offset  8: uint64_t value_ptr  Linear memory address of decoded string
+ *   Offset 16: float    x          (bounding box origin x)
+ *   Offset 20: float    y          (bounding box origin y)
+ *   Offset 24: float    w          (bounding box width)
+ *   Offset 28: float    h          (bounding box height)
  */
 typedef struct wapi_barcode_result_t {
     uint32_t format;      /* wapi_barcode_format_t */
-    uint32_t value_ptr;
     uint32_t value_len;
+    uint64_t value_ptr;   /* Linear memory address of decoded string */
     float    x;
     float    y;
     float    w;
     float    h;
-    uint32_t _pad;
 } wapi_barcode_result_t;
 
 _Static_assert(sizeof(wapi_barcode_result_t) == 32,

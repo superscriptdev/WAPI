@@ -36,26 +36,27 @@ extern "C" {
 /**
  * Tray menu item descriptor.
  *
- * Layout (32 bytes, align 8):
+ * Layout (40 bytes, align 8):
  *   Offset  0: uint32_t     id
- *   Offset  4: uint32_t     label_ptr    (pointer to label string)
- *   Offset  8: uint32_t     label_len
- *   Offset 12: uint32_t     icon_ptr     (pointer to icon data)
+ *   Offset  4: uint32_t     label_len
+ *   Offset  8: uint64_t     label_ptr    Linear memory address of label string
  *   Offset 16: uint32_t     icon_len
- *   Offset 20: (4 bytes padding)
- *   Offset 24: wapi_flags_t flags
+ *   Offset 20: uint32_t     _pad
+ *   Offset 24: uint64_t     icon_ptr     Linear memory address of icon data
+ *   Offset 32: wapi_flags_t flags
  */
 typedef struct wapi_tray_menu_item_t {
-    uint32_t id;
-    uint32_t label_ptr;
-    uint32_t label_len;
-    uint32_t icon_ptr;
-    uint32_t icon_len;
+    uint32_t     id;
+    uint32_t     label_len;
+    uint64_t     label_ptr;
+    uint32_t     icon_len;
+    uint32_t     _pad;
+    uint64_t     icon_ptr;
     wapi_flags_t flags;
 } wapi_tray_menu_item_t;
 
-_Static_assert(sizeof(wapi_tray_menu_item_t) == 32,
-               "wapi_tray_menu_item_t must be 32 bytes");
+_Static_assert(sizeof(wapi_tray_menu_item_t) == 40,
+               "wapi_tray_menu_item_t must be 40 bytes");
 
 /* ============================================================
  * Tray Functions

@@ -354,7 +354,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Warning: module does not export 'memory'\n");
     }
 
-    /* ---- Call wapi_main(ctx) ---- */
+    /* ---- Call wapi_main() ---- */
     wasmtime_extern_t wapi_main_extern;
     bool found_main = wasmtime_instance_export_get(g_rt.context, &g_rt.instance,
                                                     "wapi_main", 9, &wapi_main_extern);
@@ -368,42 +368,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    /* Write a wapi_context_t into the module's linear memory.
-     * Layout (20 bytes):
-     *   Offset  0: ptr allocator   (0 = use default wapi_mem_* imports)
-     *   Offset  4: ptr io          (ptr to wapi_io_t in linear memory)
-     *   Offset  8: ptr panic       (0 = runtime default)
-     *   Offset 12: i32 gpu_device  (0 = not yet requested)
-     *   Offset 16: u32 flags       (0)
-     *
-     * The wapi_io_t vtable (24 bytes) is written at offset 1024.
-     * The wapi_context_t is written at offset 1048 (1024 + 24).
-     *
-     * The vtable function pointers are 0 for now — modules fall back
-     * to direct "wapi_io" host imports. A full implementation would
-     * write wasm table indices for indirect calls, enabling parent
-     * modules to wrap the vtable for children.
-     */
-    uint32_t io_vtable_offset = 1024;
-    uint32_t ctx_offset = io_vtable_offset + 24;
-
-    /* Write wapi_io_t vtable (24 bytes, all zeros for now) */
-    uint8_t io_vtable[24] = {0};
-    wapi_wasm_write_bytes(io_vtable_offset, io_vtable, 24);
-
-    /* Write wapi_context_t (20 bytes) */
-    uint8_t ctx_bytes[20] = {0};
-    /* ctx->io = pointer to io vtable (offset 4) */
-    uint32_t io_ptr = io_vtable_offset;
-    memcpy(ctx_bytes + 4, &io_ptr, 4);
-    wapi_wasm_write_bytes(ctx_offset, ctx_bytes, 20);
-
-    wasmtime_val_t main_args[1] = {
-        { .kind = WASMTIME_I32, .of.i32 = (int32_t)ctx_offset }
-    };
     wasmtime_val_t main_results[1];
     error = wasmtime_func_call(g_rt.context, &wapi_main_extern.of.func,
-                                main_args, 1, main_results, 1, &trap);
+                                NULL, 0, main_results, 1, &trap);
     if (error || trap) {
         /* Check if this was a wapi_env_exit trap (expected) */
         if (trap) {

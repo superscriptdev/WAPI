@@ -139,6 +139,42 @@ WAPI_IMPORT(wapi_env, open_url)
 wapi_result_t wapi_env_open_url(wapi_string_view_t url);
 
 /* ============================================================
+ * Host Information (Escape Hatch)
+ * ============================================================
+ * Prefer capability queries for feature detection. Use host_get
+ * only when platform knowledge is genuinely needed (workarounds,
+ * analytics, platform-appropriate UI conventions).
+ *
+ * Well-known keys (hosts SHOULD populate these):
+ *   "os.family"         "windows", "macos", "linux", "android", "ios", "browser"
+ *   "os.version"        "10.0.26200", "15.2", etc.
+ *   "runtime.name"      "wapi-desktop", "wapi-browser", etc.
+ *   "runtime.version"   Semver string
+ *   "device.form"       "desktop", "mobile", "tablet", "embedded", "xr"
+ *   "browser.engine"    "chromium", "gecko", "webkit" (browser hosts only)
+ *   "locale"            "en-US", "ja-JP", etc.
+ *
+ * Unknown keys return WAPI_ERR_NOENT. Hosts may define additional
+ * keys under "vendor.<name>.*".
+ */
+
+/**
+ * Query host information by key.
+ *
+ * @param key      Key name (UTF-8).
+ * @param buf      Buffer to receive the value (UTF-8).
+ * @param buf_len  Buffer capacity.
+ * @param val_len  [out] Actual value length.
+ * @return WAPI_OK on success, WAPI_ERR_NOENT if key unknown.
+ *
+ * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_env, host_get)
+wapi_result_t wapi_env_host_get(wapi_string_view_t key,
+                                char* buf, wapi_size_t buf_len,
+                                wapi_size_t* val_len);
+
+/* ============================================================
  * Error Messages
  * ============================================================ */
 

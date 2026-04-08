@@ -47,11 +47,11 @@ typedef enum wapi_p2p_state_t {
 /**
  * P2P connection configuration.
  *
- * Layout (32 bytes, align 4):
- *   Offset  0: wapi_string_view_t stun_server
- *   Offset  8: wapi_string_view_t turn_server
- *   Offset 16: wapi_string_view_t turn_user
- *   Offset 24: wapi_string_view_t turn_pass
+ * Layout (64 bytes, align 8):
+ *   Offset  0: wapi_string_view_t stun_server  (16 bytes)
+ *   Offset 16: wapi_string_view_t turn_server  (16 bytes)
+ *   Offset 32: wapi_string_view_t turn_user    (16 bytes)
+ *   Offset 48: wapi_string_view_t turn_pass    (16 bytes)
  */
 typedef struct wapi_p2p_config_t {
     wapi_string_view_t stun_server;
@@ -60,10 +60,8 @@ typedef struct wapi_p2p_config_t {
     wapi_string_view_t turn_pass;
 } wapi_p2p_config_t;
 
-#ifdef __wasm__
-_Static_assert(sizeof(wapi_p2p_config_t) == 32,
-               "wapi_p2p_config_t must be 32 bytes on wasm32");
-#endif
+_Static_assert(sizeof(wapi_p2p_config_t) == 64,
+               "wapi_p2p_config_t must be 64 bytes");
 
 /* ============================================================
  * P2P Functions

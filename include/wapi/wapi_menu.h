@@ -34,30 +34,29 @@ extern "C" {
 /**
  * Menu item descriptor.
  *
- * Layout (40 bytes, align 8):
+ * Layout (48 bytes, align 8):
  *   Offset  0: uint32_t     id
- *   Offset  4: uint32_t     label_ptr      (pointer to label string)
- *   Offset  8: uint32_t     label_len
- *   Offset 12: uint32_t     shortcut_ptr   (pointer to shortcut string)
+ *   Offset  4: uint32_t     label_len
+ *   Offset  8: uint64_t     label_ptr      Linear memory address of label string
  *   Offset 16: uint32_t     shortcut_len
- *   Offset 20: uint32_t     icon_ptr       (pointer to icon data)
- *   Offset 24: uint32_t     icon_len
- *   Offset 28: (4 bytes padding)
- *   Offset 32: wapi_flags_t flags
+ *   Offset 20: uint32_t     icon_len
+ *   Offset 24: uint64_t     shortcut_ptr   Linear memory address of shortcut string
+ *   Offset 32: uint64_t     icon_ptr       Linear memory address of icon data
+ *   Offset 40: wapi_flags_t flags
  */
 typedef struct wapi_menu_item_t {
-    uint32_t id;
-    uint32_t label_ptr;
-    uint32_t label_len;
-    uint32_t shortcut_ptr;
-    uint32_t shortcut_len;
-    uint32_t icon_ptr;
-    uint32_t icon_len;
+    uint32_t     id;
+    uint32_t     label_len;
+    uint64_t     label_ptr;
+    uint32_t     shortcut_len;
+    uint32_t     icon_len;
+    uint64_t     shortcut_ptr;
+    uint64_t     icon_ptr;
     wapi_flags_t flags;
 } wapi_menu_item_t;
 
-_Static_assert(sizeof(wapi_menu_item_t) == 40,
-               "wapi_menu_item_t must be 40 bytes");
+_Static_assert(sizeof(wapi_menu_item_t) == 48,
+               "wapi_menu_item_t must be 48 bytes");
 
 /* ============================================================
  * Menu Functions

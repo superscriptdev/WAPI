@@ -37,16 +37,18 @@ extern "C" {
  * Chain onto wapi_surface_desc_t::nextInChain to create a
  * windowed surface.  sType = WAPI_STYPE_WINDOW_CONFIG.
  *
- * Layout (20 bytes on wasm32, align 4):
- *   Offset  0: wapi_chained_struct_t chain
- *   Offset  8: wapi_string_view_t title  Window title (UTF-8, NULL = untitled)
- *   Offset 16: uint32_t window_flags WAPI_WINDOW_FLAG_*
+ * Layout (40 bytes, align 8):
+ *   Offset  0: wapi_chained_struct_t chain   (16 bytes)
+ *   Offset 16: wapi_string_view_t    title   (16 bytes, UTF-8, 0 = untitled)
+ *   Offset 32: uint32_t              window_flags  WAPI_WINDOW_FLAG_*
+ *   Offset 36: uint32_t              _pad
  */
 
 typedef struct wapi_window_config_t {
     wapi_chained_struct_t   chain;
     wapi_string_view_t      title;
     uint32_t                window_flags;
+    uint32_t                _pad;
 } wapi_window_config_t;
 
 /* ============================================================

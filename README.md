@@ -32,13 +32,14 @@ All capabilities use the same query mechanism -- string-based names, Vulkan-styl
 wapi               Capability queries (string-based feature detection)
 wapi_env           Args, environment variables, random, exit
 wapi_memory        Host-provided memory allocation
-wapi_io            Async I/O (submit via vtable, completions as events)
+wapi_io            Async I/O (submit/poll/wait, completions as events)
 wapi_clock         Monotonic and wall clocks, performance counters
 wapi_fs            Capability-based filesystem (pre-opened directories)
 wapi_net           QUIC/WebTransport networking
 wapi_gpu           WebGPU bridge (surface setup; uses webgpu.h directly)
 wapi_surface       Render targets (on-screen and offscreen)
 wapi_window        OS window management (title, fullscreen, minimize)
+wapi_display       Display enumeration, geometry, sub-pixels
 wapi_input         Input devices: mouse, keyboard, touch, pen, gamepad, HID
 wapi_audio         Audio playback and recording streams
 wapi_content       Host-rendered text, images, media
@@ -72,7 +73,7 @@ Presets are convenience arrays of capability name strings that give developers a
 | **Headless** | env, memory, io, clock, fs, net | Servers, CLI tools, edge functions, IoT |
 | **Compute** | Headless + gpu | ML inference, video transcoding, simulations |
 | **Audio** | Headless + audio | VST plugins, audio processing, voice |
-| **Graphical** | Headless + gpu, surface, input, audio, content, clipboard, font | Apps, games, creative tools |
+| **Graphical** | Headless + gpu, surface, window, display, input, audio, content, clipboard, font | Apps, games, creative tools |
 | **Mobile** | Graphical + geolocation, sensors, notifications, biometric, camera, share | Mobile apps |
 
 Check preset support with `wapi_preset_supported(WAPI_PRESET_GRAPHICAL)` -- iterates the string array, returns true if every capability is present.
@@ -87,7 +88,6 @@ wapi/
 │   └── wapi/
 │       ├── wapi.h            # Master header (includes all)
 │       ├── wapi_types.h                 # Core types, handles, errors
-│       ├── wapi_context.h               # Context, allocator, I/O vtable, panic handler
 │       ├── wapi_capability.h            # Capability enumeration (string-based)
 │       ├── wapi_env.h                   # Environment and process
 │       ├── wapi_memory.h                # Memory allocation
@@ -98,6 +98,7 @@ wapi/
 │       ├── wapi_gpu.h                   # GPU (webgpu.h bridge)
 │       ├── wapi_surface.h               # Render targets
 │       ├── wapi_window.h               # OS window management
+│       ├── wapi_display.h              # Display enumeration
 │       ├── wapi_input.h                 # Input devices (unified)
 │       ├── wapi_audio.h                 # Audio
 │       ├── wapi_content.h               # Host-rendered content
@@ -117,7 +118,8 @@ wapi/
 │       ├── wapi_midi.h                  # MIDI input/output
 │       ├── wapi_bluetooth.h             # Bluetooth LE / GATT
 │       ├── wapi_camera.h                # Camera capture
-│       └── wapi_xr.h                    # VR/AR (WebXR, OpenXR)
+│       ├── wapi_xr.h                    # VR/AR (WebXR, OpenXR)
+│       └── wapi_module.h               # Runtime module linking
 ├── runtime/
 │   ├── browser/
 │   │   ├── wapi_shim.js                # JS shim (Web APIs)
@@ -137,9 +139,7 @@ wapi/
 #include <wapi/wapi.h>
 
 WAPI_EXPORT(wapi_main)
-wapi_result_t wapi_main(const wapi_context_t* ctx) {
-    // Host provides: ctx->allocator, ctx->io, ctx->panic, ctx->gpu_device
-
+wapi_result_t wapi_main(void) {
     // Check what the host provides (string-based capability query)
     if (!wapi_preset_supported(WAPI_PRESET_GRAPHICAL)) {
         return WAPI_ERR_NOTCAPABLE;
@@ -152,7 +152,7 @@ wapi_result_t wapi_main(const wapi_context_t* ctx) {
         .window_flags = WAPI_WINDOW_FLAG_RESIZABLE,
     };
     wapi_surface_desc_t desc = {
-        .nextInChain = (wapi_chained_struct_t*)&win,
+        .nextInChain = (uintptr_t)&win,
         .width = 800, .height = 600,
         .flags = WAPI_SURFACE_FLAG_HIGH_DPI,
     };
@@ -171,9 +171,9 @@ wapi_result_t wapi_main(const wapi_context_t* ctx) {
     };
     wapi_gpu_configure_surface(&config);
 
-    // Event loop: input, I/O completions, and timers all come through one vtable
+    // Event loop: input, I/O completions, and timers all come through host imports
     wapi_event_t ev;
-    while (ctx->io->wait(ctx->io->impl, &ev, -1)) {
+    while (wapi_io_wait(&ev, -1)) {
         switch (ev.type) {
         case WAPI_EVENT_IO_COMPLETION:   /* async I/O finished */ break;
         case WAPI_EVENT_KEY_DOWN:        /* keyboard input */     break;
@@ -215,23 +215,27 @@ Opaque pointers (`WGPUDevice*`) work great in native code where the caller and c
 
 ### Why submit + unified event queue, not async/await?
 
-async/await is a language-level concern. The ABI is a calling convention. I/O operations are submitted through a vtable (`ctx->io->submit`) and completions arrive as events in the same queue as input, window, and lifecycle events. One wait point for everything -- a game loop processes key presses and file load completions in the same `switch`. This is how io_uring works (kernel I/O), how webgpu.h works (GPU commands), and how every game loop works (process events, update, render). The module can wrap this in async/await, green threads, or whatever its language prefers.
+async/await is a language-level concern. The ABI is a calling convention. I/O operations are submitted through `wapi_io_submit()` and completions arrive as events in the same queue as input, window, and lifecycle events. One wait point for everything -- a game loop processes key presses and file load completions in the same `switch`. This is how io_uring works (kernel I/O), how webgpu.h works (GPU commands), and how every game loop works (process events, update, render). The module can wrap this in async/await, green threads, or whatever its language prefers.
 
-### Why explicit context (allocator + I/O + panic as vtables)?
+### Why two worlds of module composition?
 
-Modules receive their allocator, I/O interface, and panic handler from the host via `wapi_context_t`, not from global imports. This means a parent module controls how children allocate memory, perform I/O, and report fatal errors. You can pass a throttled I/O, an arena allocator, a mock, or a panic handler that routes to your logging system -- the child doesn't know. The same context struct flows from host to app to shared module, making the dependency graph explicit and testable.
+Build-time linking and runtime linking solve different problems and need different mechanisms:
 
-The context contains only execution substrates -- things that differ per-caller when a module runtime is shared between applications. Memory (allocator), world interaction (I/O vtable), panic reporting, compute (GPU device handle), and flags. Application-level concerns like surfaces, locale, and preferences are function parameters, not context fields.
+**Build-time** (shared memory, one binary): Libraries are linked into a single Wasm module. They share linear memory naturally. Pass pointers, call functions -- this is how shared libraries have worked for 40 years. Allocators and I/O vtables can be passed as explicit function parameters (Zig-style).
 
-### Why errors as values and panics on the context?
+**Runtime** (isolated memory): Each module has its own linear memory. The host mediates all data transfer via buffer mapping (`wapi_module_map`) and allocator handles (`wapi_module_alloc_*`). The parent controls the child's I/O via policy flags. No shared memory opt-in -- if you need shared memory, link at build time.
+
+There is no context struct. I/O, allocation, and panic reporting are host imports. GPU devices come from `wapi_gpu_request_device()`. A module starts with zero state and queries everything through capability imports. This keeps the ABI clean and enables the host to enforce per-module policy.
+
+### Why errors as values and panics as a host import?
 
 Errors are return values (`wapi_result_t`). Every function that can fail returns a negative error code. No exceptions, no traps for recoverable conditions. This is the only error model that works across every language targeting Wasm.
 
-Panics are different -- they represent unrecoverable bugs (assertion failures, unreachable code). When a module panics, it calls the panic handler on its context to record a message, then traps. The handler is provided by whoever created the context: the host for `wapi_main`, the parent for `wapi_module_init`. This means when module M panics while app A called it, the panic message routes to A's handler -- not to some other app sharing the same module runtime. The runtime catches the Wasm trap and converts it to an error return for the parent. Panics never cross module boundaries as traps.
+Panics are different -- they represent unrecoverable bugs (assertion failures, unreachable code). When a module panics, it calls `wapi_panic_report` (a host import) to record a message, then traps. The host knows which module is calling and routes the message to the appropriate handler (stderr, console, parent module). The runtime catches the Wasm trap and converts it to an error return for the parent. Panics never cross module boundaries as traps.
 
 ### Why is logging an I/O opcode?
 
-Logging is I/O -- a message going out to the world. Rather than adding a dedicated logging API, log messages are submitted through the same I/O vtable as everything else (`WAPI_IO_OP_LOG`). This means a parent module that wraps a child's I/O vtable automatically controls the child's logging too -- filtering, routing, prefixing, or suppressing it. No new context fields, no separate logging interface. The host maps it to stderr, `console.log`, or whatever is appropriate for the platform. Fire-and-forget: no completion event, no blocking.
+Logging is I/O -- a message going out to the world. Rather than adding a dedicated logging API, log messages are submitted through the same I/O imports as everything else (`WAPI_IO_OP_LOG`). For runtime modules, the host enforces I/O policy -- a child that only has `WAPI_IO_POLICY_LOG` can log but not access files or network. For build-time libraries, wrapping the I/O vtable controls logging too. The host maps it to stderr, `console.log`, or whatever is appropriate for the platform. Fire-and-forget: no completion event, no blocking.
 
 ### Why include content rendering?
 

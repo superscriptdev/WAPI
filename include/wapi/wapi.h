@@ -145,9 +145,10 @@ typedef uint64_t wapi_flags_t;
  * Non-owning reference to a UTF-8 string in linear memory.
  * Follows the webgpu.h WGPUStringView pattern.
  *
- * Layout (8 bytes, align 4):
- *   Offset 0: uint32_t data   (pointer to UTF-8 bytes)
- *   Offset 4: uint32_t length (byte count, or WAPI_STRLEN for null-terminated)
+ * Layout (16 bytes, align 8):
+ *   Offset  0: uint64_t data   (linear memory address of UTF-8 bytes)
+ *   Offset  8: uint32_t length (byte count, or WAPI_STRLEN for null-terminated)
+ *   Offset 12: uint32_t _pad
  *
  * Semantics:
  *   {NULL, WAPI_STRLEN} = absent / null value (the default)
@@ -158,18 +159,29 @@ typedef uint64_t wapi_flags_t;
 
 #define WAPI_STRLEN ((wapi_size_t)UINT32_MAX)
 
+/**
+ * String view. The data field is uint64_t (not a pointer) so the
+ * layout is identical for wasm32 and wasm64. Wasm32 modules
+ * zero-extend their 32-bit addresses.
+ *
+ * Layout (16 bytes, align 8):
+ *   Offset  0: uint64_t data    (linear memory address of UTF-8 bytes)
+ *   Offset  8: uint32_t length  (byte count, or WAPI_STRLEN for null-terminated)
+ *   Offset 12: uint32_t _pad
+ */
 typedef struct wapi_string_view_t {
-    const char* data;
-    wapi_size_t   length;
+    uint64_t    data;       /* Linear memory address of UTF-8 bytes */
+    wapi_size_t length;
+    uint32_t    _pad;
 } wapi_string_view_t;
 
-#define WAPI_STRING_VIEW_INIT { NULL, WAPI_STRLEN }
+#define WAPI_STRING_VIEW_INIT { 0, WAPI_STRLEN, 0 }
 
 /** Create a string view from a C string literal. */
-#define WAPI_STR(s) ((wapi_string_view_t){ (s), WAPI_STRLEN })
+#define WAPI_STR(s) ((wapi_string_view_t){ (uintptr_t)(s), WAPI_STRLEN, 0 })
 
 /** Create a string view with explicit length. */
-#define WAPI_STRN(s, n) ((wapi_string_view_t){ (s), (n) })
+#define WAPI_STRN(s, n) ((wapi_string_view_t){ (uintptr_t)(s), (n), 0 })
 
 /* ============================================================
  * Chained Struct (Forward Compatibility)
@@ -193,15 +205,23 @@ typedef enum wapi_stype_t {
     WAPI_STYPE_IMAGE_EXTENDED          = 0x0301,
     /* Networking extensions */
     WAPI_STYPE_NET_TLS_CONFIG          = 0x0400,
-    /* Module extensions */
-    WAPI_STYPE_MODULE_SHARED_MEMORY    = 0x0500,
     /* Reserved for future use */
     WAPI_STYPE_FORCE32 = 0x7FFFFFFF
 } wapi_stype_t;
 
+/**
+ * Chained struct header. The next field is uint64_t (linear memory
+ * address) so the layout is identical for wasm32 and wasm64.
+ *
+ * Layout (16 bytes, align 8):
+ *   Offset  0: uint64_t   next   (address of next chained struct, or 0)
+ *   Offset  8: wapi_stype_t sType (struct type tag)
+ *   Offset 12: uint32_t   _pad
+ */
 typedef struct wapi_chained_struct_t {
-    struct wapi_chained_struct_t* next;
-    wapi_stype_t                  sType;
+    uint64_t      next;     /* Linear memory address of next struct, or 0 */
+    wapi_stype_t  sType;
+    uint32_t      _pad;
 } wapi_chained_struct_t;
 
 /* ============================================================
@@ -248,15 +268,15 @@ typedef enum wapi_perm_state_t {
  *
  * Defines the I/O operation descriptor and opcodes for ALL async
  * operations across the entire platform. Operations are submitted
- * through the wapi_io_t vtable (provided in wapi_context_t) and
- * completions arrive as WAPI_EVENT_IO_COMPLETION events in the
- * unified event queue.
+ * via the wapi_io_submit host import (or wapi_io_t vtable for
+ * build-time library composition) and completions arrive as
+ * WAPI_EVENT_IO_COMPLETION events in the unified event queue.
  *
- * The vtable implementation decides sync vs async behavior:
- *   - A sync vtable executes immediately, pushes completion before returning.
- *   - An async vtable queues the operation and completes later.
- *   - A wrapper vtable can log, throttle, mock, or sandbox.
- * The module code is identical in all cases.
+ * The host decides sync vs async behavior:
+ *   - Sync: executes immediately, pushes completion before returning.
+ *   - Async: queues the operation and completes later.
+ * Build-time libraries using the wapi_io_t vtable can wrap, log,
+ * throttle, or mock I/O. The module code is identical in all cases.
  *
  * Field mapping convention for wapi_io_op_t:
  *   fd         Handle (file, device, session, codec, port)
@@ -423,23 +443,28 @@ typedef enum wapi_io_opcode_t {
 /* ============================================================
  * Operation Descriptor
  * ============================================================
- * Fixed-size 64-byte descriptor. The meaning of fields depends
+ * Fixed-size 80-byte descriptor. The meaning of fields depends
  * on the opcode. user_data is echoed back in the completion event.
  *
- * Layout (64 bytes, align 8):
+ * Address fields (addr, addr2, result_ptr) are uint64_t so the
+ * layout is identical for wasm32 and wasm64. Wasm32 modules
+ * zero-extend their 32-bit addresses into 64-bit fields.
+ *
+ * Layout (80 bytes, align 8):
  *   Offset  0: uint32_t opcode
  *   Offset  4: uint32_t flags
  *   Offset  8: int32_t  fd          (file descriptor / handle)
  *   Offset 12: uint32_t _pad0
  *   Offset 16: uint64_t offset      (file offset, or timeout_ns)
- *   Offset 24: uint32_t addr        (pointer to buffer)
- *   Offset 28: uint32_t len         (buffer length)
- *   Offset 32: uint32_t addr2       (pointer to second buffer / path)
- *   Offset 36: uint32_t len2        (second buffer length)
- *   Offset 40: uint64_t user_data   (opaque, echoed in completion)
- *   Offset 48: uint32_t result_ptr  (pointer for output values)
+ *   Offset 24: uint64_t addr        (pointer to buffer)
+ *   Offset 32: uint32_t len         (buffer length)
+ *   Offset 36: uint32_t _pad1
+ *   Offset 40: uint64_t addr2       (pointer to second buffer / path)
+ *   Offset 48: uint32_t len2        (second buffer length)
  *   Offset 52: uint32_t flags2      (operation-specific flags)
- *   Offset 56: uint8_t  reserved[8]
+ *   Offset 56: uint64_t user_data   (opaque, echoed in completion)
+ *   Offset 64: uint64_t result_ptr  (pointer for output values)
+ *   Offset 72: uint8_t  reserved[8]
  */
 
 typedef struct wapi_io_op_t {
@@ -448,17 +473,16 @@ typedef struct wapi_io_op_t {
     int32_t     fd;         /* Handle / file descriptor */
     uint32_t    _pad0;
     uint64_t    offset;     /* File offset or timeout in nanoseconds */
-    uint32_t    addr;       /* Pointer to buffer (as i32 for wasm) */
+    uint64_t    addr;       /* Pointer to buffer */
     uint32_t    len;        /* Buffer length */
-    uint32_t    addr2;      /* Second pointer (path for open, etc.) */
+    uint32_t    _pad1;
+    uint64_t    addr2;      /* Second pointer (path for open, etc.) */
     uint32_t    len2;       /* Second length */
-    uint64_t    user_data;  /* Echoed in completion, for correlation */
-    uint32_t    result_ptr; /* Pointer to write output (bytes read, fd, etc.) */
     uint32_t    flags2;     /* Additional operation-specific flags */
+    uint64_t    user_data;  /* Echoed in completion, for correlation */
+    uint64_t    result_ptr; /* Pointer to write output (bytes read, fd, etc.) */
     uint8_t     reserved[8];
 } wapi_io_op_t;
-
-_Static_assert(sizeof(wapi_io_op_t) == 64, "wapi_io_op_t must be 64 bytes");
 
 /* ################################################################
  * PART 3 — EVENTS
@@ -467,11 +491,11 @@ _Static_assert(sizeof(wapi_io_op_t) == 64, "wapi_io_op_t must be 64 bytes");
  * union for all platform events: input, lifecycle, I/O completions,
  * device changes, drag-and-drop, and more.
  *
- * Event delivery is through the wapi_io_t vtable (ctx->io->poll /
- * ctx->io->wait). There is no separate event system.
+ * Event delivery is through the I/O imports (wapi_io_poll /
+ * wapi_io_wait). There is no separate event system.
  * All events -- whether initiated by the module (I/O completions) or
  * pushed by the host (input, lifecycle) -- arrive through the same
- * poll/wait interface on the I/O vtable.
+ * poll/wait imports (wapi_io_poll / wapi_io_wait).
  * ################################################################ */
 
 /* ============================================================
@@ -735,7 +759,7 @@ typedef enum wapi_gamepad_axis_t {
  * The event union is padded to 128 bytes (matching SDL3).
  */
 
-/** Common event header (12 bytes) */
+/** Common event header (16 bytes, align 8) */
 typedef struct wapi_event_common_t {
     uint32_t    type;        /* wapi_event_type_t */
     uint32_t    surface_id;  /* Surface handle this event belongs to */
@@ -813,6 +837,7 @@ typedef struct wapi_touch_event_t {
     float       dx;           /* Normalized -1..1 */
     float       dy;
     float       pressure;     /* Normalized 0..1 */
+    uint32_t    _pad;
 } wapi_touch_event_t;
 
 /** Gamepad axis event */
@@ -825,6 +850,7 @@ typedef struct wapi_gamepad_axis_event_t {
     uint8_t     _pad[3];
     int16_t     value;       /* -32768 to 32767 */
     uint16_t    _pad2;
+    uint32_t    _pad3;
 } wapi_gamepad_axis_event_t;
 
 /** Gamepad button event */
@@ -862,8 +888,9 @@ typedef struct wapi_drop_event_t {
     uint32_t    type;
     uint32_t    surface_id;
     uint64_t    timestamp;
-    const char* data;        /* File path or text (valid until next poll) */
-    wapi_size_t   data_len;
+    uint64_t    data;        /* Linear memory address of file path or text (valid until next poll) */
+    wapi_size_t data_len;
+    uint32_t    _pad;
 } wapi_drop_event_t;
 
 /** Pen/stylus event */
@@ -882,6 +909,7 @@ typedef struct wapi_pen_event_t {
     float       tilt_y;     /* -90 to 90 degrees */
     float       twist;      /* 0 to 360 degrees */
     float       distance;   /* Distance from surface (0.0 to 1.0) */
+    uint32_t    _pad2;
 } wapi_pen_event_t;
 
 /** Gamepad sensor event */
@@ -892,6 +920,7 @@ typedef struct wapi_gamepad_sensor_event_t {
     uint32_t    gamepad_handle;
     uint32_t    sensor;      /* wapi_gamepad_sensor_t */
     float       data[3];     /* x, y, z */
+    uint32_t    _pad;
 } wapi_gamepad_sensor_event_t;
 
 /** Gamepad touchpad event */
@@ -906,6 +935,7 @@ typedef struct wapi_gamepad_touchpad_event_t {
     float       x;
     float       y;
     float       pressure;
+    uint32_t    _pad2;
 } wapi_gamepad_touchpad_event_t;
 
 /** Gesture event */
@@ -918,6 +948,7 @@ typedef struct wapi_gesture_event_t {
     float       magnitude;   /* Scale for pinch, angle for rotate */
     float       x;
     float       y;
+    uint32_t    _pad2;
 } wapi_gesture_event_t;
 
 /** Display event */
@@ -954,8 +985,9 @@ typedef struct wapi_fwatch_event_t {
     uint64_t    timestamp;
     uint32_t    watch_handle;
     uint32_t    change_type; /* wapi_fwatch_change_t */
-    uint32_t    path_ptr;    /* Pointer to changed path in wasm memory */
     uint32_t    path_len;
+    uint32_t    _pad;
+    uint64_t    path_ptr;    /* Linear memory address of changed path */
 } wapi_fwatch_event_t;
 
 /** Font change event */
@@ -963,8 +995,9 @@ typedef struct wapi_font_event_t {
     uint32_t    type;
     uint32_t    surface_id;
     uint64_t    timestamp;
-    uint32_t    family_ptr;  /* Pointer to family name in wasm memory (UTF-8) */
+    uint64_t    family_ptr;  /* Linear memory address of family name (UTF-8) */
     uint32_t    family_len;
+    uint32_t    _pad;
 } wapi_font_event_t;
 
 /** Menu event */
@@ -1032,25 +1065,27 @@ typedef union wapi_event_t {
     uint8_t                           _padding[128];
 } wapi_event_t;
 
-_Static_assert(sizeof(wapi_event_t) == 128, "wapi_event_t must be 128 bytes");
-
 /* ################################################################
- * PART 4 — CONTEXT
+ * PART 4 — CONTEXT, I/O IMPORTS, AND VTABLE TYPES
  *
- * Every module receives a wapi_context_t from the host (or its parent
- * module) at startup. The context carries an allocator and an I/O
- * vtable -- the module's complete interface to the outside world.
+ * The execution context is minimal: GPU device handle and flags.
+ * I/O and allocation are NOT ambient in context. Instead:
  *
- * Both allocator and I/O are function tables with opaque context
- * pointers. This lets parent modules wrap them -- an app can give
- * a sub-module a throttled I/O or an arena allocator, and the
- * sub-module never knows.
+ *   - Main apps call I/O host imports directly (wapi_io_submit, etc.)
+ *   - Build-time libraries take vtables as explicit parameters
+ *   - Runtime modules use host imports; parent controls via I/O policy
+ *
+ * Vtable types (wapi_allocator_t, wapi_io_t, wapi_panic_handler_t)
+ * are defined here for use by build-time library composition, but
+ * they are NOT part of any context struct.
  * ################################################################ */
 
 /* ============================================================
- * Allocator
+ * Allocator Vtable (Build-Time Library Convention)
  * ============================================================
- * Function table with opaque context pointer.
+ * Function table with opaque context pointer. Used when build-time
+ * linked libraries accept an explicit allocator parameter (Zig-style).
+ * Pass explicitly to functions that need it.
  *
  * The `impl` pointer carries per-instance state (arena position,
  * pool free list, etc.) -- without it, you can't have two different
@@ -1070,16 +1105,15 @@ typedef struct wapi_allocator_t {
 } wapi_allocator_t;
 
 /* ============================================================
- * I/O Vtable
+ * I/O Vtable (Build-Time Library Convention)
  * ============================================================
- * The module's complete interface to the outside world.
- * Submit operations, cancel them, and poll/wait for events.
- * All events (input, I/O completions, lifecycle) come through
- * poll/wait. There is no separate event system.
+ * Function table for I/O operations. Used when build-time linked
+ * libraries accept an explicit I/O parameter. NOT part of
+ * Pass explicitly to functions that need I/O.
  *
- * The host provides a default wapi_io_t whose submit/cancel call
- * host imports. Parent modules can wrap it to control how children
- * perform I/O (logging, throttling, sandboxing, mocking).
+ * Main applications use host imports directly (see wapi_io_submit,
+ * wapi_io_poll, wapi_io_wait below). This vtable is for libraries
+ * that need I/O injection without coupling to host imports.
  *
  * Layout (24 bytes, align 4):
  *   Offset  0: ptr  impl       Opaque implementation context
@@ -1101,19 +1135,13 @@ typedef struct wapi_io_t {
 } wapi_io_t;
 
 /* ============================================================
- * Panic Handler
+ * Panic Handler Vtable (Build-Time Library Convention)
  * ============================================================
- * Called by a module before it traps (unrecoverable error).
- * The handler records the message and returns -- it is NOT
- * noreturn. The module then hits __builtin_trap() which becomes
- * wasm `unreachable`. The runtime catches the trap and has the
- * recorded message available.
+ * Function table for panic reporting. Used when build-time linked
+ * libraries accept an explicit panic handler parameter. NOT part
+ * Pass explicitly to functions that need panic handling.
  *
- * Whoever provides the context provides the panic handler.
- * A parent module controls how child panics are reported --
- * same principle as wrapping the allocator or I/O vtable.
- *
- * NULL panic pointer in context = runtime default (print + trap).
+ * Main applications use the wapi_panic_report host import directly.
  *
  * Layout (8 bytes, align 4):
  *   Offset  0: ptr  impl   Opaque implementation context
@@ -1125,48 +1153,48 @@ typedef struct wapi_panic_handler_t {
 } wapi_panic_handler_t;
 
 /* ============================================================
- * Context Flags
- * ============================================================ */
+ * Direct I/O Host Imports
+ * ============================================================
+ * Main applications call these directly instead of using an I/O
+ * vtable. The host routes operations based on the calling module.
+ * For runtime (isolated) modules, the host enforces the parent's
+ * I/O policy (set via wapi_module_set_io_policy).
+ *
+ * Import module: "wapi_io"
+ */
 
-#define WAPI_CTX_FLAG_DEBUG       0x0001  /* Debug mode: verbose errors, assertions */
-#define WAPI_CTX_FLAG_SHARED_MEM  0x0002  /* Module shares linear memory with parent */
+/** Submit I/O operations. Returns number submitted, or negative on error. */
+WAPI_IMPORT(wapi_io, submit)
+int32_t wapi_io_submit(const wapi_io_op_t* ops, wapi_size_t count);
+
+/** Cancel a pending I/O operation by user_data. */
+WAPI_IMPORT(wapi_io, cancel)
+wapi_result_t wapi_io_cancel(uint64_t user_data);
+
+/** Poll for the next event (non-blocking). Returns 1 if event available. */
+WAPI_IMPORT(wapi_io, poll)
+int32_t wapi_io_poll(wapi_event_t* event);
+
+/** Wait for the next event. timeout_ms=-1 blocks indefinitely. Returns 1 if event available. */
+WAPI_IMPORT(wapi_io, wait)
+int32_t wapi_io_wait(wapi_event_t* event, int32_t timeout_ms);
+
+/** Flush queued events of a given type (0 = all). */
+WAPI_IMPORT(wapi_io, flush)
+void wapi_io_flush(uint32_t event_type);
 
 /* ============================================================
- * Context
+ * Panic Host Import
  * ============================================================
- * Universal execution context passed from host to modules.
+ * Records a panic message with the host before the module traps.
+ * The host knows which module is calling and can route the message
+ * to the appropriate handler (stderr, console.log, parent module).
  *
- * Contains the execution substrates a module needs to run:
- * memory (allocator), world interaction (I/O), panic reporting,
- * and compute/render (GPU device). Everything else is either
- * controllable through vtable wrappers or application-level
- * (surfaces, locale, preferences are function parameters).
- *
- * The host provides this to wapi_main at startup. Modules pass it
- * (or a wrapped version) to sub-modules via wapi_module_init.
- * This is the same struct at both boundaries:
- *   Host -> wapi_main(ctx)
- *   App  -> wapi_module_init(mod, ctx)
- *
- * Layout (20 bytes on wasm32, align 4):
- *   Offset  0: ptr      allocator    Pointer to wapi_allocator_t
- *   Offset  4: ptr      io           Pointer to wapi_io_t
- *   Offset  8: ptr      panic        Pointer to wapi_panic_handler_t (NULL = default)
- *   Offset 12: int32_t  gpu_device   GPU device handle (0 if no GPU)
- *   Offset 16: uint32_t flags        WAPI_CTX_FLAG_* execution flags
+ * Import module: "wapi"
  */
-typedef struct wapi_context_t {
-    const wapi_allocator_t*      allocator;
-    const wapi_io_t*             io;
-    const wapi_panic_handler_t*  panic;
-    wapi_handle_t                gpu_device;
-    uint32_t                     flags;
-} wapi_context_t;
 
-#ifdef __wasm__
-_Static_assert(sizeof(wapi_context_t) == 20,
-               "wapi_context_t must be 20 bytes on wasm32");
-#endif
+WAPI_IMPORT(wapi, panic_report)
+void wapi_panic_report(const char* msg, wapi_size_t msg_len);
 
 /* ============================================================
  * Panic Helper
@@ -1174,14 +1202,11 @@ _Static_assert(sizeof(wapi_context_t) == 20,
 
 /**
  * Report a panic message and trap. Does not return.
- * If ctx->panic is set, the handler is called first to record
- * the message. Then the module traps unconditionally.
+ * Calls the wapi_panic_report host import to record the message,
+ * then traps unconditionally.
  */
-static inline _Noreturn void wapi_panic(const wapi_context_t* ctx,
-                                        const char* msg, wapi_size_t msg_len) {
-    if (ctx->panic) {
-        ctx->panic->fn(ctx->panic->impl, msg, msg_len);
-    }
+static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
+    wapi_panic_report(msg, msg_len);
     __builtin_trap();
 }
 
@@ -1281,18 +1306,18 @@ static const char* const WAPI_PRESET_AUDIO[] = {
 static const char* const WAPI_PRESET_GRAPHICAL[] = {
     "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
     "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
-    "wapi.gpu", "wapi.surface", "wapi.input", "wapi.audio",
-    "wapi.content", "wapi.clipboard", "wapi.thread", "wapi.sync",
-    "wapi.process", "wapi.dialog", NULL
+    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.thread", "wapi.sync", "wapi.process", "wapi.dialog", NULL
 };
 
 static const char* const WAPI_PRESET_MOBILE[] = {
     "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
     "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
-    "wapi.gpu", "wapi.surface", "wapi.input", "wapi.audio",
-    "wapi.content", "wapi.clipboard", "wapi.thread", "wapi.sync",
-    "wapi.geolocation", "wapi.camera", "wapi.notifications",
-    "wapi.sensors", "wapi.biometric", NULL
+    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.thread", "wapi.sync", "wapi.geolocation", "wapi.camera",
+    "wapi.notifications", "wapi.sensors", "wapi.biometric", NULL
 };
 
 /* ============================================================
@@ -1370,7 +1395,7 @@ wapi_result_t wapi_abi_version(wapi_version_t* version);
  * ============================================================
  * Query the current permission state for a capability without
  * triggering a user prompt. To actually request permission,
- * submit WAPI_IO_OP_PERM_REQUEST through the I/O vtable.
+ * submit WAPI_IO_OP_PERM_REQUEST through wapi_io_submit.
  */
 
 /**
@@ -1414,15 +1439,15 @@ static inline wapi_bool_t wapi_preset_supported(const char* const* preset) {
 
 /**
  * Module entry point. Called by the host after instantiation.
- * The host provides a wapi_context_t with allocator, I/O, and
- * any granted device handles. The module should query capabilities
- * and initialize here. Returns WAPI_OK on success, or an error
- * code to abort.
+ * The module queries capabilities and uses host imports directly
+ * (wapi_io_*, wapi_gpu_*, etc.). No context struct needed --
+ * everything is available through imports.
+ * Returns WAPI_OK on success, or a negative error code to abort.
  *
- * Wasm signature: (i32) -> i32
+ * Wasm signature: () -> i32
  * Exported as: "wapi_main"
  */
-/* WAPI_EXPORT(wapi_main) wapi_result_t wapi_main(const wapi_context_t* ctx); */
+/* WAPI_EXPORT(wapi_main) wapi_result_t wapi_main(void); */
 
 /**
  * Called each frame for graphical applications.
@@ -1432,6 +1457,264 @@ static inline wapi_bool_t wapi_preset_supported(const char* const* preset) {
  * Exported as: "wapi_frame"
  */
 /* WAPI_EXPORT(wapi_frame) wapi_result_t wapi_frame(wapi_timestamp_t timestamp); */
+
+/* ################################################################
+ * PART 7 — COMPILE-TIME LAYOUT VERIFICATION
+ *
+ * Every ABI struct is verified with offsetof + sizeof asserts.
+ * This catches: accidentally swapped fields, wrong-sized padding,
+ * implicit padding that an explicit _pad field was supposed to
+ * prevent, and any divergence from the documented byte layout.
+ *
+ * Pointer-containing structs are gated on __wasm__ because
+ * native 64-bit builds have 8-byte pointers (different offsets).
+ * Pointer-free structs are verified on all platforms.
+ * ################################################################ */
+
+/* --- Version (8 bytes, align 2) --- */
+_Static_assert(offsetof(wapi_version_t, major)    == 0, "");
+_Static_assert(offsetof(wapi_version_t, minor)    == 2, "");
+_Static_assert(offsetof(wapi_version_t, patch)    == 4, "");
+_Static_assert(offsetof(wapi_version_t, reserved) == 6, "");
+_Static_assert(sizeof(wapi_version_t) == 8, "wapi_version_t must be 8 bytes");
+
+/* --- Event Union (128 bytes) --- */
+_Static_assert(sizeof(wapi_event_t) == 128, "wapi_event_t must be 128 bytes");
+
+/* --- I/O Operation (64 bytes, align 8) --- */
+_Static_assert(offsetof(wapi_io_op_t, opcode)     ==  0, "");
+_Static_assert(offsetof(wapi_io_op_t, flags)      ==  4, "");
+_Static_assert(offsetof(wapi_io_op_t, fd)         ==  8, "");
+_Static_assert(offsetof(wapi_io_op_t, _pad0)      == 12, "");
+_Static_assert(offsetof(wapi_io_op_t, offset)     == 16, "");
+_Static_assert(offsetof(wapi_io_op_t, addr)       == 24, "");
+_Static_assert(offsetof(wapi_io_op_t, len)        == 32, "");
+_Static_assert(offsetof(wapi_io_op_t, _pad1)      == 36, "");
+_Static_assert(offsetof(wapi_io_op_t, addr2)      == 40, "");
+_Static_assert(offsetof(wapi_io_op_t, len2)       == 48, "");
+_Static_assert(offsetof(wapi_io_op_t, flags2)     == 52, "");
+_Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
+_Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
+_Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
+_Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
+
+/* --- Event Common Header (16 bytes, align 8) --- */
+_Static_assert(offsetof(wapi_event_common_t, type)       == 0, "");
+_Static_assert(offsetof(wapi_event_common_t, surface_id) == 4, "");
+_Static_assert(offsetof(wapi_event_common_t, timestamp)  == 8, "");
+_Static_assert(sizeof(wapi_event_common_t) == 16, "wapi_event_common_t must be 16 bytes");
+
+/* --- Keyboard Event (32 bytes) --- */
+_Static_assert(offsetof(wapi_keyboard_event_t, type)            ==  0, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, surface_id)      ==  4, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, timestamp)       ==  8, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, keyboard_handle) == 16, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, scancode)        == 20, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, keycode)         == 24, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, mod)             == 28, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, down)            == 30, "");
+_Static_assert(offsetof(wapi_keyboard_event_t, repeat)          == 31, "");
+_Static_assert(sizeof(wapi_keyboard_event_t) == 32, "");
+
+/* --- Text Input Event (48 bytes) --- */
+_Static_assert(offsetof(wapi_text_input_event_t, type)       ==  0, "");
+_Static_assert(offsetof(wapi_text_input_event_t, surface_id) ==  4, "");
+_Static_assert(offsetof(wapi_text_input_event_t, timestamp)  ==  8, "");
+_Static_assert(offsetof(wapi_text_input_event_t, text)       == 16, "");
+_Static_assert(sizeof(wapi_text_input_event_t) == 48, "");
+
+/* --- Mouse Motion Event (40 bytes) --- */
+_Static_assert(offsetof(wapi_mouse_motion_event_t, type)         ==  0, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, surface_id)   ==  4, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, timestamp)    ==  8, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, mouse_handle) == 16, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, button_state) == 20, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, x)            == 24, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, y)            == 28, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, xrel)         == 32, "");
+_Static_assert(offsetof(wapi_mouse_motion_event_t, yrel)         == 36, "");
+_Static_assert(sizeof(wapi_mouse_motion_event_t) == 40, "");
+
+/* --- Mouse Button Event (32 bytes) --- */
+_Static_assert(offsetof(wapi_mouse_button_event_t, type)       ==  0, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, surface_id) ==  4, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, timestamp)  ==  8, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, mouse_id)   == 16, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, button)     == 20, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, down)       == 21, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, clicks)     == 22, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, _pad)       == 23, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, x)          == 24, "");
+_Static_assert(offsetof(wapi_mouse_button_event_t, y)          == 28, "");
+_Static_assert(sizeof(wapi_mouse_button_event_t) == 32, "");
+
+/* --- Mouse Wheel Event (32 bytes) --- */
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, type)         ==  0, "");
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, surface_id)   ==  4, "");
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, timestamp)    ==  8, "");
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, mouse_handle) == 16, "");
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, _pad)         == 20, "");
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, x)            == 24, "");
+_Static_assert(offsetof(wapi_mouse_wheel_event_t, y)            == 28, "");
+_Static_assert(sizeof(wapi_mouse_wheel_event_t) == 32, "");
+
+/* --- Touch Event (48 bytes) --- */
+_Static_assert(offsetof(wapi_touch_event_t, type)         ==  0, "");
+_Static_assert(offsetof(wapi_touch_event_t, surface_id)   ==  4, "");
+_Static_assert(offsetof(wapi_touch_event_t, timestamp)    ==  8, "");
+_Static_assert(offsetof(wapi_touch_event_t, touch_handle) == 16, "");
+_Static_assert(offsetof(wapi_touch_event_t, finger_index) == 20, "");
+_Static_assert(offsetof(wapi_touch_event_t, x)            == 24, "");
+_Static_assert(offsetof(wapi_touch_event_t, y)            == 28, "");
+_Static_assert(offsetof(wapi_touch_event_t, dx)           == 32, "");
+_Static_assert(offsetof(wapi_touch_event_t, dy)           == 36, "");
+_Static_assert(offsetof(wapi_touch_event_t, pressure)     == 40, "");
+_Static_assert(sizeof(wapi_touch_event_t) == 48, "");
+
+/* --- Gamepad Axis Event (32 bytes) --- */
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, type)           ==  0, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, surface_id)     ==  4, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, timestamp)      ==  8, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, gamepad_handle) == 16, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, axis)           == 20, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, _pad)           == 21, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, value)          == 24, "");
+_Static_assert(offsetof(wapi_gamepad_axis_event_t, _pad2)          == 26, "");
+_Static_assert(sizeof(wapi_gamepad_axis_event_t) == 32, "");
+
+/* --- Gamepad Button Event (24 bytes) --- */
+_Static_assert(offsetof(wapi_gamepad_button_event_t, type)           ==  0, "");
+_Static_assert(offsetof(wapi_gamepad_button_event_t, surface_id)     ==  4, "");
+_Static_assert(offsetof(wapi_gamepad_button_event_t, timestamp)      ==  8, "");
+_Static_assert(offsetof(wapi_gamepad_button_event_t, gamepad_handle) == 16, "");
+_Static_assert(offsetof(wapi_gamepad_button_event_t, button)         == 20, "");
+_Static_assert(offsetof(wapi_gamepad_button_event_t, down)           == 21, "");
+_Static_assert(offsetof(wapi_gamepad_button_event_t, _pad)           == 22, "");
+_Static_assert(sizeof(wapi_gamepad_button_event_t) == 24, "");
+
+/* --- Device Event (40 bytes) --- */
+_Static_assert(offsetof(wapi_device_event_t, type)          ==  0, "");
+_Static_assert(offsetof(wapi_device_event_t, surface_id)    ==  4, "");
+_Static_assert(offsetof(wapi_device_event_t, timestamp)     ==  8, "");
+_Static_assert(offsetof(wapi_device_event_t, device_type)   == 16, "");
+_Static_assert(offsetof(wapi_device_event_t, device_handle) == 20, "");
+_Static_assert(offsetof(wapi_device_event_t, uid)           == 24, "");
+_Static_assert(sizeof(wapi_device_event_t) == 40, "");
+
+/* --- Surface Event (24 bytes) --- */
+_Static_assert(offsetof(wapi_surface_event_t, type)       ==  0, "");
+_Static_assert(offsetof(wapi_surface_event_t, surface_id) ==  4, "");
+_Static_assert(offsetof(wapi_surface_event_t, timestamp)  ==  8, "");
+_Static_assert(offsetof(wapi_surface_event_t, data1)      == 16, "");
+_Static_assert(offsetof(wapi_surface_event_t, data2)      == 20, "");
+_Static_assert(sizeof(wapi_surface_event_t) == 24, "");
+
+/* --- Pen Event (56 bytes) --- */
+_Static_assert(offsetof(wapi_pen_event_t, type)       ==  0, "");
+_Static_assert(offsetof(wapi_pen_event_t, surface_id) ==  4, "");
+_Static_assert(offsetof(wapi_pen_event_t, timestamp)  ==  8, "");
+_Static_assert(offsetof(wapi_pen_event_t, pen_handle) == 16, "");
+_Static_assert(offsetof(wapi_pen_event_t, tool_type)  == 20, "");
+_Static_assert(offsetof(wapi_pen_event_t, button)     == 21, "");
+_Static_assert(offsetof(wapi_pen_event_t, _pad)       == 22, "");
+_Static_assert(offsetof(wapi_pen_event_t, x)          == 24, "");
+_Static_assert(offsetof(wapi_pen_event_t, y)          == 28, "");
+_Static_assert(offsetof(wapi_pen_event_t, pressure)   == 32, "");
+_Static_assert(offsetof(wapi_pen_event_t, tilt_x)     == 36, "");
+_Static_assert(offsetof(wapi_pen_event_t, tilt_y)     == 40, "");
+_Static_assert(offsetof(wapi_pen_event_t, twist)      == 44, "");
+_Static_assert(offsetof(wapi_pen_event_t, distance)   == 48, "");
+_Static_assert(sizeof(wapi_pen_event_t) == 56, "");
+
+/* --- Gamepad Sensor Event (40 bytes) --- */
+_Static_assert(offsetof(wapi_gamepad_sensor_event_t, type)           ==  0, "");
+_Static_assert(offsetof(wapi_gamepad_sensor_event_t, surface_id)     ==  4, "");
+_Static_assert(offsetof(wapi_gamepad_sensor_event_t, timestamp)      ==  8, "");
+_Static_assert(offsetof(wapi_gamepad_sensor_event_t, gamepad_handle) == 16, "");
+_Static_assert(offsetof(wapi_gamepad_sensor_event_t, sensor)         == 20, "");
+_Static_assert(offsetof(wapi_gamepad_sensor_event_t, data)           == 24, "");
+_Static_assert(sizeof(wapi_gamepad_sensor_event_t) == 40, "");
+
+/* --- Gamepad Touchpad Event (40 bytes) --- */
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, type)           ==  0, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, surface_id)     ==  4, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, timestamp)      ==  8, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, gamepad_handle) == 16, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, touchpad)       == 20, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, finger)         == 21, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, _pad)           == 22, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, x)              == 24, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, y)              == 28, "");
+_Static_assert(offsetof(wapi_gamepad_touchpad_event_t, pressure)       == 32, "");
+_Static_assert(sizeof(wapi_gamepad_touchpad_event_t) == 40, "");
+
+/* --- Gesture Event (40 bytes) --- */
+_Static_assert(offsetof(wapi_gesture_event_t, type)         ==  0, "");
+_Static_assert(offsetof(wapi_gesture_event_t, surface_id)   ==  4, "");
+_Static_assert(offsetof(wapi_gesture_event_t, timestamp)    ==  8, "");
+_Static_assert(offsetof(wapi_gesture_event_t, gesture_type) == 16, "");
+_Static_assert(offsetof(wapi_gesture_event_t, _pad)         == 20, "");
+_Static_assert(offsetof(wapi_gesture_event_t, magnitude)    == 24, "");
+_Static_assert(offsetof(wapi_gesture_event_t, x)            == 28, "");
+_Static_assert(offsetof(wapi_gesture_event_t, y)            == 32, "");
+_Static_assert(sizeof(wapi_gesture_event_t) == 40, "");
+
+/* --- I/O Completion Event (32 bytes) --- */
+_Static_assert(offsetof(wapi_io_event_t, type)      ==  0, "");
+_Static_assert(offsetof(wapi_io_event_t, surface_id)==  4, "");
+_Static_assert(offsetof(wapi_io_event_t, timestamp) ==  8, "");
+_Static_assert(offsetof(wapi_io_event_t, result)    == 16, "");
+_Static_assert(offsetof(wapi_io_event_t, flags)     == 20, "");
+_Static_assert(offsetof(wapi_io_event_t, user_data) == 24, "");
+_Static_assert(sizeof(wapi_io_event_t) == 32, "wapi_io_event_t must be 32 bytes");
+
+/* --- Address-containing structs (layout identical on all platforms) --- */
+
+/* String View (16 bytes, align 8) */
+_Static_assert(offsetof(wapi_string_view_t, data)   == 0, "");
+_Static_assert(offsetof(wapi_string_view_t, length) == 8, "");
+_Static_assert(offsetof(wapi_string_view_t, _pad)   == 12, "");
+_Static_assert(sizeof(wapi_string_view_t) == 16, "wapi_string_view_t must be 16 bytes");
+
+/* Chained Struct (16 bytes, align 8) */
+_Static_assert(offsetof(wapi_chained_struct_t, next)  == 0, "");
+_Static_assert(offsetof(wapi_chained_struct_t, sType) == 8, "");
+_Static_assert(offsetof(wapi_chained_struct_t, _pad)  == 12, "");
+_Static_assert(sizeof(wapi_chained_struct_t) == 16, "wapi_chained_struct_t must be 16 bytes");
+
+/* --- Pointer-containing structs (wasm32 only, build-time vtables) --- */
+#ifdef __wasm__
+
+/* Allocator (16 bytes, align 4) */
+_Static_assert(offsetof(wapi_allocator_t, impl)       ==  0, "");
+_Static_assert(offsetof(wapi_allocator_t, alloc_fn)   ==  4, "");
+_Static_assert(offsetof(wapi_allocator_t, free_fn)    ==  8, "");
+_Static_assert(offsetof(wapi_allocator_t, realloc_fn) == 12, "");
+_Static_assert(sizeof(wapi_allocator_t) == 16, "wapi_allocator_t must be 16 bytes");
+
+/* I/O Vtable (24 bytes, align 4) */
+_Static_assert(offsetof(wapi_io_t, impl)   ==  0, "");
+_Static_assert(offsetof(wapi_io_t, submit) ==  4, "");
+_Static_assert(offsetof(wapi_io_t, cancel) ==  8, "");
+_Static_assert(offsetof(wapi_io_t, poll)   == 12, "");
+_Static_assert(offsetof(wapi_io_t, wait)   == 16, "");
+_Static_assert(offsetof(wapi_io_t, flush)  == 20, "");
+_Static_assert(sizeof(wapi_io_t) == 24, "wapi_io_t must be 24 bytes");
+
+/* Panic Handler (8 bytes, align 4) */
+_Static_assert(offsetof(wapi_panic_handler_t, impl) == 0, "");
+_Static_assert(offsetof(wapi_panic_handler_t, fn)   == 4, "");
+_Static_assert(sizeof(wapi_panic_handler_t) == 8, "wapi_panic_handler_t must be 8 bytes");
+
+/* Drop Event (32 bytes) */
+_Static_assert(offsetof(wapi_drop_event_t, type)       ==  0, "");
+_Static_assert(offsetof(wapi_drop_event_t, surface_id) ==  4, "");
+_Static_assert(offsetof(wapi_drop_event_t, timestamp)  ==  8, "");
+_Static_assert(offsetof(wapi_drop_event_t, data)       == 16, "");
+_Static_assert(offsetof(wapi_drop_event_t, data_len)   == 24, "");
+_Static_assert(sizeof(wapi_drop_event_t) == 32, "");
+
+#endif /* __wasm__ */
 
 #ifdef __cplusplus
 }

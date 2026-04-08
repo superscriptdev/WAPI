@@ -40,13 +40,14 @@ extern "C" {
  * ============================================================ */
 
 typedef struct wapi_clipboard_item_t {
-    wapi_string_view_t mime;    /* Offset  0: MIME type string (e.g. "text/plain") */
-    const void*     data;       /* Offset  8: Pointer to data */
-    wapi_size_t     data_len;   /* Offset 12: Data length in bytes */
-} wapi_clipboard_item_t;        /* 16 bytes, align 4 */
+    wapi_string_view_t mime;    /* Offset  0: MIME type string (16 bytes) */
+    uint64_t        data;       /* Offset 16: Linear memory address of data */
+    wapi_size_t     data_len;   /* Offset 24: Data length in bytes */
+    uint32_t        _pad;       /* Offset 28: (alignment padding) */
+} wapi_clipboard_item_t;        /* 32 bytes, align 8 */
 
-_Static_assert(sizeof(wapi_clipboard_item_t) == 16,
-               "wapi_clipboard_item_t must be 16 bytes on wasm32");
+_Static_assert(sizeof(wapi_clipboard_item_t) == 32,
+               "wapi_clipboard_item_t must be 32 bytes");
 
 /* ============================================================
  * Enumerate Available Formats

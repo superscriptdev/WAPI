@@ -35,12 +35,13 @@ extern "C" {
  * Delivered when the app is activated via a registered URL scheme
  * or file type association.
  *
- * Layout (28 bytes, align 8):
+ * Layout (40 bytes, align 8):
  *   Offset  0: uint32_t type
  *   Offset  4: uint32_t surface_id
- *   Offset  8: uint64_t timestamp
- *   Offset 16: wapi_string_view_t url  (URL or file path)
- *   Offset 24: uint32_t _reserved
+ *   Offset  8: uint64_t timestamp              (8 bytes)
+ *   Offset 16: wapi_string_view_t url          (16 bytes, URL or file path)
+ *   Offset 32: uint32_t _reserved
+ *   Offset 36: uint32_t _pad
  */
 typedef struct wapi_open_event_t {
     uint32_t    type;
@@ -48,29 +49,28 @@ typedef struct wapi_open_event_t {
     uint64_t    timestamp;
     wapi_string_view_t url;  /* URL or file path */
     uint32_t    _reserved;
+    uint32_t    _pad;
 } wapi_open_event_t;
 
 /* ============================================================
  * File Type Descriptor
  * ============================================================
  *
- * Layout (32 bytes, align 4):
- *   Offset  0: wapi_string_view_t extension
- *   Offset  8: wapi_string_view_t mime_type
- *   Offset 16: wapi_string_view_t description
- *   Offset 24: wapi_string_view_t icon_path
+ * Layout (64 bytes, align 8):
+ *   Offset  0: wapi_string_view_t extension    (16 bytes)
+ *   Offset 16: wapi_string_view_t mime_type    (16 bytes)
+ *   Offset 32: wapi_string_view_t description  (16 bytes)
+ *   Offset 48: wapi_string_view_t icon_path    (16 bytes)
  */
 typedef struct wapi_filetype_desc_t {
     wapi_string_view_t extension;    /* e.g., ".xyz" */
     wapi_string_view_t mime_type;    /* e.g., "application/x-xyz" */
     wapi_string_view_t description;  /* e.g., "XYZ Document" */
-    wapi_string_view_t icon_path;    /* Optional icon path (NULL for none) */
+    wapi_string_view_t icon_path;    /* Optional icon path (0 for none) */
 } wapi_filetype_desc_t;
 
-#ifdef __wasm__
-_Static_assert(sizeof(wapi_filetype_desc_t) == 32,
-               "wapi_filetype_desc_t must be 32 bytes on wasm32");
-#endif
+_Static_assert(sizeof(wapi_filetype_desc_t) == 64,
+               "wapi_filetype_desc_t must be 64 bytes");
 
 /* ============================================================
  * URL Scheme Registration

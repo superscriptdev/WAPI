@@ -40,26 +40,26 @@ typedef enum wapi_media_action_t {
  * Media Metadata
  * ============================================================
  *
- * Layout (32 bytes on wasm32, align 4):
- *   Offset  0: wapi_string_view_t title
- *   Offset  8: wapi_string_view_t artist
- *   Offset 16: wapi_string_view_t album
- *   Offset 24: ptr      artwork_data   (PNG/JPEG image data)
- *   Offset 28: uint32_t artwork_len
+ * Layout (64 bytes, align 8):
+ *   Offset  0: wapi_string_view_t title       (16 bytes)
+ *   Offset 16: wapi_string_view_t artist      (16 bytes)
+ *   Offset 32: wapi_string_view_t album       (16 bytes)
+ *   Offset 48: uint64_t artwork_data          Linear memory address of PNG/JPEG data
+ *   Offset 56: uint32_t artwork_len
+ *   Offset 60: uint32_t _pad
  */
 
 typedef struct wapi_media_metadata_t {
     wapi_string_view_t title;
     wapi_string_view_t artist;
     wapi_string_view_t album;
-    const void* artwork_data;   /* PNG/JPEG image data */
+    uint64_t    artwork_data;   /* Linear memory address of PNG/JPEG image data */
     wapi_size_t artwork_len;
+    uint32_t    _pad;
 } wapi_media_metadata_t;
 
-#ifdef __wasm__
-_Static_assert(sizeof(wapi_media_metadata_t) == 32,
-               "wapi_media_metadata_t must be 32 bytes on wasm32");
-#endif
+_Static_assert(sizeof(wapi_media_metadata_t) == 64,
+               "wapi_media_metadata_t must be 64 bytes");
 
 /* ============================================================
  * Media Session Functions

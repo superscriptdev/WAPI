@@ -61,7 +61,7 @@ _Static_assert(sizeof(wapi_subpixel_t) == 4, "wapi_subpixel_t must be 4 bytes");
  * Display Info
  * ============================================================
  *
- * Layout (48 bytes, align 4):
+ * Layout (56 bytes, align 8):
  *   Offset  0: uint32_t display_id         Display identifier
  *   Offset  4: int32_t  x                  Display x in global coords
  *   Offset  8: int32_t  y                  Display y in global coords
@@ -69,13 +69,14 @@ _Static_assert(sizeof(wapi_subpixel_t) == 4, "wapi_subpixel_t must be 4 bytes");
  *   Offset 16: int32_t  height             Height in pixels
  *   Offset 20: float    refresh_rate_hz    Refresh rate in Hz
  *   Offset 24: float    scale_factor       DPI scale (e.g. 2.0 for Retina)
- *   Offset 28: wapi_string_view_t name      Display name (UTF-8)
- *   Offset 36: uint8_t  is_primary         1 if primary display
- *   Offset 37: uint8_t  orientation        0=land, 1=port, 2=land-flip, 3=port-flip
- *   Offset 38: uint8_t  subpixel_count     Number of sub-pixels per pixel (0=unknown)
- *   Offset 39: uint8_t  _pad
- *   Offset 40: uint16_t rotation_deg       Physical rotation: 0, 90, 180, 270
- *   Offset 42: uint8_t  _reserved[6]
+ *   Offset 28: uint32_t _pad0              (alignment padding)
+ *   Offset 32: wapi_string_view_t name      Display name (UTF-8, 16 bytes)
+ *   Offset 48: uint8_t  is_primary         1 if primary display
+ *   Offset 49: uint8_t  orientation        0=land, 1=port, 2=land-flip, 3=port-flip
+ *   Offset 50: uint8_t  subpixel_count     Number of sub-pixels per pixel (0=unknown)
+ *   Offset 51: uint8_t  _pad1
+ *   Offset 52: uint16_t rotation_deg       Physical rotation: 0, 90, 180, 270
+ *   Offset 54: uint8_t  _reserved[2]
  */
 
 typedef struct wapi_display_info_t {
@@ -86,17 +87,18 @@ typedef struct wapi_display_info_t {
     int32_t     height;
     float       refresh_rate_hz;
     float       scale_factor;
+    uint32_t    _pad0;
     wapi_string_view_t name;
     uint8_t     is_primary;
     uint8_t     orientation;
     uint8_t     subpixel_count;  /* 0=unknown, typically 3-4 */
-    uint8_t     _pad;
+    uint8_t     _pad1;
     uint16_t    rotation_deg;    /* 0, 90, 180, 270 */
-    uint8_t     _reserved[6];
+    uint8_t     _reserved[2];
 } wapi_display_info_t;
 
-_Static_assert(sizeof(wapi_display_info_t) == 48,
-               "wapi_display_info_t must be 48 bytes");
+_Static_assert(sizeof(wapi_display_info_t) == 56,
+               "wapi_display_info_t must be 56 bytes");
 
 /* ============================================================
  * Display Functions

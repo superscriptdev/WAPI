@@ -48,12 +48,6 @@ uint32_t wapi_bio_available_types(void);
 WAPI_IMPORT(wapi_bio, authenticate)
 wapi_result_t wapi_bio_authenticate(uint32_t type, wapi_string_view_t reason);
 
-/**
- * Check if biometric authentication is available and enrolled.
- */
-WAPI_IMPORT(wapi_bio, can_authenticate)
-wapi_bool_t wapi_bio_can_authenticate(void);
-
 #ifdef __cplusplus
 }
 #endif

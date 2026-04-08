@@ -56,12 +56,12 @@ typedef enum wapi_thread_state_t {
  * by a function table index (Wasm indirect call) or function
  * pointer (native).
  *
- * Layout (24 bytes, align 4):
+ * Layout (32 bytes, align 8):
  *   Offset  0: uint32_t entry_func   Function pointer / table index
  *   Offset  4: uint32_t user_data    Opaque pointer passed to entry
  *   Offset  8: wapi_string_view_t name  Thread name (UTF-8, for debugging)
- *   Offset 16: uint32_t stack_size   Requested stack size (0 = default)
- *   Offset 20: uint32_t priority     wapi_thread_priority_t
+ *   Offset 24: uint32_t stack_size   Requested stack size (0 = default)
+ *   Offset 28: uint32_t priority     wapi_thread_priority_t
  */
 
 typedef struct wapi_thread_desc_t {

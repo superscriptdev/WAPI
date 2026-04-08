@@ -765,6 +765,11 @@ class ThinPlatform {
                 self._dv.setUint16(versionPtr + 6, 0, true);  // reserved
                 return WAPI_OK;
             },
+
+            panic_report(msgPtr, msgLen) {
+                const msg = self._readString(msgPtr, msgLen);
+                console.error(`[WAPI PANIC] ${msg}`);
+            },
         };
 
         // -------------------------------------------------------------------
@@ -872,7 +877,7 @@ class ThinPlatform {
 
         // -------------------------------------------------------------------
         // wapi_io (unified I/O + event delivery)
-        // The complete wapi_io_t vtable: submit, cancel, poll, wait, flush.
+        // Direct host imports: submit, cancel, poll, wait, flush.
         // All events (I/O completions, input, lifecycle) come through poll/wait.
         // -------------------------------------------------------------------
         const WAPI_EVENT_IO_COMPLETION = 0x2000;
@@ -889,7 +894,7 @@ class ThinPlatform {
         }
 
         const wapi_io = {
-            submit(implPtr, opsPtr, count) {
+            submit(opsPtr, count) {
                 self._refreshViews();
                 let submitted = 0;
                 for (let i = 0; i < count; i++) {
@@ -1033,7 +1038,7 @@ class ThinPlatform {
                 return submitted;
             },
 
-            cancel(implPtr, userData) {
+            cancel(userData) {
                 for (const [token, pending] of _ioPending) {
                     if (pending.userData === userData) {
                         if (pending.timeoutId) clearTimeout(pending.timeoutId);
@@ -1045,7 +1050,7 @@ class ThinPlatform {
                 return WAPI_ERR_NOENT;
             },
 
-            poll(implPtr, eventPtr) {
+            poll(eventPtr) {
                 self._pollGamepads();
                 if (self._eventQueue.length === 0) return 0;
                 const ev = self._eventQueue.shift();
@@ -1053,12 +1058,12 @@ class ThinPlatform {
                 return 1;
             },
 
-            wait(implPtr, eventPtr, timeoutMs) {
+            wait(eventPtr, timeoutMs) {
                 // Cannot block in browser; just poll
-                return wapi_io.poll(implPtr, eventPtr);
+                return wapi_io.poll(eventPtr);
             },
 
-            flush(implPtr, eventType) {
+            flush(eventType) {
                 if (eventType === 0) {
                     self._eventQueue.length = 0;
                 } else {
@@ -2387,19 +2392,23 @@ class ThinPlatform {
         };
 
         // -------------------------------------------------------------------
-        // wapi_module (shared module linking - stub)
+        // wapi_module (runtime module linking - stub)
         // -------------------------------------------------------------------
         const wapi_module = {
-            load(importPtr, modulePtr) { return WAPI_ERR_NOTSUP; },
-            init(mod, ctxPtr) { return WAPI_ERR_NOTSUP; },
-            get_func(mod, namePtr, nameLen) { return 0; },
+            load(hashPtr, urlPtr, urlLen, modulePtr) { return WAPI_ERR_NOTSUP; },
+            get_func(mod, namePtr, nameLen, funcPtr) { return WAPI_ERR_NOTSUP; },
             get_desc(mod, descPtr) { return WAPI_ERR_NOTSUP; },
+            get_hash(mod, hashPtr) { return WAPI_ERR_NOTSUP; },
             release(mod) { return WAPI_OK; },
-            lend(ptr, len, leasePtr) { return WAPI_ERR_NOTSUP; },
-            return_lease(lease) { return WAPI_ERR_NOTSUP; },
-            is_lent(ptr, len) { return 0; },
-            is_cached(namePtr, nameLen, major) { return 0; },
-            prefetch(importPtr) { return WAPI_ERR_NOTSUP; },
+            call(mod, func, argsPtr, nargs, resultsPtr, nresults) { return WAPI_ERR_NOTSUP; },
+            map(mod, src, len, flags, childPtrOut) { return WAPI_ERR_NOTSUP; },
+            unmap(mod, childPtr) { return WAPI_ERR_NOTSUP; },
+            alloc_create(mod, allocHandlePtr) { return WAPI_ERR_NOTSUP; },
+            alloc_get(allocHandle, index, ptrOut, lenOut) { return WAPI_ERR_NOTSUP; },
+            alloc_destroy(allocHandle) { return WAPI_ERR_NOTSUP; },
+            set_io_policy(mod, policyFlags) { return WAPI_ERR_NOTSUP; },
+            is_cached(hashPtr) { return 0; },
+            prefetch(hashPtr, urlPtr, urlLen) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -3373,21 +3382,9 @@ class ThinPlatform {
             wasmInstance.exports._initialize();
         }
 
-        // Call wapi_main if exported — pass wapi_context_t pointer
+        // Call wapi_main if exported
         if (wasmInstance.exports.wapi_main) {
-            // Allocate wapi_io_t vtable (24 bytes) + wapi_context_t (20 bytes)
-            // Vtable function pointers are 0 — modules use direct imports as fallback.
-            const ioVtablePtr = this._hostAlloc(24, 4);
-            this._u8.fill(0, ioVtablePtr, ioVtablePtr + 24);
-
-            const ctxPtr = this._hostAlloc(20, 4);
-            // Layout: { allocator*:4, io*:4, panic*:4, gpu_device:4, flags:4 }
-            this._u8.fill(0, ctxPtr, ctxPtr + 20);
-            // ctx->io = pointer to io vtable
-            this._dv.setUint32(ctxPtr + 4, ioVtablePtr, true);
-            // ctx->panic = 0 (NULL = runtime default)
-
-            const result = wasmInstance.exports.wapi_main(ctxPtr);
+            const result = wasmInstance.exports.wapi_main();
             if (result < 0) {
                 throw new Error(`[WAPI] wapi_main returned error: ${result}`);
             }

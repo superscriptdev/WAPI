@@ -34,9 +34,9 @@ extern "C" {
  * Describes a selectable file type filter in the dialog.
  * e.g. { "Images", "*.png;*.jpg;*.gif" }
  *
- * Layout (16 bytes, align 4):
+ * Layout (32 bytes, align 8):
  *   Offset  0: wapi_string_view_t name     Display name ("Images")
- *   Offset  8: wapi_string_view_t pattern  Semicolon-separated globs
+ *   Offset 16: wapi_string_view_t pattern  Semicolon-separated globs
  */
 
 typedef struct wapi_dialog_filter_t {

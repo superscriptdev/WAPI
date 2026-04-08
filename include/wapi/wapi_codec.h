@@ -118,27 +118,28 @@ _Static_assert(sizeof(wapi_audio_codec_config_t) == 24,
  * Encoded Chunk Descriptor
  * ============================================================
  *
- * Layout (32 bytes on wasm32, align 8):
- *   Offset  0: ptr         data         (pointer to encoded data)
- *   Offset  4: uint32_t    data_len
- *   Offset  8: uint64_t    timestamp_us (presentation timestamp, microseconds)
- *   Offset 16: wapi_flags_t flags       (0x1 = keyframe)
- *   Offset 24: uint32_t    _reserved
- *   Offset 28: (4 bytes padding)
+ * Layout (40 bytes, align 8):
+ *   Offset  0: uint64_t    data         Linear memory address of encoded data
+ *   Offset  8: uint32_t    data_len
+ *   Offset 12: uint32_t    _pad0
+ *   Offset 16: uint64_t    timestamp_us (presentation timestamp, microseconds)
+ *   Offset 24: wapi_flags_t flags       (0x1 = keyframe)
+ *   Offset 32: uint32_t    _reserved
+ *   Offset 36: uint32_t    _pad1
  */
 
 typedef struct wapi_codec_chunk_t {
-    const void* data;
+    uint64_t    data;          /* Linear memory address of encoded data */
     wapi_size_t data_len;
+    uint32_t    _pad0;
     uint64_t    timestamp_us;  /* presentation timestamp in microseconds */
     wapi_flags_t flags;        /* 0x1 = keyframe */
     uint32_t    _reserved;
+    uint32_t    _pad1;
 } wapi_codec_chunk_t;
 
-#ifdef __wasm__
-_Static_assert(sizeof(wapi_codec_chunk_t) == 32,
-               "wapi_codec_chunk_t must be 32 bytes on wasm32");
-#endif
+_Static_assert(sizeof(wapi_codec_chunk_t) == 40,
+               "wapi_codec_chunk_t must be 40 bytes");
 
 /* Chunk flags */
 #define WAPI_CODEC_FLAG_KEYFRAME 0x1

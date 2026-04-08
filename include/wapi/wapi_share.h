@@ -3,7 +3,8 @@
  * Version 1.0.0
  *
  * Maps to: Web Share API, UIActivityViewController (iOS),
- *          Android Intents (ACTION_SEND)
+ *          Android Intents (ACTION_SEND), NSSharingServicePicker (macOS),
+ *          DataTransferManager (Windows)
  *
  * Import module: "wapi_share"
  *
@@ -22,11 +23,11 @@ extern "C" {
 /**
  * Share data descriptor.
  *
- * Layout (32 bytes, align 4):
+ * Layout (64 bytes, align 8):
  *   Offset  0: wapi_string_view_t title
- *   Offset  8: wapi_string_view_t text
- *   Offset 16: wapi_string_view_t url
- *   Offset 24: wapi_string_view_t file_path  (NULL for no file)
+ *   Offset 16: wapi_string_view_t text
+ *   Offset 32: wapi_string_view_t url
+ *   Offset 48: wapi_string_view_t file_path  (NULL for no file)
  */
 typedef struct wapi_share_data_t {
     wapi_string_view_t title;
@@ -34,12 +35,6 @@ typedef struct wapi_share_data_t {
     wapi_string_view_t url;
     wapi_string_view_t file_path;
 } wapi_share_data_t;
-
-/**
- * Check if sharing is supported.
- */
-WAPI_IMPORT(wapi_share, can_share)
-wapi_bool_t wapi_share_can_share(void);
 
 /**
  * Invoke the system share sheet.

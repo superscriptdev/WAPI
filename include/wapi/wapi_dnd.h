@@ -45,21 +45,21 @@ typedef enum wapi_dnd_effect_t {
 /**
  * Drag and drop data item.
  *
- * Layout (16 bytes, align 4):
- *   Offset  0: uint32_t type_ptr   (pointer to MIME type string)
- *   Offset  4: uint32_t type_len
- *   Offset  8: uint32_t data_ptr   (pointer to item data)
- *   Offset 12: uint32_t data_len
+ * Layout (24 bytes, align 8):
+ *   Offset  0: uint32_t type_len
+ *   Offset  4: uint32_t data_len
+ *   Offset  8: uint64_t type_ptr   Linear memory address of MIME type string
+ *   Offset 16: uint64_t data_ptr   Linear memory address of item data
  */
 typedef struct wapi_dnd_item_t {
-    uint32_t type_ptr;
     uint32_t type_len;
-    uint32_t data_ptr;
     uint32_t data_len;
+    uint64_t type_ptr;
+    uint64_t data_ptr;
 } wapi_dnd_item_t;
 
-_Static_assert(sizeof(wapi_dnd_item_t) == 16,
-               "wapi_dnd_item_t must be 16 bytes");
+_Static_assert(sizeof(wapi_dnd_item_t) == 24,
+               "wapi_dnd_item_t must be 24 bytes");
 
 /* ============================================================
  * Drag and Drop Functions

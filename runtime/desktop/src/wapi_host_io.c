@@ -1,13 +1,13 @@
 /**
- * WAPI Desktop Runtime - I/O Vtable
+ * WAPI Desktop Runtime - I/O Host Imports
  *
- * Implements ALL host-side functions backing the wapi_io_t vtable:
- * submit, cancel, poll, wait, flush. This is the module's complete
- * interface to the outside world.
+ * Implements the direct I/O host imports: submit, cancel, poll,
+ * wait, flush. These are called by modules directly (not through
+ * a vtable).
  *
- * Operations are submitted via submit(); completions and all other
- * events (input, lifecycle, device changes) are delivered through
- * poll()/wait(). There is no separate event import namespace.
+ * Operations are submitted via wapi_io_submit(); completions and
+ * all other events (input, lifecycle, device changes) are delivered
+ * through wapi_io_poll()/wapi_io_wait().
  */
 
 #include "wapi_host.h"
@@ -125,12 +125,9 @@ static bool io_read_op(uint32_t wasm_ptr,
 /* ============================================================
  * submit(ops_ptr: i32, count: i32) -> i32
  * ============================================================
- * This is the host-side implementation backing the wapi_io_t
- * vtable's submit function. For now, it's also registered as
- * a host import for backward compatibility.
- *
- * Read io_op_t structs from wasm memory. Execute synchronously
- * where possible and push completion events to the event queue.
+ * Direct host import. Read io_op_t structs from wasm memory.
+ * Execute synchronously where possible and push completion
+ * events to the event queue.
  */
 static wasm_trap_t* cb_submit(
     void* env, wasmtime_caller_t* caller,
@@ -138,11 +135,8 @@ static wasm_trap_t* cb_submit(
     wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller;
-    /* Args: impl_ptr (ignored for host default), ops_ptr, count */
-    uint32_t impl_ptr = WAPI_ARG_U32(0);
-    uint32_t ops_ptr  = WAPI_ARG_U32(1);
-    int32_t count     = WAPI_ARG_I32(2);
-    (void)impl_ptr;
+    uint32_t ops_ptr  = WAPI_ARG_U32(0);
+    int32_t count     = WAPI_ARG_I32(1);
 
     if (count <= 0) {
         WAPI_RET_I32(0);
@@ -314,9 +308,7 @@ static wasm_trap_t* cb_cancel(
     wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller;
-    uint32_t impl_ptr  = WAPI_ARG_U32(0);
-    uint64_t user_data = WAPI_ARG_U64(1);
-    (void)impl_ptr;
+    uint64_t user_data = WAPI_ARG_U64(0);
 
     bool found = false;
     for (int q = 4; q < WAPI_MAX_HANDLES; q++) {
@@ -339,7 +331,7 @@ static wasm_trap_t* cb_cancel(
 }
 
 /* ============================================================
- * poll(impl: i32, event_ptr: i32) -> i32
+ * poll(event_ptr: i32) -> i32
  * ============================================================
  * Non-blocking poll for the next event. Returns 1 if an event
  * was written to event_ptr, 0 if no events pending.
@@ -350,9 +342,7 @@ static wasm_trap_t* cb_poll(
     wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller;
-    uint32_t impl_ptr  = WAPI_ARG_U32(0);
-    uint32_t event_ptr = WAPI_ARG_U32(1);
-    (void)impl_ptr;
+    uint32_t event_ptr = WAPI_ARG_U32(0);
 
     /* Check for expired I/O timeouts first */
     wapi_io_check_timeouts();
@@ -371,7 +361,7 @@ static wasm_trap_t* cb_poll(
 }
 
 /* ============================================================
- * wait(impl: i32, event_ptr: i32, timeout_ms: i32) -> i32
+ * wait(event_ptr: i32, timeout_ms: i32) -> i32
  * ============================================================
  * Blocking wait for an event. Returns 1 if an event was written,
  * 0 on timeout. timeout_ms == -1 means wait forever.
@@ -382,10 +372,8 @@ static wasm_trap_t* cb_wait(
     wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller;
-    uint32_t impl_ptr  = WAPI_ARG_U32(0);
-    uint32_t event_ptr = WAPI_ARG_U32(1);
-    int32_t timeout_ms = WAPI_ARG_I32(2);
-    (void)impl_ptr;
+    uint32_t event_ptr = WAPI_ARG_U32(0);
+    int32_t timeout_ms = WAPI_ARG_I32(1);
 
     /* Check I/O timeouts first */
     wapi_io_check_timeouts();
@@ -430,7 +418,7 @@ static wasm_trap_t* cb_wait(
 }
 
 /* ============================================================
- * flush(impl: i32, event_type: i32) -> void
+ * flush(event_type: i32) -> void
  * ============================================================
  * Discard all pending events of a given type (0 = all).
  */
@@ -440,9 +428,7 @@ static wasm_trap_t* cb_flush(
     wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller;
-    uint32_t impl_ptr   = WAPI_ARG_U32(0);
-    uint32_t event_type = WAPI_ARG_U32(1);
-    (void)impl_ptr;
+    uint32_t event_type = WAPI_ARG_U32(0);
     wapi_event_queue_flush(event_type);
     return NULL;
 }
@@ -450,29 +436,27 @@ static wasm_trap_t* cb_flush(
 /* ============================================================
  * Registration
  * ============================================================
- * Register all 5 vtable-backing functions under "wapi_io".
- * These are the host imports that back the default wapi_io_t
- * vtable written into the module's wapi_context_t.
+ * Register all 5 direct I/O host imports under "wapi_io".
  */
 
 /* Forward declaration from wapi_host_input.c */
 extern void wapi_input_process_sdl_event(const SDL_Event* sdl_ev);
 
 void wapi_host_register_io(wasmtime_linker_t* linker) {
-    /* submit: (i32 impl, i32 ops_ptr, i32 count) -> i32 */
-    WAPI_DEFINE_3_1(linker, "wapi_io", "submit", cb_submit);
+    /* submit: (i32 ops_ptr, i32 count) -> i32 */
+    WAPI_DEFINE_2_1(linker, "wapi_io", "submit", cb_submit);
 
-    /* cancel: (i32 impl, i64 user_data) -> i32 */
+    /* cancel: (i64 user_data) -> i32 */
     wapi_linker_define(linker, "wapi_io", "cancel", cb_cancel,
-        2, (wasm_valkind_t[]){WASM_I32, WASM_I64},
+        1, (wasm_valkind_t[]){WASM_I64},
         1, (wasm_valkind_t[]){WASM_I32});
 
-    /* poll: (i32 impl, i32 event_ptr) -> i32 */
-    WAPI_DEFINE_2_1(linker, "wapi_io", "poll", cb_poll);
+    /* poll: (i32 event_ptr) -> i32 */
+    WAPI_DEFINE_1_1(linker, "wapi_io", "poll", cb_poll);
 
-    /* wait: (i32 impl, i32 event_ptr, i32 timeout_ms) -> i32 */
-    WAPI_DEFINE_3_1(linker, "wapi_io", "wait", cb_wait);
+    /* wait: (i32 event_ptr, i32 timeout_ms) -> i32 */
+    WAPI_DEFINE_2_1(linker, "wapi_io", "wait", cb_wait);
 
-    /* flush: (i32 impl, i32 event_type) -> void */
-    WAPI_DEFINE_2_0(linker, "wapi_io", "flush", cb_flush);
+    /* flush: (i32 event_type) -> void */
+    WAPI_DEFINE_1_0(linker, "wapi_io", "flush", cb_flush);
 }

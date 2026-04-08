@@ -42,16 +42,28 @@ typedef enum wapi_plugin_category_t {
  * Plugin Descriptor
  * ============================================================
  * Exported by the plugin module at init time.
+ *
+ * Layout (80 bytes, align 8):
+ *   Offset  0: uint64_t nextInChain              (8 bytes)
+ *   Offset  8: wapi_string_view_t name           (16 bytes)
+ *   Offset 24: wapi_string_view_t vendor         (16 bytes)
+ *   Offset 40: wapi_string_view_t version        (16 bytes)
+ *   Offset 56: uint32_t category
+ *   Offset 60: uint32_t default_input_channels
+ *   Offset 64: uint32_t default_output_channels
+ *   Offset 68: uint32_t _pad
+ *   Offset 72: wapi_flags_t flags                (8 bytes)
  */
 
 typedef struct wapi_plugin_desc_t {
-    wapi_chained_struct_t* nextInChain;
+    uint64_t               nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
     wapi_string_view_t  name;
     wapi_string_view_t  vendor;
     wapi_string_view_t  version;
     uint32_t            category;
     uint32_t            default_input_channels;   /* 0 for instruments */
     uint32_t            default_output_channels;  /* Typically 2 for stereo */
+    uint32_t            _pad;
     wapi_flags_t        flags;
 } wapi_plugin_desc_t;
 
@@ -71,8 +83,19 @@ typedef enum wapi_param_type_t {
     WAPI_PARAM_FORCE32   = 0x7FFFFFFF
 } wapi_param_type_t;
 
+/* Layout (48 bytes, align 8):
+ *   Offset  0: uint32_t id
+ *   Offset  4: uint32_t _pad
+ *   Offset  8: wapi_string_view_t name   (16 bytes)
+ *   Offset 24: uint32_t type
+ *   Offset 28: float default_value
+ *   Offset 32: float min_value
+ *   Offset 36: float max_value
+ *   Offset 40: wapi_flags_t flags        (8 bytes)
+ */
 typedef struct wapi_param_info_t {
     uint32_t            id;
+    uint32_t            _pad;
     wapi_string_view_t  name;
     uint32_t            type;          /* wapi_param_type_t */
     float               default_value; /* Normalized 0.0-1.0 */

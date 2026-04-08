@@ -18,7 +18,7 @@
 8. [Async I/O Model](#8-async-io-model)
 9. [Module Entry Points](#9-module-entry-points)
 10. [Presets](#10-presets)
-11. [Shared Module Linking](#11-shared-module-linking)
+11. [Module Linking](#11-module-linking)
 12. [Browser Integration](#12-browser-integration)
 13. [Complete Function Reference](#13-complete-function-reference)
 
@@ -41,7 +41,7 @@ The ABI is a **C-style calling convention document**. Wasm modules import functi
 
 ### 1.2 Non-Goals
 
-- **Runtime identification.** The ABI provides no function to query what operating system, browser, or device the module is running on. Modules detect features, not platforms.
+- **Runtime identification as the primary mechanism.** Modules should detect features via capabilities, not branch on platform strings. However, `wapi_env_host_get` provides an escape hatch for the ~10% of cases where platform knowledge is genuinely needed (workarounds, analytics, platform-appropriate UI). Prefer capability queries; use host info as a last resort.
 - **Backward-compatible evolution of individual function signatures.** Functions are versioned at the module level. When a function signature must change, a new version of the capability module is introduced.
 - **Replacing webgpu.h.** GPU operations use the standard `webgpu.h` API from the webgpu-native project. The WAPI provides only the bridge between its handle/surface model and the WebGPU API.
 
@@ -72,7 +72,7 @@ This separation means the ABI itself contains no shader languages, no pipeline s
 
 ### 2.3 Shared Dependencies, Not Bundled Duplicates
 
-Modules declare imports by namespace and version. The runtime resolves shared modules from a cache, deduplicating common dependencies (e.g., libc, image decoders, math libraries). This is described in detail in [Section 11: Shared Module Linking](#11-shared-module-linking).
+Modules can be loaded at runtime by content hash, with the runtime caching and deduplicating common dependencies (e.g., image decoders, math libraries). Build-time linking bundles dependencies into a single binary. Runtime linking keeps modules isolated with host-mediated data transfer. This is described in detail in [Section 11: Module Linking](#11-module-linking).
 
 ---
 
@@ -95,13 +95,29 @@ No other types cross the ABI boundary. Structs, strings, and arrays are passed b
 
 All pointers are `i32` values in wasm32. They reference byte offsets into the module's linear memory. The host reads and writes the module's linear memory directly to exchange structured data.
 
+### 3.2.1 Memory64 (wasm64)
+
+**Design principle: one struct layout for both wasm32 and wasm64.** All address/pointer fields in ABI structs are `uint64_t`, regardless of pointer width. Wasm32 modules zero-extend their 32-bit addresses into 64-bit fields. This costs a few extra bytes per struct in wasm32 but eliminates the need for two ABI profiles, two sets of struct layouts, and two code paths in every host implementation.
+
+This applies to:
+- Address fields in `wapi_io_op_t` (`addr`, `addr2`, `result_ptr`)
+- Pointer fields in `wapi_string_view_t` (`data`)
+- Chain pointers in `wapi_chained_struct_t` (`next`)
+- Any other struct field that holds a linear memory address
+
+Fields that are NOT addresses -- handles (`int32_t`), sizes (`uint32_t`), enums, flags -- remain their natural width.
+
+**Cross-width module linking** is supported for runtime (isolated) modules. The module-to-module boundary is handle-based -- function handles (`i32`), buffer mappings, and Wasm value types. None of these depend on pointer width. The host adapts import signatures to each module's memory type independently. A wasm64 application can load a wasm32 library (or vice versa) in isolated mode with no special handling.
+
+**Build-time shared linear memory** requires matching pointer width. Two modules linked into the same binary must both be wasm32 or both be wasm64. This is enforced at link time.
+
 ### 3.3 Return Codes
 
 All fallible functions return `wapi_result_t` (an `i32`):
 
 - `0` (`WAPI_OK`): success.
 - Negative values: error codes (see [Section 5: Error Handling](#5-error-handling)).
-- Positive values: used by some functions to return counts (e.g., `ctx->io->submit` returns the number of operations submitted).
+- Positive values: used by some functions to return counts (e.g., `wapi_io_submit` returns the number of operations submitted).
 
 ### 3.4 Output Values
 
@@ -127,12 +143,13 @@ The C-level type is `wapi_string_view_t`:
 
 ```c
 typedef struct wapi_string_view_t {
-    const char* data;    /* Offset 0: pointer to UTF-8 bytes (i32) */
-    wapi_size_t   length;  /* Offset 4: byte count (i32)             */
+    uint64_t    data;    /* Offset 0: linear memory address of UTF-8 bytes */
+    uint32_t    length;  /* Offset 8: byte count                           */
+    uint32_t    _pad;    /* Offset 12: padding                             */
 } wapi_string_view_t;
 ```
 
-**Layout:** 8 bytes, alignment 4.
+**Layout:** 16 bytes, alignment 8. The `data` field is `uint64_t` (not a pointer) so the layout is identical for wasm32 and wasm64. Wasm32 modules zero-extend their 32-bit addresses.
 
 **Sentinel value:** When `length` equals `WAPI_STRLEN` (`UINT32_MAX`), the string is null-terminated and the host reads until the first `0x00` byte.
 
@@ -264,8 +281,8 @@ The message is valid until the next WAPI API call on the same thread.
 ### 5.5 Language Bindings
 
 Language bindings are expected to wrap `wapi_result_t` into native error types:
-- **Rust:** `Result<T, TpError>`
-- **Zig:** `error.TpError` via error unions
+- **Rust:** `Result<T, WapiError>`
+- **Zig:** `error.WapiError` via error unions
 - **Go:** `error` interface
 - **C++:** optional exception wrappers or `std::expected`
 
@@ -321,9 +338,10 @@ Descriptor structs that may need future extension use the **chained struct** pat
 
 ```c
 typedef struct wapi_chained_struct_t {
-    struct wapi_chained_struct_t* next;   /* Offset 0, 4 bytes (pointer) */
-    wapi_stype_t                  sType;  /* Offset 4, 4 bytes (struct type tag) */
-} wapi_chained_struct_t;                  /* Total: 8 bytes, align 4 */
+    uint64_t      next;    /* Offset 0, 8 bytes (linear memory address, or 0) */
+    wapi_stype_t  sType;   /* Offset 8, 4 bytes (struct type tag) */
+    uint32_t      _pad;    /* Offset 12, 4 bytes */
+} wapi_chained_struct_t;   /* Total: 16 bytes, align 8 */
 ```
 
 Descriptor structs that support chaining have `wapi_chained_struct_t* nextInChain` as their first field. Extension structs embed `wapi_chained_struct_t` as their first field with an `sType` tag identifying the extension type.
@@ -335,28 +353,44 @@ The host walks the chain, processing known `sType` values and ignoring unknown o
 | Constant                          | Value    | Description                     |
 |-----------------------------------|----------|---------------------------------|
 | `WAPI_STYPE_INVALID`               | `0x0000` | Invalid / no type               |
-| `WAPI_STYPE_SURFACE_DESC_FULLSCREEN` | `0x0001` | Fullscreen surface extension  |
-| `WAPI_STYPE_SURFACE_DESC_RESIZABLE`  | `0x0002` | Resizable surface extension   |
+| `WAPI_STYPE_WINDOW_CONFIG`             | `0x0001` | Window configuration (chained onto surface desc) |
+| `WAPI_STYPE_SURFACE_DESC_FULLSCREEN` | `0x0002` | Fullscreen surface extension  |
+| `WAPI_STYPE_SURFACE_DESC_RESIZABLE`  | `0x0003` | Resizable surface extension   |
 | `WAPI_STYPE_GPU_SURFACE_CONFIG`      | `0x0100` | GPU surface configuration     |
 | `WAPI_STYPE_AUDIO_SPATIAL_CONFIG`    | `0x0200` | Spatial audio configuration   |
 | `WAPI_STYPE_TEXT_STYLE_INLINE`       | `0x0300` | Inline text style extension   |
 
 ### 6.6 Compile-Time Verification
 
-All struct sizes are verified at compile time using `_Static_assert`:
+All struct sizes AND field offsets are verified at compile time using `_Static_assert` with both `sizeof` and `offsetof`. Size-only assertions catch total-size drift but not internal layout bugs (swapped fields, wrong-sized padding that silently introduces implicit padding elsewhere). The `offsetof` assertions catch these.
+
+Every ABI struct must have:
+1. An `offsetof` assertion for **every field** (including `_pad` / `_reserved` fields).
+2. A `sizeof` assertion for the total struct size.
 
 ```c
-_Static_assert(sizeof(wapi_io_op_t) == 64, "wapi_io_op_t must be 64 bytes");
-_Static_assert(sizeof(wapi_io_event_t) == 32, "wapi_io_event_t must be 32 bytes");
-_Static_assert(sizeof(wapi_allocator_t) == 16, "wapi_allocator_t must be 16 bytes");
-_Static_assert(sizeof(wapi_io_t) == 24, "wapi_io_t must be 24 bytes");
-_Static_assert(sizeof(wapi_panic_handler_t) == 8, "wapi_panic_handler_t must be 8 bytes");
-_Static_assert(sizeof(wapi_context_t) == 20, "wapi_context_t must be 20 bytes");
-_Static_assert(sizeof(wapi_filestat_t) == 56, "wapi_filestat_t must be 56 bytes");
-_Static_assert(sizeof(wapi_dirent_t) == 24, "wapi_dirent_t must be 24 bytes");
-_Static_assert(sizeof(wapi_audio_spec_t) == 12, "wapi_audio_spec_t must be 12 bytes");
-_Static_assert(sizeof(wapi_event_t) == 128, "wapi_event_t must be 128 bytes");
+/* Example: wapi_io_op_t (80 bytes, align 8) */
+_Static_assert(offsetof(wapi_io_op_t, opcode)     ==  0, "");
+_Static_assert(offsetof(wapi_io_op_t, flags)      ==  4, "");
+_Static_assert(offsetof(wapi_io_op_t, fd)         ==  8, "");
+_Static_assert(offsetof(wapi_io_op_t, _pad0)      == 12, "");
+_Static_assert(offsetof(wapi_io_op_t, offset)     == 16, "");
+_Static_assert(offsetof(wapi_io_op_t, addr)       == 24, "");
+_Static_assert(offsetof(wapi_io_op_t, len)        == 32, "");
+_Static_assert(offsetof(wapi_io_op_t, _pad1)      == 36, "");
+_Static_assert(offsetof(wapi_io_op_t, addr2)      == 40, "");
+_Static_assert(offsetof(wapi_io_op_t, len2)       == 48, "");
+_Static_assert(offsetof(wapi_io_op_t, flags2)     == 52, "");
+_Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
+_Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
+_Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
+_Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
+
 ```
+
+Address fields in ABI structs are `uint64_t` regardless of pointer width, so the layout is identical for wasm32 and wasm64 (see [Section 3.2.1](#321-memory64-wasm64)). Structs that embed C pointers (like `wapi_string_view_t`, `wapi_chained_struct_t`) use `uint64_t` for the address component, making their layout platform-independent. Assertions verify on all platforms.
+
+The complete set of assertions is in `wapi.h` Part 7 and in each capability module header.
 
 ---
 
@@ -369,12 +403,14 @@ Each capability module defines a Wasm import namespace. A module's `.wasm` binar
 | `wapi`               | `wapi_capability.h`      | Capability queries, ABI version                |
 | `wapi_env`           | `wapi_env.h`             | Arguments, environment variables, random, exit |
 | `wapi_memory`        | `wapi_memory.h`          | Host-provided memory allocation                |
-| `wapi_io`            | `wapi_io.h`              | I/O vtable (submit/cancel/poll/wait/flush)     |
+| `wapi_io`            | `wapi_io.h`              | Async I/O (submit/cancel/poll/wait/flush)      |
 | `wapi_clock`         | `wapi_clock.h`           | Monotonic and wall clocks, performance counter |
 | `wapi_fs`            | `wapi_fs.h`              | Capability-based filesystem                    |
 | `wapi_net`           | `wapi_net.h`             | QUIC/WebTransport networking                   |
 | `wapi_gpu`           | `wapi_gpu.h`             | WebGPU bridge (device, surface, proc table)    |
-| `wapi_surface`       | `wapi_surface.h`         | Windowing / display surfaces                   |
+| `wapi_surface`       | `wapi_surface.h`         | Render targets (on-screen and offscreen)       |
+| `wapi_window`        | `wapi_window.h`          | OS window management (title, fullscreen, etc.) |
+| `wapi_display`       | `wapi_display.h`         | Display enumeration, geometry, sub-pixels      |
 | `wapi_input`         | `wapi_input.h`           | Input events (keyboard, mouse, touch, gamepad) |
 | `wapi_audio`         | `wapi_audio.h`           | Audio playback and recording                   |
 | `wapi_content`       | `wapi_content.h`         | Host-rendered text, images, media              |
@@ -395,6 +431,7 @@ Each capability module defines a Wasm import namespace. A module's `.wasm` binar
 | `wapi_bluetooth`     | `wapi_bluetooth.h`       | Bluetooth device access                        |
 | `wapi_camera`        | `wapi_camera.h`          | Camera capture                                 |
 | `wapi_xr`            | `wapi_xr.h`              | VR/AR (WebXR, OpenXR)                          |
+| `wapi_module`        | `wapi_module.h`          | Runtime module loading, cross-module calls     |
 
 ### 7.1 Import Annotation
 
@@ -422,26 +459,34 @@ This produces Wasm imports of the form:
 
 ### 8.1 Design
 
-The WAPI uses a **submit + unified event queue** async I/O model inspired by Linux's `io_uring`. All asynchronous operations -- file reads, network sends, audio buffer fills, timer waits -- are submitted through a function table (vtable). Completions arrive as events in the same unified event queue as input, window, and lifecycle events.
+The WAPI uses a **submit + unified event queue** async I/O model inspired by Linux's `io_uring`. All asynchronous operations -- file reads, network sends, audio buffer fills, timer waits -- are submitted through host imports. Completions arrive as events in the same unified event queue as input, window, and lifecycle events.
 
-There is no `async`/`await`. There are no colored functions. There are no new types for futures or promises. The module submits operation descriptors via `ctx->io->submit()`, does other work, and then polls or waits for completion events via `ctx->io->poll()` / `ctx->io->wait()`.
+There is no `async`/`await`. There are no colored functions. There are no new types for futures or promises. The module submits operation descriptors via `wapi_io_submit()`, does other work, and then polls or waits for completion events via `wapi_io_poll()` / `wapi_io_wait()`.
 
-### 8.2 I/O Function Table (`wapi_io_t`)
+### 8.2 I/O Host Imports
 
-Defined in `wapi_context.h`. I/O is accessed through a function table with an opaque context pointer:
+I/O is accessed through direct host imports in the `wapi_io` namespace:
 
 ```c
-typedef struct wapi_io_t {
-    void*         impl;     // Opaque context pointer
-    int32_t       (*submit)(void* impl, const wapi_io_op_t* ops, wapi_size_t count);
-    wapi_result_t (*cancel)(void* impl, uint64_t user_data);
-    int32_t       (*poll)(void* impl, wapi_event_t* event);
-    int32_t       (*wait)(void* impl, wapi_event_t* event, int32_t timeout_ms);
-    void          (*flush)(void* impl, uint32_t event_type);
-} wapi_io_t;  // 24 bytes, align 4
+WAPI_IMPORT(wapi_io, submit)
+int32_t wapi_io_submit(const wapi_io_op_t* ops, wapi_size_t count);
+
+WAPI_IMPORT(wapi_io, cancel)
+wapi_result_t wapi_io_cancel(uint64_t user_data);
+
+WAPI_IMPORT(wapi_io, poll)
+int32_t wapi_io_poll(wapi_event_t* event);
+
+WAPI_IMPORT(wapi_io, wait)
+int32_t wapi_io_wait(wapi_event_t* event, int32_t timeout_ms);
+
+WAPI_IMPORT(wapi_io, flush)
+void wapi_io_flush(uint32_t event_type);
 ```
 
-The host provides a default `wapi_io_t` in the `wapi_context_t` passed to `wapi_main`. All events -- I/O completions, input, lifecycle -- are delivered through `poll`/`wait`. Parent modules can wrap the vtable to add logging, throttling, sandboxing, or mocking:
+All events -- I/O completions, input, lifecycle -- are delivered through `poll`/`wait`. The host knows which module is calling and routes accordingly. For runtime (isolated) modules, the host enforces the parent's I/O policy (set via `wapi_module_set_io_policy`).
+
+A `wapi_io_t` vtable type is also defined for build-time library composition -- libraries can accept an explicit I/O parameter to enable wrapping, mocking, or throttling:
 
 ```c
 static int32_t logging_submit(void* impl, const wapi_io_op_t* ops, wapi_size_t count) {
@@ -453,10 +498,10 @@ static int32_t logging_submit(void* impl, const wapi_io_op_t* ops, wapi_size_t c
 
 ### 8.3 Operation Descriptor (`wapi_io_op_t`)
 
-Each operation is described by a fixed-size **64-byte descriptor**:
+Each operation is described by a fixed-size **80-byte descriptor**. Address fields are `uint64_t` so the layout is identical for wasm32 and wasm64 (wasm32 modules zero-extend their 32-bit addresses):
 
 ```
-Byte Layout (64 bytes, alignment 8):
+Byte Layout (80 bytes, alignment 8):
 
 Offset  Size  Type      Field        Description
 ------  ----  --------  -----------  -----------------------------------
@@ -465,14 +510,15 @@ Offset  Size  Type      Field        Description
  8       4    int32_t   fd           Handle / file descriptor
 12       4    uint32_t  _pad0        Padding (must be zero)
 16       8    uint64_t  offset       File offset or timeout (nanoseconds)
-24       4    uint32_t  addr         Pointer to buffer (i32)
-28       4    uint32_t  len          Buffer length
-32       4    uint32_t  addr2        Second pointer (path, etc.)
-36       4    uint32_t  len2         Second length
-40       8    uint64_t  user_data    Opaque, echoed in completion event
-48       4    uint32_t  result_ptr   Pointer for output values
+24       8    uint64_t  addr         Pointer to buffer
+32       4    uint32_t  len          Buffer length
+36       4    uint32_t  _pad1        Padding (must be zero)
+40       8    uint64_t  addr2        Second pointer (path, etc.)
+48       4    uint32_t  len2         Second length
 52       4    uint32_t  flags2       Additional operation-specific flags
-56       8    uint8_t[] reserved     Reserved (must be zero)
+56       8    uint64_t  user_data    Opaque, echoed in completion event
+64       8    uint64_t  result_ptr   Pointer for output values
+72       8    uint8_t[] reserved     Reserved (must be zero)
 ```
 
 ### 8.4 Operation Codes
@@ -531,25 +577,25 @@ Offset  Size  Type      Field        Description
 
 ### 8.6 Submit and Cancel
 
-Operations are submitted through the I/O vtable provided in the context:
+Operations are submitted through the `wapi_io` host imports:
 
 ```c
 /* Submit a batch of operations. Returns count submitted, or negative error.
  * Completions arrive as WAPI_EVENT_IO_COMPLETION events. */
-int32_t count = ctx->io->submit(ctx->io->impl, ops, n);
+int32_t count = wapi_io_submit(ops, n);
 
 /* Cancel a pending operation by user_data. */
-wapi_result_t result = ctx->io->cancel(ctx->io->impl, user_data);
+wapi_result_t result = wapi_io_cancel(user_data);
 ```
 
-There are no separate `poll` or `wait` functions for I/O. All completions flow through the unified event queue via `ctx->io->poll()` and `ctx->io->wait()`.
+There is no separate I/O completion queue. All completions flow through the unified event queue via `wapi_io_poll()` and `wapi_io_wait()`, alongside input, window, and lifecycle events.
 
 ### 8.7 Usage Patterns
 
 The same API supports fundamentally different application architectures:
 
 - **Game loop:** Submit asset loads, render a frame, poll events at the end of the frame — I/O completions and input arrive in the same queue.
-- **CLI tool:** Submit a file read, call `ctx->io->wait()` to block until the I/O completion event arrives.
+- **CLI tool:** Submit a file read, call `wapi_io_wait()` to block until the I/O completion event arrives.
 - **Audio processor:** Poll events every audio callback cycle for completed buffer fills.
 - **Server:** Submit accepts and receives, wait for completion events in a loop.
 
@@ -560,52 +606,42 @@ The same API supports fundamentally different application architectures:
 ### 9.1 `wapi_main`
 
 ```wat
-(func (export "wapi_main") (param i32) (result i32))
+(func (export "wapi_main") (result i32))
 ```
 
 **C signature:**
 
 ```c
-WAPI_EXPORT(wapi_main) wapi_result_t wapi_main(const wapi_context_t* ctx);
+WAPI_EXPORT(wapi_main) wapi_result_t wapi_main(void);
 ```
 
-Called by the host after module instantiation and memory initialization. The host writes a `wapi_context_t` into linear memory and passes its pointer as the argument:
+Called by the host after module instantiation and memory initialization. There is no context struct -- the module starts with zero state and obtains everything through host imports:
 
-```c
-typedef struct wapi_panic_handler_t {
-    void* impl;                          // Offset 0  (opaque implementation context)
-    void  (*fn)(void* impl, const char* msg, wapi_size_t msg_len);  // Offset 4
-} wapi_panic_handler_t;  // 8 bytes, align 4
+- **Capabilities** via `wapi_capability_supported` or enumerate with `wapi_capability_count` / `wapi_capability_name`.
+- **I/O** via host imports directly: `wapi_io_submit()`, `wapi_io_poll()`, `wapi_io_wait()`.
+- **Allocation** via host imports (`wapi_memory.alloc` etc.) or module-internal allocators.
+- **GPU** via `wapi_gpu_request_device()`.
+- **Panic** via the `wapi_panic_report` host import.
 
-typedef struct wapi_context_t {
-    const wapi_allocator_t*      allocator;   // Offset 0  (host-provided allocator vtable)
-    const wapi_io_t*             io;          // Offset 4  (host-provided I/O vtable)
-    const wapi_panic_handler_t*  panic;       // Offset 8  (panic handler, NULL = default)
-    wapi_handle_t                gpu_device;  // Offset 12 (0 if no GPU)
-    uint32_t                     flags;       // Offset 16 (WAPI_CTX_FLAG_*)
-} wapi_context_t;  // 20 bytes, align 4
-```
+This separation supports two worlds of module composition:
+
+- **Build-time linked libraries** (shared memory, one binary) take allocator/I/O vtables as explicit function parameters -- like Zig's allocator pattern.
+- **Runtime isolated modules** use host imports; the parent controls I/O via `wapi_module_set_io_policy`.
 
 The module should:
 
-1. Store the context pointer for use throughout its lifetime.
-2. Query capabilities via `wapi_capability_supported` or enumerate with `wapi_capability_count` / `wapi_capability_name`.
-3. Use `ctx->allocator` for memory allocation, `ctx->io` for async I/O submission, and `ctx->panic` for unrecoverable error reporting.
-4. For headless applications: perform work and return `WAPI_OK` to exit.
-5. For graphical applications: create surfaces, configure GPU, and return `WAPI_OK` to begin the frame loop.
+1. Query capabilities via `wapi_capability_supported` or enumerate with `wapi_capability_count` / `wapi_capability_name`.
+2. Use `wapi_io_*` imports for I/O, `wapi_memory.*` imports for allocation.
+3. For headless applications: perform work and return `WAPI_OK` to exit.
+4. For graphical applications: create surfaces, request GPU device, and return `WAPI_OK` to begin the frame loop.
 
-The same `wapi_context_t` struct is used when passing context from an application to a shared module via `wapi_module_init`. A parent module may wrap the allocator, I/O vtable, or panic handler to control how children allocate memory, perform I/O, and report unrecoverable errors.
+**Panic reporting:** When a module encounters an unrecoverable error, it calls the `wapi_panic_report` host import to record the message, then traps. The import is NOT noreturn — it records and returns; the module then hits `__builtin_trap()` (`unreachable` in wasm). The host knows which module is calling and can route the message to stderr, console, or the parent's handler.
 
-**Panic handler:** The `panic` field points to a `wapi_panic_handler_t` (or NULL for the runtime default). When a module encounters an unrecoverable error, it calls the panic handler to record the message, then traps. The handler is NOT noreturn — it records and returns; the module then hits `__builtin_trap()` (`unreachable` in wasm). The runtime catches the trap and has the recorded message available.
-
-When a parent module calls a child via `wapi_module_get_func` and the child traps, the runtime catches the trap and returns an error to the parent (not a trap). The child module is faulted and should be released. Because the parent provides the panic handler via the context, the panic message routes to the correct caller — even when the module runtime is shared between multiple applications.
+When a parent module calls a child via `wapi_module_call` and the child traps, the runtime catches the trap and returns an error to the parent (not a trap). The child module is faulted and should be released.
 
 ```c
-static inline _Noreturn void wapi_panic(const wapi_context_t* ctx,
-                                        const char* msg, wapi_size_t msg_len) {
-    if (ctx->panic) {
-        ctx->panic->fn(ctx->panic->impl, msg, msg_len);
-    }
+static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
+    wapi_panic_report(msg, msg_len);
     __builtin_trap();
 }
 ```
@@ -628,7 +664,7 @@ Called each frame for graphical applications. The host calls this at the display
 
 The module should:
 
-1. Poll events via `ctx->io->poll()` (input, I/O completions, lifecycle).
+1. Poll events via `wapi_io_poll()` (input, I/O completions, lifecycle).
 2. Update application state.
 3. Render via WebGPU.
 4. Return `WAPI_OK` to continue, or `WAPI_ERR_CANCELED` to request exit.
@@ -687,12 +723,14 @@ The following capability names are defined by the spec. Hosts report support for
 |------------------------|--------------------|------------------------------------------------|
 | `wapi.env`               | `wapi_env`           | Arguments, environment variables, random, exit |
 | `wapi.memory`            | `wapi_memory`        | Host-provided memory allocation                |
-| `wapi.io`                | `wapi_io`            | I/O vtable (submit/cancel/poll/wait/flush)     |
+| `wapi.io`                | `wapi_io`            | Async I/O (submit/cancel/poll/wait/flush)      |
 | `wapi.clock`             | `wapi_clock`         | Monotonic and wall clocks, performance counter |
 | `wapi.fs`                | `wapi_fs`            | Capability-based filesystem                    |
 | `wapi.net`               | `wapi_net`           | QUIC/WebTransport networking                   |
 | `wapi.gpu`               | `wapi_gpu`           | WebGPU bridge (device, surface, proc table)    |
-| `wapi.surface`           | `wapi_surface`       | Windowing / display surfaces                   |
+| `wapi.surface`           | `wapi_surface`       | Render targets (on-screen and offscreen)       |
+| `wapi.window`            | `wapi_window`        | OS window management (title, fullscreen, etc.) |
+| `wapi.display`           | `wapi_display`       | Display enumeration, geometry, sub-pixels      |
 | `wapi.input`             | `wapi_input`         | Input events (keyboard, mouse, touch, gamepad) |
 | `wapi.audio`             | `wapi_audio`         | Audio playback and recording                   |
 | `wapi.content`           | `wapi_content`       | Host-rendered text, images, media              |
@@ -713,6 +751,7 @@ The following capability names are defined by the spec. Hosts report support for
 | `wapi.bluetooth`         | `wapi_bluetooth`     | Bluetooth device access                        |
 | `wapi.camera`            | `wapi_camera`        | Camera capture                                 |
 | `wapi.xr`               | `wapi_xr`            | VR/AR (WebXR, OpenXR)                          |
+| `wapi.module`            | `wapi_module`        | Runtime module loading, cross-module calls     |
 
 ### 10.4 Vendor Capabilities
 
@@ -723,6 +762,12 @@ Vendors may define custom capabilities using the `vendor.<vendor_name>.*` namesp
 - `vendor.valve.steamdeck` -- Steam Deck-specific features
 
 Vendor capabilities use the same `wapi_capability_supported` / `wapi_capability_version` query mechanism. Hosts MUST ignore vendor capability queries they do not recognize (returning false from `wapi_capability_supported`).
+
+**Constraints on vendor capabilities:**
+
+- Vendor capabilities MUST NOT duplicate functionality that has a spec-defined equivalent. If `wapi.gpu` provides a feature, a vendor MUST NOT redefine it under `vendor.<name>.gpu`.
+- Modules MAY require vendor capabilities (e.g., a Joy-Con haptics demo that only makes sense on Nintendo hardware). There is no requirement for fallback paths -- a module that requires a capability simply will not run on hosts that lack it. The capability query mechanism ensures the module can detect this at startup and report a clear error.
+- Frequently-used vendor capabilities SHOULD be considered for promotion to spec-defined capabilities in future versions.
 
 ### 10.5 Capability Versioning
 
@@ -762,15 +807,16 @@ static const char* WAPI_PRESET_AUDIO[] = {
 
 static const char* WAPI_PRESET_GRAPHICAL[] = {
     "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    "wapi.gpu", "wapi.surface", "wapi.input", "wapi.audio", "wapi.content",
-    "wapi.clipboard", "wapi.font",
+    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display", "wapi.input",
+    "wapi.audio", "wapi.content", "wapi.clipboard", "wapi.font",
     NULL
 };
 
 static const char* WAPI_PRESET_MOBILE[] = {
     "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    "wapi.gpu", "wapi.surface", "wapi.input", "wapi.audio", "wapi.content",
-    "wapi.clipboard", "wapi.font", "wapi.geolocation", "wapi.sensors",
+    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display", "wapi.input",
+    "wapi.audio", "wapi.content", "wapi.clipboard", "wapi.font",
+    "wapi.geolocation", "wapi.sensors",
     "wapi.notifications", "wapi.biometric", "wapi.camera", "wapi.share",
     NULL
 };
@@ -783,7 +829,7 @@ static const char* WAPI_PRESET_MOBILE[] = {
 | **Headless** | env, memory, io, clock, fs, net               | Servers, CLI tools, edge functions, IoT    |
 | **Compute**  | Headless + gpu                                | ML inference, video transcoding, simulations |
 | **Audio**    | Headless + audio                              | VST plugins, audio processing, voice       |
-| **Graphical**| Headless + gpu, surface, input, audio, content, clipboard, font | Apps, games, creative tools |
+| **Graphical**| Headless + gpu, surface, window, display, input, audio, content, clipboard, font | Apps, games, creative tools |
 | **Mobile**   | Graphical + geolocation, sensors, notifications, biometric, camera, share | Mobile apps |
 
 **Checking preset conformance:**
@@ -814,52 +860,101 @@ if (wapi_preset_supported(WAPI_PRESET_GRAPHICAL)) {
 
 ---
 
-## 11. Shared Module Linking
+## 11. Module Linking
 
-### 11.1 Motivation
+### 11.1 Two Worlds
 
-Bundling every dependency into a single `.wasm` binary leads to duplication. If ten applications each bundle their own libc, image decoder, and math library, the same code is loaded ten times. Shared module linking allows the runtime to deduplicate common dependencies.
+Module composition in WAPI follows a fundamental split:
 
-### 11.2 Import Declaration
+**Build-time linking** (shared memory, one binary): Libraries are compiled and linked into a single `.wasm` module. They share linear memory naturally — pass pointers, call functions directly. This is how shared libraries have worked for 40 years. No WAPI mechanism is needed; it's just C linking. Allocators and I/O vtables can be passed as explicit function parameters (Zig-style) for composability.
 
-Modules declare shared imports by namespace and version in their Wasm custom sections:
+**Runtime linking** (isolated memory, separate modules): Each module has its own linear memory. The host mediates all data transfer. The `wapi_module` API provides: loading by content hash, buffer mapping across boundaries, allocator handles for variable-length output, and I/O policy control.
 
+There is no "shared memory opt-in" mode for runtime modules. If you need shared memory, link at build time. If you need isolation, use the runtime module API.
+
+### 11.2 Build-Time Linking
+
+Build-time linked libraries are simply part of the same Wasm binary. They share linear memory and can call each other's functions directly. WAPI defines vtable types (`wapi_allocator_t`, `wapi_io_t`, `wapi_panic_handler_t`) that libraries can accept as explicit parameters for dependency injection:
+
+```c
+// A library function that accepts an explicit allocator (Zig-style)
+image_t* decode_png(const uint8_t* data, size_t len, const wapi_allocator_t* alloc);
+
+// A library function that accepts an explicit I/O interface
+void http_fetch(const char* url, const wapi_io_t* io, callback_t cb);
 ```
-Custom section: "wapi_shared_imports"
-Format: JSON array of {namespace, version} objects
 
-[
-  {"namespace": "libc", "version": "1.0.0"},
-  {"namespace": "libpng", "version": "1.6.40"}
-]
+This is a convention, not an ABI requirement. Libraries choose their own parameter patterns.
+
+### 11.3 Runtime Module Identity
+
+Runtime modules are identified by the SHA-256 hash of their Wasm binary. The hash IS the identity. Name and version are human-readable metadata, not the linking key.
+
+```c
+wapi_module_hash_t hash = { /* SHA-256 bytes */ };
+wapi_handle_t module;
+wapi_module_load(&hash, WAPI_STR("https://registry.example.com/image-decoder-1.2.0.wasm"), &module);
 ```
 
-### 11.3 Runtime Resolution
+The URL is a fetch hint, not an identity. Two calls with different URLs but the same hash produce the same module.
 
-The host runtime resolves shared imports:
+### 11.4 Cross-Module Calling
 
-1. Looks up the namespace and version in its module cache.
-2. If a compatible version is cached, links it to the importing module.
-3. If not cached, fetches the module (from a registry, local store, or network) and caches it.
-4. Modules are instantiated once and shared across all importers.
+To call functions on a runtime module, the caller uses `wapi_module_call`. The host mediates argument passing:
 
-### 11.4 Semver for ABI Contracts
+```c
+// 1. Get function handle
+wapi_handle_t func;
+wapi_module_get_func(module, WAPI_STR("decode"), &func);
 
-Shared module versions follow **semantic versioning**:
+// 2. Map input data into child's memory
+uint32_t child_data_ptr;
+wapi_module_map(module, png_data, png_len, WAPI_MAP_READ, &child_data_ptr);
+
+// 3. Create allocator handle for child's output
+wapi_handle_t alloc;
+wapi_module_alloc_create(module, &alloc);
+
+// 4. Call the function
+wapi_val_t args[] = {
+    { .kind = WAPI_VAL_I32, .of.i32 = child_data_ptr },
+    { .kind = WAPI_VAL_I32, .of.i32 = png_len },
+    { .kind = WAPI_VAL_I32, .of.i32 = alloc },
+};
+wapi_val_t result;
+wapi_module_call(module, func, args, 3, &result, 1);
+
+// 5. Read what the child allocated
+void* pixels;
+wapi_size_t pixels_len;
+wapi_module_alloc_get(alloc, 0, &pixels, &pixels_len);
+
+// 6. Cleanup
+wapi_module_unmap(module, child_data_ptr);
+wapi_module_alloc_destroy(alloc);
+```
+
+### 11.5 I/O Policy
+
+By default, runtime modules have no I/O access. The parent explicitly grants capabilities:
+
+```c
+wapi_module_set_io_policy(module, WAPI_IO_POLICY_LOG | WAPI_IO_POLICY_NET);
+```
+
+The host enforces the policy when the child calls `wapi_io` imports. A child that attempts unauthorized I/O receives `WAPI_ERR_ACCES`.
+
+### 11.6 Semver for ABI Contracts
+
+Module versions follow **semantic versioning**:
 
 - **Major version** change: breaking ABI change. The runtime must not substitute a different major version.
 - **Minor version** change: backward-compatible additions. The runtime may substitute a higher minor version within the same major version.
 - **Patch version** change: bug fix. The runtime may substitute a higher patch version.
 
-### 11.5 Shared Linear Memory
+### 11.7 Module Cache
 
-Shared modules may operate on the importing module's linear memory. The runtime enforces borrowing rules:
-
-- Only one module may have mutable access to a memory region at a time.
-- Multiple modules may have read-only access to the same memory region concurrently.
-- The host tracks active borrows and traps on violations.
-
-This model follows Rust's borrowing semantics at the module boundary, enforced by the runtime rather than the compiler.
+The runtime maintains a cache of modules keyed by content hash. Analogous to the browser's HTTP cache or a Nix store. Modules can be pre-fetched (`wapi_module_prefetch`) for background download.
 
 ---
 
@@ -925,6 +1020,7 @@ This section lists every function in each import module with its Wasm-level sign
 | `capability_count`       | `() -> i32`                     | `wapi_capability_count`               | Get count of all supported capabilities. |
 | `capability_name`        | `(i32, i32, i32, i32) -> i32`   | `wapi_capability_name`                | Get capability name by index. Params: index, buf_ptr, buf_len, out_name_len_ptr. |
 | `abi_version`            | `(i32) -> i32`                  | `wapi_abi_version`                    | Get the WAPI version. Writes `wapi_version_t` to pointer. |
+| `panic_report`           | `(i32, i32) -> ()`              | `wapi_panic_report`                   | Record a panic message before trapping. Params: msg_ptr, msg_len. |
 
 ---
 
@@ -940,6 +1036,21 @@ This section lists every function in each import module with its Wasm-level sign
 | `random_get`        | `(i32, i32) -> i32`                     | `wapi_env_random_get`      | Fill buffer with cryptographic random bytes. Params: buf_ptr, len. |
 | `exit`              | `(i32) -> ()`                           | `wapi_env_exit`            | Exit the process. Does not return. |
 | `get_error`         | `(i32, i32, i32) -> i32`               | `wapi_env_get_error`       | Get human-readable error message. Params: buf_ptr, buf_len, out_len_ptr. |
+| `host_get`          | `(i32, i32, i32, i32, i32) -> i32`     | `wapi_env_host_get`        | Query host info by key. Params: key_ptr, key_len, buf_ptr, buf_len, out_len_ptr. |
+
+**Well-known `host_get` keys:**
+
+| Key               | Example Values                          | Description                          |
+|-------------------|-----------------------------------------|--------------------------------------|
+| `os.family`       | `windows`, `macos`, `linux`, `android`, `ios`, `browser` | Operating system family |
+| `os.version`      | `10.0.26200`, `15.2`                    | OS version string                    |
+| `runtime.name`    | `wapi-desktop`, `wapi-browser`          | Host runtime identifier              |
+| `runtime.version` | `1.0.0`                                 | Host runtime version (semver)        |
+| `device.form`     | `desktop`, `mobile`, `tablet`, `embedded`, `xr` | Device form factor            |
+| `browser.engine`  | `chromium`, `gecko`, `webkit`           | Browser engine (browser hosts only)  |
+| `locale`          | `en-US`, `ja-JP`                        | User's preferred locale              |
+
+Unknown keys return `WAPI_ERR_NOENT`. Hosts may define additional keys under `vendor.<name>.*`. Prefer capability queries for feature detection; use `host_get` as an escape hatch for platform-specific workarounds, analytics, or UI conventions.
 
 ---
 
@@ -956,17 +1067,17 @@ This section lists every function in each import module with its Wasm-level sign
 
 ### 13.4 Module: `wapi_io` (Async I/O)
 
-I/O operations are submitted through the `wapi_io_t` vtable provided in `wapi_context_t`, not through direct host imports. The host registers all five vtable-backing functions as imports:
+I/O operations are submitted through direct host imports. The host knows which module is calling and routes I/O accordingly. For runtime (isolated) modules, the host enforces the parent's I/O policy.
 
 | Wasm Import Name | Wasm Signature                  | C Function              | Description |
 |------------------|---------------------------------|-------------------------|-------------|
-| `submit`         | `(i32, i32, i32) -> i32`        | (vtable backing)          | Submit operations. Params: impl_ptr, ops_ptr, count. Returns submitted count. |
-| `cancel`         | `(i32, i64) -> i32`             | (vtable backing)          | Cancel a pending operation. Params: impl_ptr, user_data. |
-| `poll`           | `(i32, i32) -> i32`             | (vtable backing)          | Non-blocking poll. Params: impl_ptr, event_ptr. Returns 1 if event, 0 if empty. |
-| `wait`           | `(i32, i32, i32) -> i32`        | (vtable backing)          | Blocking wait. Params: impl_ptr, event_ptr, timeout_ms. Returns 1 if event, 0 on timeout. |
-| `flush`          | `(i32, i32) -> ()`              | (vtable backing)          | Discard pending events. Params: impl_ptr, event_type (0 = all). |
+| `submit`         | `(i32, i32) -> i32`             | `wapi_io_submit`          | Submit operations. Params: ops_ptr, count. Returns submitted count. |
+| `cancel`         | `(i64) -> i32`                  | `wapi_io_cancel`          | Cancel a pending operation. Param: user_data. |
+| `poll`           | `(i32) -> i32`                  | `wapi_io_poll`            | Non-blocking poll. Param: event_ptr. Returns 1 if event, 0 if empty. |
+| `wait`           | `(i32, i32) -> i32`             | `wapi_io_wait`            | Blocking wait. Params: event_ptr, timeout_ms. Returns 1 if event, 0 on timeout. |
+| `flush`          | `(i32) -> ()`                   | `wapi_io_flush`           | Discard pending events. Param: event_type (0 = all). |
 
-All events -- I/O completions, input, lifecycle, device changes -- are delivered through `poll`/`wait`. There is no separate event import namespace.
+All events -- I/O completions, input, lifecycle, device changes -- are delivered through `poll`/`wait`. The `wapi_input` module provides convenience wrappers (`poll_event`, `wait_event`) and state queries, but they read from the same unified event queue.
 
 ---
 
@@ -1040,50 +1151,111 @@ All events -- I/O completions, input, lifecycle, device changes -- are delivered
 | `surface_preferred_format`    | `(i32, i32) -> i32`          | `wapi_gpu_surface_preferred_format`       | Query preferred texture format. Params: surface, out_format_ptr. |
 | `get_proc_address`            | `(i32, i32) -> i32`          | `wapi_gpu_get_proc_address`               | Get a WebGPU function pointer by name. Params: name_ptr, name_len. Returns function pointer. |
 
-The `get_proc_address` function provides access to the full `webgpu.h` function table (~150 functions). The module retrieves individual function pointers by name (e.g., `"wgpuDeviceCreateBuffer"`) and calls them directly. This matches the `WGPUProcTable` / `wgpuGetProcAddress` pattern from `webgpu.h`.
+#### Direct WebGPU Imports (`wapi_wgpu` namespace)
+
+In addition to the bridge functions above, standard `webgpu.h` functions are available as **direct imports** in the `wapi_wgpu` namespace. These compile to direct wasm `call` instructions with zero indirection -- no function pointer lookup, no indirect call overhead.
+
+The module imports only the `wgpu*` functions it uses. See `wapi_gpu.h` for the complete list (gated on `WEBGPU_H_` being defined). Examples:
+
+| Wasm Import Name (in `wapi_wgpu`) | C Function | Description |
+|------------------------------------|------------|-------------|
+| `device_create_buffer`             | `wgpuDeviceCreateBuffer` | Create a GPU buffer |
+| `device_create_render_pipeline`    | `wgpuDeviceCreateRenderPipeline` | Create a render pipeline |
+| `queue_submit`                     | `wgpuQueueSubmit` | Submit command buffers |
+| `command_encoder_begin_render_pass`| `wgpuCommandEncoderBeginRenderPass` | Begin a render pass |
+| `render_pass_draw`                 | `wgpuRenderPassEncoderDraw` | Issue a draw call |
+
+The `get_proc_address` function remains available for **dynamic lookup** of extension functions or functions not listed in the direct imports. It provides access to the full `webgpu.h` function table (~150 functions) via the `WGPUProcTable` / `wgpuGetProcAddress` pattern.
 
 ---
 
-### 13.9 Module: `wapi_surface` (Windowing)
+### 13.9 Module: `wapi_surface` (Render Targets)
+
+A surface is a rectangular render target. With a `wapi_window_config_t` chained onto the descriptor, it becomes an OS window. Without it, it is an offscreen buffer.
 
 | Wasm Import Name    | Wasm Signature                       | C Function                     | Description |
 |---------------------|--------------------------------------|--------------------------------|-------------|
-| `create`            | `(i32, i32) -> i32`                  | `wapi_surface_create`            | Create a display surface. Params: desc_ptr, out_surface_ptr. |
+| `create`            | `(i32, i32) -> i32`                  | `wapi_surface_create`            | Create a surface. Params: desc_ptr, out_surface_ptr. |
 | `destroy`           | `(i32) -> i32`                       | `wapi_surface_destroy`           | Destroy a surface. Param: surface. |
 | `get_size`          | `(i32, i32, i32) -> i32`             | `wapi_surface_get_size`          | Get pixel size. Params: surface, out_width_ptr, out_height_ptr. |
-| `get_size_logical`  | `(i32, i32, i32) -> i32`             | `wapi_surface_get_size_logical`  | Get logical size. Params: surface, out_width_ptr, out_height_ptr. |
 | `get_dpi_scale`     | `(i32, i32) -> i32`                  | `wapi_surface_get_dpi_scale`     | Get DPI scale. Params: surface, out_scale_ptr. |
 | `request_size`      | `(i32, i32, i32) -> i32`             | `wapi_surface_request_size`      | Request a size change. Params: surface, width, height. |
-| `set_title`         | `(i32, i32, i32) -> i32`             | `wapi_surface_set_title`         | Set window title. Params: surface, title_ptr, title_len. |
-| `set_fullscreen`    | `(i32, i32) -> i32`                  | `wapi_surface_set_fullscreen`    | Set fullscreen mode. Params: surface, fullscreen_bool. |
-| `set_visible`       | `(i32, i32) -> i32`                  | `wapi_surface_set_visible`       | Show or hide surface. Params: surface, visible_bool. |
-| `minimize`          | `(i32) -> i32`                       | `wapi_surface_minimize`          | Minimize surface. Param: surface. |
-| `maximize`          | `(i32) -> i32`                       | `wapi_surface_maximize`          | Maximize surface. Param: surface. |
-| `restore`           | `(i32) -> i32`                       | `wapi_surface_restore`           | Restore surface from min/max. Param: surface. |
-| `set_cursor`        | `(i32, i32) -> i32`                  | `wapi_surface_set_cursor`        | Set mouse cursor style. Params: surface, cursor_type. |
-
-**Cursor type constants:**
-
-| Constant                | Value |
-|-------------------------|-------|
-| `WAPI_CURSOR_DEFAULT`     |   0   |
-| `WAPI_CURSOR_POINTER`     |   1   |
-| `WAPI_CURSOR_TEXT`        |   2   |
-| `WAPI_CURSOR_CROSSHAIR`   |   3   |
-| `WAPI_CURSOR_MOVE`        |   4   |
-| `WAPI_CURSOR_RESIZE_NS`   |   5   |
-| `WAPI_CURSOR_RESIZE_EW`   |   6   |
-| `WAPI_CURSOR_RESIZE_NWSE` |   7   |
-| `WAPI_CURSOR_RESIZE_NESW` |   8   |
-| `WAPI_CURSOR_NOT_ALLOWED` |   9   |
-| `WAPI_CURSOR_WAIT`        |  10   |
-| `WAPI_CURSOR_GRAB`        |  11   |
-| `WAPI_CURSOR_GRABBING`    |  12   |
-| `WAPI_CURSOR_NONE`        |  13   |
 
 ---
 
-### 13.10 Module: `wapi_input` (Input Events)
+### 13.10 Module: `wapi_window` (OS Window Management)
+
+All functions take a surface handle and return `WAPI_ERR_NOTSUP` on offscreen surfaces. Cursor control is per-mouse device (see `wapi_input`).
+
+| Wasm Import Name    | Wasm Signature                       | C Function                          | Description |
+|---------------------|--------------------------------------|-------------------------------------|-------------|
+| `set_title`         | `(i32, i32) -> i32`                  | `wapi_window_set_title`               | Set window title. Params: surface, title (wapi_string_view_t). |
+| `get_size_logical`  | `(i32, i32, i32) -> i32`             | `wapi_window_get_size_logical`        | Get logical (device-independent) size. Params: surface, out_width_ptr, out_height_ptr. |
+| `set_fullscreen`    | `(i32, i32) -> i32`                  | `wapi_window_set_fullscreen`          | Set fullscreen mode. Params: surface, fullscreen_bool. |
+| `set_visible`       | `(i32, i32) -> i32`                  | `wapi_window_set_visible`             | Show or hide window. Params: surface, visible_bool. |
+| `minimize`          | `(i32) -> i32`                       | `wapi_window_minimize`                | Minimize window. Param: surface. |
+| `maximize`          | `(i32) -> i32`                       | `wapi_window_maximize`                | Maximize window. Param: surface. |
+| `restore`           | `(i32) -> i32`                       | `wapi_window_restore`                 | Restore from minimized/maximized. Param: surface. |
+
+**Window config (chained struct):**
+
+`wapi_window_config_t` (40 bytes, align 8) -- chain onto `wapi_surface_desc_t::nextInChain` with `sType = WAPI_STYPE_WINDOW_CONFIG`:
+
+```
+Offset  Size  Type                    Field         Description
+------  ----  ----------------------  ------------  -----------------------------------
+ 0      16    wapi_chained_struct_t   chain         Chain header (next + sType)
+16      16    wapi_string_view_t      title         Window title (UTF-8)
+32       4    uint32_t                window_flags  WAPI_WINDOW_FLAG_*
+36       4    uint32_t                _pad          Padding
+```
+
+**Window flag constants:**
+
+| Constant                       | Value    |
+|--------------------------------|----------|
+| `WAPI_WINDOW_FLAG_RESIZABLE`     | `0x0001` |
+| `WAPI_WINDOW_FLAG_BORDERLESS`    | `0x0002` |
+| `WAPI_WINDOW_FLAG_FULLSCREEN`    | `0x0004` |
+| `WAPI_WINDOW_FLAG_HIDDEN`        | `0x0008` |
+| `WAPI_WINDOW_FLAG_ALWAYS_ON_TOP` | `0x0010` |
+
+---
+
+### 13.11 Module: `wapi_display` (Display Enumeration)
+
+| Wasm Import Name         | Wasm Signature                          | C Function                          | Description |
+|--------------------------|-----------------------------------------|-------------------------------------|-------------|
+| `display_count`          | `() -> i32`                             | `wapi_display_count`                  | Get number of connected displays. |
+| `display_get_info`       | `(i32, i32) -> i32`                     | `wapi_display_get_info`               | Get display info. Params: index, out_info_ptr. |
+| `display_get_subpixels`  | `(i32, i32, i32, i32) -> i32`           | `wapi_display_get_subpixels`          | Get sub-pixel layout. Params: index, out_array_ptr, max_count, out_count_ptr. |
+| `display_get_usable_bounds` | `(i32, i32, i32, i32, i32) -> i32`   | `wapi_display_get_usable_bounds`      | Get usable bounds (excluding taskbar). Params: index, out_x, out_y, out_w, out_h. |
+
+**Display info struct** (`wapi_display_info_t`, 56 bytes, align 8):
+
+```
+Offset  Size  Type                Field            Description
+------  ----  ------------------  ---------------  -----------------------------------
+ 0       4    uint32_t            display_id       Display identifier
+ 4       4    int32_t             x                X in global coordinates
+ 8       4    int32_t             y                Y in global coordinates
+12       4    int32_t             width            Width in pixels
+16       4    int32_t             height           Height in pixels
+20       4    float               refresh_rate_hz  Refresh rate in Hz
+24       4    float               scale_factor     DPI scale (e.g. 2.0 for Retina)
+28       4    uint32_t            _pad0
+32      16    wapi_string_view_t  name             Display name (UTF-8)
+48       1    uint8_t             is_primary       1 if primary display
+49       1    uint8_t             orientation      0=land, 1=port, 2=land-flip, 3=port-flip
+50       1    uint8_t             subpixel_count   Sub-pixels per pixel (0=unknown)
+51       1    uint8_t             _pad1
+52       2    uint16_t            rotation_deg     Physical rotation: 0, 90, 180, 270
+54       2    uint8_t[]           _reserved        Reserved (must be zero)
+```
+
+---
+
+### 13.12 Module: `wapi_input` (Input Events)
 
 | Wasm Import Name       | Wasm Signature              | C Function                     | Description |
 |------------------------|-----------------------------|--------------------------------|-------------|
@@ -1115,18 +1287,20 @@ Offset  Size  Type      Field       Description
 | Range           | Category               |
 |-----------------|------------------------|
 | `0x100-0x1FF`   | Application lifecycle  |
-| `0x200-0x2FF`   | Surface events         |
+| `0x200-0x20FF`  | Surface events         |
+| `0x210-0x21FF`  | Window events          |
 | `0x300-0x3FF`   | Keyboard events        |
 | `0x400-0x4FF`   | Mouse events           |
 | `0x650-0x6FF`   | Gamepad events         |
 | `0x700-0x7FF`   | Touch events           |
 | `0x800-0x8FF`   | Pen/stylus events      |
 | `0x1000-0x10FF` | Drop events            |
+| `0x2000-0x20FF` | I/O completion events  |
 | `0x8000-0xFFFF` | User-defined events    |
 
 ---
 
-### 13.11 Module: `wapi_audio` (Audio)
+### 13.13 Module: `wapi_audio` (Audio)
 
 | Wasm Import Name          | Wasm Signature                    | C Function                       | Description |
 |---------------------------|-----------------------------------|----------------------------------|-------------|
@@ -1168,7 +1342,7 @@ Offset  Size  Type      Field     Description
 
 ---
 
-### 13.12 Module: `wapi_content` (Host-Rendered Content)
+### 13.14 Module: `wapi_content` (Host-Rendered Content)
 
 | Wasm Import Name       | Wasm Signature                            | C Function                      | Description |
 |------------------------|-------------------------------------------|---------------------------------|-------------|
@@ -1250,7 +1424,7 @@ Offset  Size  Type      Field            Description
 
 ---
 
-### 13.13 Module: `wapi_clipboard` (Clipboard)
+### 13.15 Module: `wapi_clipboard` (Clipboard)
 
 | Wasm Import Name | Wasm Signature                  | C Function              | Description |
 |------------------|---------------------------------|-------------------------|-------------|
@@ -1269,7 +1443,7 @@ Offset  Size  Type      Field            Description
 
 ---
 
-### 13.14 Module: `wapi_font` (Font System)
+### 13.16 Module: `wapi_font` (Font System)
 
 | Wasm Import Name       | Wasm Signature                          | C Function                    | Description |
 |------------------------|-----------------------------------------|-------------------------------|-------------|
@@ -1301,7 +1475,7 @@ Offset  Size  Type      Field            Description
 
 ---
 
-### 13.15 Module: `wapi_video` (Video/Media Playback)
+### 13.17 Module: `wapi_video` (Video/Media Playback)
 
 | Wasm Import Name       | Wasm Signature                          | C Function                    | Description |
 |------------------------|-----------------------------------------|-------------------------------|-------------|
@@ -1330,6 +1504,46 @@ Offset  Size  Type      Field            Description
 
 ---
 
+### 13.18 Module: `wapi_module` (Runtime Module Linking)
+
+| Wasm Import Name   | Wasm Signature                              | C Function                    | Description |
+|--------------------|---------------------------------------------|-------------------------------|-------------|
+| `load`             | `(i32, i32, i32, i32) -> i32`               | `wapi_module_load`              | Load module by content hash. Params: hash_ptr, url_ptr, url_len, out_module_ptr. |
+| `release`          | `(i32) -> i32`                              | `wapi_module_release`           | Release a loaded module. Param: module. |
+| `get_func`         | `(i32, i32, i32, i32) -> i32`               | `wapi_module_get_func`          | Get function handle by name. Params: module, name_ptr, name_len, out_func_ptr. |
+| `get_desc`         | `(i32, i32) -> i32`                         | `wapi_module_get_desc`          | Get module descriptor. Params: module, out_desc_ptr. |
+| `get_hash`         | `(i32, i32) -> i32`                         | `wapi_module_get_hash`          | Get module content hash. Params: module, out_hash_ptr. |
+| `is_cached`        | `(i32) -> i32`                              | `wapi_module_is_cached`         | Check if module is in cache. Param: hash_ptr. Returns boolean. |
+| `prefetch`         | `(i32, i32, i32) -> i32`                    | `wapi_module_prefetch`          | Background download. Params: hash_ptr, url_ptr, url_len. |
+| `call`             | `(i32, i32, i32, i32, i32, i32) -> i32`     | `wapi_module_call`              | Call function on isolated module. Params: module, func, args_ptr, nargs, results_ptr, nresults. |
+| `map`              | `(i32, i32, i32, i32, i32) -> i32`          | `wapi_module_map`               | Map caller memory into child. Params: module, src_ptr, len, flags, out_child_ptr. |
+| `unmap`            | `(i32, i32) -> i32`                         | `wapi_module_unmap`             | Unmap previously mapped region. Params: module, child_ptr. |
+| `alloc_create`     | `(i32, i32) -> i32`                         | `wapi_module_alloc_create`      | Create allocator handle for child. Params: module, out_alloc_ptr. |
+| `alloc_get`        | `(i32, i32, i32, i32) -> i32`               | `wapi_module_alloc_get`         | Read child allocation. Params: alloc, index, out_ptr, out_len_ptr. |
+| `alloc_destroy`    | `(i32) -> i32`                              | `wapi_module_alloc_destroy`     | Destroy allocator handle. Param: alloc. |
+| `set_io_policy`    | `(i32, i32) -> i32`                         | `wapi_module_set_io_policy`     | Set child I/O policy. Params: module, policy_flags. |
+
+**Map flags:**
+
+| Constant              | Value    |
+|-----------------------|----------|
+| `WAPI_MAP_READ`         | `0x01`   |
+| `WAPI_MAP_WRITE`        | `0x02`   |
+| `WAPI_MAP_READWRITE`    | `0x03`   |
+
+**I/O policy flags:**
+
+| Constant                | Value    |
+|-------------------------|----------|
+| `WAPI_IO_POLICY_NONE`     | `0x00`   |
+| `WAPI_IO_POLICY_LOG`      | `0x01`   |
+| `WAPI_IO_POLICY_FS_READ`  | `0x02`   |
+| `WAPI_IO_POLICY_FS_WRITE` | `0x04`   |
+| `WAPI_IO_POLICY_NET`      | `0x08`   |
+| `WAPI_IO_POLICY_ALL`      | `0xFF`   |
+
+---
+
 ## Appendix A: Version History
 
 | Version | Date       | Description          |
@@ -1342,7 +1556,7 @@ A conforming WAPI module MUST export:
 
 | Export Name | Wasm Signature     | Required | Description                         |
 |-------------|--------------------|----------|-------------------------------------|
-| `wapi_main`   | `(i32) -> i32`     | Yes      | Module entry point (receives context ptr) |
+| `wapi_main`   | `() -> i32`        | Yes      | Module entry point |
 | `wapi_frame`  | `(i64) -> i32`     | No       | Per-frame callback (graphical apps) |
 | `memory`    | `(memory ...)`     | Yes      | Linear memory (for host access)     |
 
@@ -1350,26 +1564,34 @@ A conforming WAPI module MUST export:
 
 | Struct                     | Size (bytes) | Alignment |
 |----------------------------|-------------|-----------|
-| `wapi_string_view_t`         |     8       |    4      |
-| `wapi_chained_struct_t`      |     8       |    4      |
+| `wapi_subpixel_t`             |     4       |    1      |
+| `wapi_string_view_t`         |    16       |    8      |
+| `wapi_chained_struct_t`      |    16       |    8      |
 | `wapi_version_t`             |     8       |    2      |
-| `wapi_audio_spec_t`          |    12       |    4      |
 | `wapi_layout_constraints_t`  |     8       |    4      |
+| `wapi_panic_handler_t`       |     8       |    4      |
+| `wapi_audio_spec_t`          |    12       |    4      |
+| `wapi_allocator_t`           |    16       |    4      |
 | `wapi_layout_result_t`       |    16       |    4      |
 | `wapi_text_run_t`            |    16       |    4      |
-| `wapi_io_t`                  |    24       |    4      |
-| `wapi_allocator_t`           |    16       |    4      |
-| `wapi_io_event_t`            |    32       |    4      |
-| `wapi_panic_handler_t`       |     8       |    4      |
-| `wapi_context_t`             |    20       |    4      |
+| `wapi_val_t`                 |    16       |    8      |
+| `wapi_hit_test_result_t`     |    16       |    4      |
+| `wapi_window_config_t`       |    40       |    8      |
 | `wapi_net_listen_desc_t`     |    20       |    4      |
+| `wapi_io_t`                  |    24       |    4      |
 | `wapi_dirent_t`              |    24       |    8      |
 | `wapi_net_connect_desc_t`    |    24       |    4      |
 | `wapi_surface_desc_t`        |    24       |    4      |
 | `wapi_gpu_surface_config_t`  |    24       |    4      |
+| `wapi_caret_info_t`          |    24       |    4      |
+| `wapi_text_line_info_t`      |    28       |    4      |
+| `wapi_io_event_t`            |    32       |    4      |
+| `wapi_image_extended_t`      |    32       |    4      |
+| `wapi_module_hash_t`         |    32       |    1      |
 | `wapi_text_style_t`          |    40       |    4      |
+| `wapi_display_info_t`        |    48       |    4      |
 | `wapi_filestat_t`            |    56       |    8      |
-| `wapi_io_op_t`               |    64       |    8      |
+| `wapi_io_op_t`               |    80       |    8      |
 | `wapi_event_t`               |   128       |    8      |
 
 ---

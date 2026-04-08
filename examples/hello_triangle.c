@@ -12,9 +12,9 @@
  *   5. Handle input events
  *
  * Note: This example uses the WAPI GPU bridge functions for surface/device
- * setup, and would use webgpu.h functions (via wapi_gpu_get_proc_address)
- * for actual rendering commands. The rendering commands shown here are
- * pseudocode demonstrating the intended flow.
+ * setup, and would use webgpu.h functions (via direct wapi_wgpu imports or
+ * wapi_gpu_get_proc_address) for actual rendering commands. The rendering
+ * commands shown here are pseudocode demonstrating the intended flow.
  *
  * Compile with:
  *   clang --target=wasm32 -O2 -nostdlib \
@@ -27,7 +27,6 @@
  * Application State
  * ============================================================ */
 
-static const wapi_context_t* g_ctx;
 static wapi_handle_t g_surface;
 static wapi_handle_t g_gpu_device;
 static wapi_handle_t g_gpu_queue;
@@ -55,7 +54,7 @@ static wapi_result_t init(void) {
         .window_flags = WAPI_WINDOW_FLAG_RESIZABLE,
     };
     wapi_surface_desc_t surface_desc = {
-        .nextInChain = (wapi_chained_struct_t*)&window_cfg,
+        .nextInChain = (uintptr_t)&window_cfg,
         .width       = 800,
         .height      = 600,
         .flags       = WAPI_SURFACE_FLAG_HIGH_DPI,
@@ -104,7 +103,7 @@ static wapi_result_t init(void) {
 
 static void process_events(void) {
     wapi_event_t event;
-    while (g_ctx->io->poll(g_ctx->io->impl, &event)) {
+    while (wapi_io_poll(&event)) {
         switch (event.type) {
             case WAPI_EVENT_WINDOW_CLOSE:
                 g_running = 0;
@@ -198,8 +197,7 @@ wapi_result_t wapi_frame(wapi_timestamp_t timestamp) {
  * ============================================================ */
 
 WAPI_EXPORT(wapi_main)
-wapi_result_t wapi_main(const wapi_context_t* ctx) {
-    g_ctx = ctx;
+wapi_result_t wapi_main(void) {
     wapi_result_t res = init();
     if (WAPI_FAILED(res)) return res;
 

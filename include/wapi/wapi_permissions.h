@@ -21,33 +21,18 @@
 extern "C" {
 #endif
 
-/* ============================================================
- * Permission State
- * ============================================================ */
-
-typedef enum wapi_permission_state_t {
-    WAPI_PERMISSION_PROMPT   = 0,  /* Not yet decided */
-    WAPI_PERMISSION_GRANTED  = 1,
-    WAPI_PERMISSION_DENIED   = 2,
-    WAPI_PERMISSION_FORCE32  = 0x7FFFFFFF
-} wapi_permission_state_t;
+/* Permission state is defined in wapi.h as wapi_perm_state_t:
+ *   WAPI_PERM_GRANTED  = 0
+ *   WAPI_PERM_DENIED   = 1
+ *   WAPI_PERM_PROMPT   = 2
+ */
 
 /* ============================================================
  * Permission Functions
  * ============================================================ */
 
-/**
- * Query permission status for a capability.
- *
- * @param capability  Capability name (e.g., "wapi.camera", "wapi.geolocation").
- * @param state       [out] Current permission state.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_perm, query)
-wapi_result_t wapi_perm_query(wapi_string_view_t capability,
-                           wapi_permission_state_t* state);
+/* wapi_perm_query is declared in wapi.h (core capability query).
+ * This module provides the additional request function. */
 
 /**
  * Request permission for a capability (may show OS dialog).
@@ -62,7 +47,7 @@ wapi_result_t wapi_perm_query(wapi_string_view_t capability,
  */
 WAPI_IMPORT(wapi_perm, request)
 wapi_result_t wapi_perm_request(wapi_string_view_t capability,
-                             wapi_permission_state_t* state);
+                             wapi_perm_state_t* state);
 
 #ifdef __cplusplus
 }

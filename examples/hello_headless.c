@@ -13,8 +13,7 @@
 
 /* Module entry point */
 WAPI_EXPORT(wapi_main)
-wapi_result_t wapi_main(const wapi_context_t* ctx) {
-    (void)ctx;
+wapi_result_t wapi_main(void) {
     /* --------------------------------------------------------
      * 1. Check capabilities
      * -------------------------------------------------------- */

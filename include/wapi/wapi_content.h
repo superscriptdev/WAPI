@@ -72,22 +72,23 @@ typedef enum wapi_content_node_type_t {
  * Content Node (fixed-size)
  * ============================================================
  *
- * Layout (64 bytes, align 4):
+ * Layout (80 bytes, align 8):
  *   Offset  0: uint32_t type           wapi_content_node_type_t
  *   Offset  4: uint32_t id             App-assigned stable ID
  *   Offset  8: uint32_t version        Per-node change counter
  *   Offset 12: uint32_t first_child    Index (UINT32_MAX = none)
  *   Offset 16: uint32_t next_sibling   Index (UINT32_MAX = none)
  *   Offset 20: uint32_t state_flags    WAPI_CONTENT_STATE_* bitmask
- *   Offset 24: wapi_string_view_t label  Accessible name (UTF-8)
- *   Offset 32: ptr      value          Type-specific value
- *   Offset 36: uint32_t value_len
- *   Offset 40: float    bounds_x       Bounding rect X
- *   Offset 44: float    bounds_y       Bounding rect Y
- *   Offset 48: float    bounds_w       Bounding rect width
- *   Offset 52: float    bounds_h       Bounding rect height
- *   Offset 56: int32_t  tab_index      Keyboard nav order (-1 = skip)
- *   Offset 60: uint32_t detail         Type-specific (heading level, etc.)
+ *   Offset 24: wapi_string_view_t label  Accessible name (16 bytes)
+ *   Offset 40: uint64_t value          Linear memory address of value data
+ *   Offset 48: uint32_t value_len
+ *   Offset 52: float    bounds_x       Bounding rect X
+ *   Offset 56: float    bounds_y       Bounding rect Y
+ *   Offset 60: float    bounds_w       Bounding rect width
+ *   Offset 64: float    bounds_h       Bounding rect height
+ *   Offset 68: int32_t  tab_index      Keyboard nav order (-1 = skip)
+ *   Offset 72: uint32_t detail         Type-specific (heading level, etc.)
+ *   Offset 76: uint32_t _pad           (alignment padding)
  *
  * How value and detail are interpreted per node type:
  *   TEXT       : value = UTF-8 text content
@@ -107,7 +108,7 @@ typedef struct wapi_content_node_t {
     uint32_t    next_sibling;
     uint32_t    state_flags;
     wapi_string_view_t label;
-    const void* value;
+    uint64_t    value;       /* Linear memory address of type-specific value data */
     wapi_size_t value_len;
     float       bounds_x;
     float       bounds_y;
@@ -115,12 +116,11 @@ typedef struct wapi_content_node_t {
     float       bounds_h;
     int32_t     tab_index;
     uint32_t    detail;
+    uint32_t    _pad;
 } wapi_content_node_t;
 
-#ifdef __wasm__
-_Static_assert(sizeof(wapi_content_node_t) == 64,
-               "wapi_content_node_t must be 64 bytes on wasm32");
-#endif
+_Static_assert(sizeof(wapi_content_node_t) == 80,
+               "wapi_content_node_t must be 80 bytes");
 
 /* ============================================================
  * Content Tree Buffer
@@ -130,7 +130,7 @@ _Static_assert(sizeof(wapi_content_node_t) == 64,
  *   Offset 0: uint32_t version   Global version (structural changes)
  *   Offset 4: uint32_t count     Number of active nodes
  *
- * Followed by count x wapi_content_node_t (64 bytes each).
+ * Followed by count x wapi_content_node_t (80 bytes each).
  * Node 0 is always the root.
  */
 

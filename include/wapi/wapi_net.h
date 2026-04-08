@@ -43,16 +43,18 @@ typedef enum wapi_net_stream_type_t {
  *
  * Chain a wapi_net_tls_config_t to enable TLS (always-on for QUIC).
  *
- * Layout (16 bytes on wasm32, align 4):
- *   Offset  0: ptr      nextInChain
- *   Offset  4: wapi_string_view_t url  URL string
- *   Offset 12: uint32_t transport    wapi_net_transport_t
+ * Layout (32 bytes, align 8):
+ *   Offset  0: uint64_t nextInChain           Linear memory address, or 0
+ *   Offset  8: wapi_string_view_t url         URL string (16 bytes)
+ *   Offset 24: uint32_t transport             wapi_net_transport_t
+ *   Offset 28: uint32_t _pad
  */
 
 typedef struct wapi_net_connect_desc_t {
-    wapi_chained_struct_t*  nextInChain;
+    uint64_t                nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
     wapi_string_view_t      url;
     uint32_t                transport;   /* wapi_net_transport_t */
+    uint32_t                _pad;
 } wapi_net_connect_desc_t;
 
 /* ============================================================
@@ -62,8 +64,8 @@ typedef struct wapi_net_connect_desc_t {
  * Without it, the connection is plaintext (except QUIC, which
  * is always TLS). sType = WAPI_STYPE_NET_TLS_CONFIG.
  *
- * Layout (8 bytes on wasm32, align 4):
- *   Offset  0: wapi_chained_struct_t chain
+ * Layout (16 bytes, align 8):
+ *   Offset  0: wapi_chained_struct_t chain  (16 bytes)
  */
 
 typedef struct wapi_net_tls_config_t {
@@ -75,11 +77,12 @@ typedef struct wapi_net_tls_config_t {
  * Listen Descriptor
  * ============================================================
  *
- * Layout (20 bytes, align 4):
- *   Offset  0: wapi_string_view_t addr  Bind address string
- *   Offset  8: uint32_t port         Port number
- *   Offset 12: uint32_t transport    wapi_net_transport_t
- *   Offset 16: uint32_t backlog      Connection backlog size
+ * Layout (32 bytes, align 8):
+ *   Offset  0: wapi_string_view_t addr  Bind address string (16 bytes)
+ *   Offset 16: uint32_t port            Port number
+ *   Offset 20: uint32_t transport       wapi_net_transport_t
+ *   Offset 24: uint32_t backlog         Connection backlog size
+ *   Offset 28: uint32_t _pad
  */
 
 typedef struct wapi_net_listen_desc_t {
@@ -87,6 +90,7 @@ typedef struct wapi_net_listen_desc_t {
     uint32_t              port;
     uint32_t              transport;   /* wapi_net_transport_t */
     uint32_t              backlog;
+    uint32_t              _pad;
 } wapi_net_listen_desc_t;
 
 /* ============================================================

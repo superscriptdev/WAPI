@@ -36,32 +36,32 @@ typedef enum wapi_authn_type_t {
  * Credential
  * ============================================================
  *
- * Layout (64 bytes on wasm32, align 4):
- *   Offset  0: ptr      id
- *   Offset  4: uint32_t id_len
- *   Offset  8: uint32_t type       (wapi_authn_type_t)
- *   Offset 12: ptr      pubkey
- *   Offset 16: uint32_t pubkey_len
- *   Offset 20: ptr      user
- *   Offset 24: uint32_t user_len
- *   Offset 28: uint8_t  _pad[36]   (reserved, must be zero)
+ * Layout (64 bytes, align 8):
+ *   Offset  0: uint64_t id             Linear memory address of credential ID
+ *   Offset  8: uint32_t id_len
+ *   Offset 12: uint32_t type           (wapi_authn_type_t)
+ *   Offset 16: uint64_t pubkey         Linear memory address of public key
+ *   Offset 24: uint32_t pubkey_len
+ *   Offset 28: uint32_t _pad0
+ *   Offset 32: uint64_t user           Linear memory address of user data
+ *   Offset 40: uint32_t user_len
+ *   Offset 44: uint8_t  _reserved[20]  (reserved, must be zero)
  */
 
 typedef struct wapi_authn_credential_t {
-    const uint8_t*  id;
+    uint64_t        id;             /* Linear memory address of credential ID */
     wapi_size_t     id_len;
     uint32_t        type;           /* wapi_authn_type_t */
-    const uint8_t*  pubkey;
+    uint64_t        pubkey;         /* Linear memory address of public key */
     wapi_size_t     pubkey_len;
-    const uint8_t*  user;
+    uint32_t        _pad0;
+    uint64_t        user;           /* Linear memory address of user data */
     wapi_size_t     user_len;
-    uint8_t         _pad[36];
+    uint8_t         _reserved[20];
 } wapi_authn_credential_t;
 
-#ifdef __wasm__
 _Static_assert(sizeof(wapi_authn_credential_t) == 64,
-               "wapi_authn_credential_t must be 64 bytes on wasm32");
-#endif
+               "wapi_authn_credential_t must be 64 bytes");
 
 /* ============================================================
  * Authentication Functions

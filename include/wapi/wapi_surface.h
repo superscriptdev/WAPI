@@ -35,19 +35,20 @@ extern "C" {
  * Surface Descriptor
  * ============================================================
  *
- * Layout (24 bytes on wasm32, align 8):
- *   Offset  0: ptr          nextInChain  (chain wapi_window_config_t for windowed)
- *   Offset  4: int32_t      width        Requested width (0 = host default)
- *   Offset  8: int32_t      height       Requested height (0 = host default)
- *   Offset 12: (4 bytes padding)
+ * Layout (24 bytes, align 8):
+ *   Offset  0: uint64_t     nextInChain  (address of chained struct, or 0)
+ *   Offset  8: int32_t      width        Requested width (0 = host default)
+ *   Offset 12: int32_t      height       Requested height (0 = host default)
  *   Offset 16: wapi_flags_t flags        WAPI_SURFACE_FLAG_*
+ *   Offset 20: uint32_t     _pad
  */
 
 typedef struct wapi_surface_desc_t {
-    wapi_chained_struct_t*  nextInChain;
+    uint64_t                nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
     int32_t                 width;
     int32_t                 height;
     wapi_flags_t            flags;
+    uint32_t                _pad;
 } wapi_surface_desc_t;
 
 /* ============================================================

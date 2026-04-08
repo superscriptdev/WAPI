@@ -164,45 +164,45 @@ typedef enum wapi_sandbox_t {
  * Layout (128 bytes, align 8):
  *   Offset   0: uint32_t platform            wapi_platform_t
  *   Offset   4: uint32_t device_class        wapi_device_class_t
- *   Offset   8: uint32_t os_version_ptr      Pointer to UTF-8 version string
- *   Offset  12: uint32_t os_version_len      Byte length of version string
- *   Offset  16: uint32_t cpu_count           Number of logical CPU cores
- *   Offset  20: uint32_t physical_cpu_count  Physical (non-HT) cores
- *   Offset  24: uint32_t ram_mb              Approximate RAM in megabytes
- *   Offset  28: uint32_t cpu_arch            wapi_cpu_arch_t
+ *   Offset   8: uint64_t os_version_ptr      Linear memory address of UTF-8 version string
+ *   Offset  16: uint64_t locale_ptr          Linear memory address of UTF-8 locale string
+ *   Offset  24: uint64_t timezone_ptr        Linear memory address of UTF-8 timezone string
  *   Offset  32: uint64_t cpu_features        Bitmask of WAPI_CPU_* flags
- *   Offset  40: uint32_t cache_line_size     CPU cache line in bytes (typically 64)
- *   Offset  44: uint32_t page_size           System memory page in bytes (typically 4096)
- *   Offset  48: uint32_t locale_ptr          Pointer to UTF-8 locale string
- *   Offset  52: uint32_t locale_len          Byte length of locale string
- *   Offset  56: uint32_t timezone_ptr        Pointer to UTF-8 timezone string
- *   Offset  60: uint32_t timezone_len        Byte length of timezone string
- *   Offset  64: uint32_t dark_mode           1 if dark mode enabled
- *   Offset  68: uint32_t accent_color_rgba   Accent color as 0xRRGGBBAA
- *   Offset  72: uint32_t sandbox             wapi_sandbox_t
- *   Offset  76: uint8_t  _reserved[52]
+ *   Offset  40: uint32_t os_version_len      Byte length of version string
+ *   Offset  44: uint32_t cpu_count           Number of logical CPU cores
+ *   Offset  48: uint32_t physical_cpu_count  Physical (non-HT) cores
+ *   Offset  52: uint32_t ram_mb              Approximate RAM in megabytes
+ *   Offset  56: uint32_t cpu_arch            wapi_cpu_arch_t
+ *   Offset  60: uint32_t cache_line_size     CPU cache line in bytes (typically 64)
+ *   Offset  64: uint32_t page_size           System memory page in bytes (typically 4096)
+ *   Offset  68: uint32_t locale_len          Byte length of locale string
+ *   Offset  72: uint32_t timezone_len        Byte length of timezone string
+ *   Offset  76: uint32_t dark_mode           1 if dark mode enabled
+ *   Offset  80: uint32_t accent_color_rgba   Accent color as 0xRRGGBBAA
+ *   Offset  84: uint32_t sandbox             wapi_sandbox_t
+ *   Offset  88: uint8_t  _reserved[40]
  */
 
 typedef struct wapi_sysinfo_t {
     uint32_t    platform;
     uint32_t    device_class;
-    uint32_t    os_version_ptr;
+    uint64_t    os_version_ptr;
+    uint64_t    locale_ptr;
+    uint64_t    timezone_ptr;
+    uint64_t    cpu_features;
     uint32_t    os_version_len;
     uint32_t    cpu_count;
     uint32_t    physical_cpu_count;
     uint32_t    ram_mb;
     uint32_t    cpu_arch;
-    uint64_t    cpu_features;
     uint32_t    cache_line_size;
     uint32_t    page_size;
-    uint32_t    locale_ptr;
     uint32_t    locale_len;
-    uint32_t    timezone_ptr;
     uint32_t    timezone_len;
     uint32_t    dark_mode;
     uint32_t    accent_color_rgba;
     uint32_t    sandbox;
-    uint8_t     _reserved[52];
+    uint8_t     _reserved[40];
 } wapi_sysinfo_t;
 
 _Static_assert(sizeof(wapi_sysinfo_t) == 128,

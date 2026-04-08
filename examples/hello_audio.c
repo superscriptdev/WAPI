@@ -44,8 +44,7 @@ static float sine_approx(float x) {
 #define DURATION_S  2       /* Play for 2 seconds */
 
 WAPI_EXPORT(wapi_main)
-wapi_result_t wapi_main(const wapi_context_t* ctx) {
-    (void)ctx;
+wapi_result_t wapi_main(void) {
     wapi_result_t res;
 
     /* Check capabilities */

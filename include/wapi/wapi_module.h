@@ -3,25 +3,49 @@
  * Version 1.0.0
  *
  * This module defines how Wasm modules compose at RUNTIME: loading
- * isolated modules by content hash, calling their functions, and
- * transferring data across memory boundaries.
+ * isolated modules by content hash, calling their functions, sharing
+ * data via a borrow system on shared memory, and controlling child
+ * I/O via policy.
  *
- * TWO WORLDS of module composition:
+ * MEMORY MODEL:
  *
- *   BUILD-TIME (shared memory, one binary):
- *     Libraries are linked into a single Wasm module. They share
- *     linear memory naturally. Pass pointers, call functions —
- *     this is how shared libraries have worked for 40 years.
- *     No WAPI mechanism needed; it's just C linking.
+ *   Memory 0 (private):
+ *     Each module's own linear memory. Stack, globals, internal state.
+ *     Fully isolated — no other module can access it. Allocated via
+ *     wapi_memory.h (wapi_mem_alloc, etc.).
  *
- *   RUNTIME (isolated memory, separate modules):
- *     Each module has its own linear memory. The host mediates all
- *     data transfer. This file defines the runtime linking API:
- *       - Load modules by content hash (SHA-256)
- *       - Map buffers across module boundaries
- *       - Create allocator handles for variable-length output
- *       - Call functions with host-mediated argument passing
- *       - Control child I/O via policy
+ *   Memory 1 (shared):
+ *     A single shared linear memory owned by the application. All
+ *     loaded child modules share the same memory 1 instance.
+ *
+ *     OWNERSHIP: The application always has full access to all of
+ *     shared memory — it owns it. Child modules can only access
+ *     regions they have been explicitly lent via wapi_module_lend.
+ *     Both the application and children can allocate regions in
+ *     shared memory (wapi_module_shared_alloc), but children can
+ *     only access their own allocations or regions lent to them.
+ *
+ *     This means child output is simple: the child allocates in
+ *     shared memory, writes its result, returns the offset. The
+ *     application reads it directly — no borrow needed.
+ *
+ *     Two access paths:
+ *       - Multi-memory: import memory 1, load/store directly (zero copy)
+ *       - Host-call: wapi_module_shared_read/write (one copy, portable C)
+ *
+ * BUILD-TIME vs RUNTIME:
+ *
+ *   Build-time linked libraries share memory 0 naturally. They take
+ *   wapi_allocator_t vtables as explicit parameters (Zig-style).
+ *   No WAPI mechanism needed — it's just C linking.
+ *
+ *   Runtime linked modules each have their own memory 0. They exchange
+ *   data through shared memory (memory 1) with the borrow system, or
+ *   via explicit copies (wapi_module_copy_in).
+ *
+ *   A library can be written to work in both modes: accept a
+ *   wapi_allocator_t for private memory operations. At build time,
+ *   the vtable points to memory 0 directly. At runtime, same code.
  *
  * IDENTITY: Modules are content-addressed by the SHA-256 hash of their
  * Wasm binary. The hash IS the identity. Name and version are human-
@@ -181,16 +205,26 @@ wapi_result_t wapi_module_release(wapi_handle_t module);
  * mediates all data transfer between the caller and the child.
  *
  * Arguments and results are Wasm value types (i32, i64, f32, f64).
- * To pass structured data, map buffers first (wapi_module_map),
- * then pass the child-side pointer as an i32 argument.
+ * To pass data, use shared memory with borrows or copy_in, then
+ * pass the offset/pointer as an i32 argument.
  *
- * Typical pattern:
- *   1. Map input buffer:  wapi_module_map(mod, data, len, READ, &child_ptr)
- *   2. Create allocator:  wapi_module_alloc_create(mod, &alloc)
- *   3. Call function:     wapi_module_call(mod, func, args, ...)
- *   4. Read output:       wapi_module_alloc_get(alloc, 0, &out, &out_len)
- *   5. Cleanup:           wapi_module_unmap(mod, child_ptr)
- *                         wapi_module_alloc_destroy(alloc)
+ * Input pattern (shared memory, zero-copy):
+ *   1. Allocate shared: off = wapi_module_shared_alloc(size, align)
+ *   2. Write data:      wapi_module_shared_write(off, data, len)
+ *   3. Lend to child:   wapi_module_lend(mod, off, WAPI_LEND_READ, &b)
+ *   4. Call function:   wapi_module_call(mod, func, [off, len], ...)
+ *   5. Reclaim:         wapi_module_reclaim(b)
+ *   6. Free shared:     wapi_module_shared_free(off)
+ *
+ * Output pattern (child allocates, app reads directly):
+ *   1. Call function:   wapi_module_call(mod, func, args, ...)
+ *      (child allocates in shared memory, returns offset)
+ *   2. Read result:     wapi_module_shared_read(result_off, buf, len)
+ *      (app owns shared memory — no borrow needed)
+ *
+ * Simple pattern (copy, no shared memory needed):
+ *   1. Copy in:         wapi_module_copy_in(mod, data, len, &child_ptr)
+ *   2. Call function:   wapi_module_call(mod, func, [child_ptr, len], ...)
  */
 
 /**
@@ -210,124 +244,230 @@ wapi_result_t wapi_module_call(wapi_handle_t module, wapi_handle_t func,
                                wapi_val_t* results, wapi_size_t nresults);
 
 /* ============================================================
- * Buffer Mapping (Caller -> Child)
+ * Shared Memory Allocation
  * ============================================================
- * Map a region of the caller's linear memory into a child module's
- * address space. The host copies or maps the data; the child gets
- * a pointer in its own linear memory.
+ * Allocate and free regions in the application's shared memory
+ * (Wasm memory 1). The host manages the allocator. Any module
+ * (application or child) can allocate. Allocations define borrow
+ * granularity — you can only lend what you allocated.
  *
- * Mappings are ephemeral — intended for the duration of one or
- * more calls, then unmapped. The host may copy data (not share
- * physical pages), so changes by the child are visible only if
- * WAPI_MAP_WRITE is set and the host copies back on unmap.
+ * Ownership rules:
+ *   - The application owns all shared memory. It can read, write,
+ *     free, and lend ANY region — regardless of who allocated it.
+ *   - A child module can access: (a) its own allocations, and
+ *     (b) regions explicitly lent to it via wapi_module_lend.
+ *   - A child can only free and lend its own allocations.
+ *   - Freeing a region with active borrows fails (WAPI_ERR_BUSY).
+ *     Reclaim all borrows before freeing.
+ *
+ * Returns wapi_size_t offsets (positions in memory 1), not
+ * void* pointers (which would be memory 0 addresses).
+ *
+ * Two access paths for the allocated regions:
+ *   - Multi-memory: import memory 1, load/store directly (zero copy)
+ *   - Host-call: wapi_module_shared_read/write (one copy, portable C)
  */
 
-#define WAPI_MAP_READ      0x01  /* Child gets read access */
-#define WAPI_MAP_WRITE     0x02  /* Child gets write access (copied back on unmap) */
-#define WAPI_MAP_READWRITE (WAPI_MAP_READ | WAPI_MAP_WRITE)
+/**
+ * Allocate a region in shared memory.
+ *
+ * @param size   Number of bytes to allocate. Must be > 0.
+ * @param align  Required alignment in bytes. Must be a power of 2.
+ * @return Offset in shared memory (memory 1), or 0 on failure.
+ *
+ * Wasm signature: (i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, shared_alloc)
+wapi_size_t wapi_module_shared_alloc(wapi_size_t size, wapi_size_t align);
 
 /**
- * Map a region of caller's memory into a child module.
+ * Free a previously allocated shared memory region.
+ * The application can free any region. Children can only free
+ * their own allocations. Fails if active borrows exist on
+ * the region (reclaim first).
+ *
+ * @param offset  Offset returned by wapi_module_shared_alloc.
+ * @return WAPI_OK on success, WAPI_ERR_ACCES if child doesn't own
+ *         the region, WAPI_ERR_BUSY if active borrows exist.
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, shared_free)
+wapi_result_t wapi_module_shared_free(wapi_size_t offset);
+
+/**
+ * Resize a shared memory region.
+ *
+ * @param offset    Offset returned by wapi_module_shared_alloc.
+ *                  If 0, behaves like wapi_module_shared_alloc.
+ * @param new_size  New size in bytes. If 0, behaves like
+ *                  wapi_module_shared_free and returns 0.
+ * @param align     Required alignment. Must match original allocation.
+ * @return New offset in shared memory, or 0 on failure.
+ *         On failure, the original region is unchanged.
+ *
+ * Wasm signature: (i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, shared_realloc)
+wapi_size_t wapi_module_shared_realloc(wapi_size_t offset,
+                                       wapi_size_t new_size,
+                                       wapi_size_t align);
+
+/**
+ * Query the usable size of a shared memory allocation.
+ *
+ * @param offset  Offset returned by wapi_module_shared_alloc.
+ * @return Usable size in bytes, or 0 if offset is invalid.
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, shared_usable_size)
+wapi_size_t wapi_module_shared_usable_size(wapi_size_t offset);
+
+/* ============================================================
+ * Shared Memory Access (Portable Path)
+ * ============================================================
+ * For modules that don't use multi-memory. Copies data between
+ * private memory (memory 0) and shared memory (memory 1).
+ *
+ * These are explicit copies — the developer knows data is moving.
+ *
+ * Multi-memory modules skip these entirely and use direct
+ * load/store on memory 1 for zero-copy access.
+ *
+ * Access rules: the application (shared memory owner) always
+ * succeeds. Child modules must have an active borrow covering
+ * the accessed region, otherwise WAPI_ERR_ACCES.
+ */
+
+/**
+ * Copy from shared memory into private memory.
+ *
+ * @param src_offset  Source offset in shared memory (memory 1).
+ * @param dst         Destination pointer in private memory (memory 0).
+ * @param len         Number of bytes to copy.
+ * @return WAPI_OK on success, WAPI_ERR_RANGE if out of bounds,
+ *         WAPI_ERR_ACCES if child has no borrow covering this region.
+ *         The application (owner) always succeeds.
+ *
+ * Wasm signature: (i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, shared_read)
+wapi_result_t wapi_module_shared_read(wapi_size_t src_offset,
+                                      void* dst, wapi_size_t len);
+
+/**
+ * Copy from private memory into shared memory.
+ *
+ * @param dst_offset  Destination offset in shared memory (memory 1).
+ * @param src         Source pointer in private memory (memory 0).
+ * @param len         Number of bytes to copy.
+ * @return WAPI_OK on success, WAPI_ERR_RANGE if out of bounds,
+ *         WAPI_ERR_ACCES if child has no borrow covering this region.
+ *         The application (owner) always succeeds.
+ *
+ * Wasm signature: (i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, shared_write)
+wapi_result_t wapi_module_shared_write(wapi_size_t dst_offset,
+                                       const void* src, wapi_size_t len);
+
+/* ============================================================
+ * Borrow System (Cross-Module Shared Memory Access)
+ * ============================================================
+ * Controls which child modules can access which regions of
+ * shared memory. The application (owner of shared memory)
+ * always has full access and does not need borrows.
+ *
+ * Borrows are tied to allocations — you can only lend what you
+ * allocated via wapi_module_shared_alloc.
+ *
+ * Borrow rules (reader-writer lock semantics per region):
+ *   - WAPI_LEND_READ:  borrower gets read-only access; lender
+ *     retains read access. Multiple concurrent READ borrows
+ *     to different modules are allowed.
+ *   - WAPI_LEND_WRITE: borrower gets exclusive read-write access.
+ *     Lender loses access until reclaim. No concurrent borrows
+ *     on the same region.
+ *
+ * This enables concurrent module execution on different regions:
+ * module B reads region R1 while module C writes region R3.
+ *
+ * Child output pattern: the child allocates in shared memory,
+ * writes its result, returns the offset as an i32 return value.
+ * The application reads it directly — no borrow or transfer
+ * needed, because the application owns shared memory.
+ *
+ * The host enforces borrow rules for child modules. A child
+ * accessing a region it hasn't been lent and didn't allocate
+ * receives WAPI_ERR_ACCES.
+ */
+
+#define WAPI_LEND_READ   0x01  /* Borrower gets read-only access */
+#define WAPI_LEND_WRITE  0x02  /* Borrower gets exclusive read-write */
+
+/**
+ * Lend a shared memory region to a child module.
+ * The region is identified by the offset returned from
+ * wapi_module_shared_alloc — the entire allocation is lent.
+ *
+ * The application can lend any region (it owns all shared memory).
+ * A child can only lend regions it allocated itself.
+ *
+ * @param module  Child module handle.
+ * @param offset  Shared memory offset (from wapi_module_shared_alloc).
+ * @param flags   WAPI_LEND_READ or WAPI_LEND_WRITE.
+ * @param borrow  [out] Borrow handle (used to reclaim).
+ * @return WAPI_OK on success,
+ *         WAPI_ERR_ACCES if child caller doesn't own the region,
+ *         WAPI_ERR_BUSY if a conflicting borrow exists.
+ *
+ * Wasm signature: (i32, i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, lend)
+wapi_result_t wapi_module_lend(wapi_handle_t module,
+                               wapi_size_t offset,
+                               uint32_t flags,
+                               wapi_handle_t* borrow);
+
+/**
+ * Reclaim a borrow, revoking the child's access to the region.
+ *
+ * @param borrow  Borrow handle from wapi_module_lend.
+ * @return WAPI_OK on success.
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_module, reclaim)
+wapi_result_t wapi_module_reclaim(wapi_handle_t borrow);
+
+/* ============================================================
+ * Explicit Copy (Private-to-Private)
+ * ============================================================
+ * Copy data from the caller's private memory into a child
+ * module's private memory. For cases where shared memory isn't
+ * needed (config, seeds, small one-shot inputs).
+ *
+ * The host allocates space in the child's memory 0, copies the
+ * data, and returns the child-side pointer. The child can free
+ * this memory through its own wapi_mem_free.
+ */
+
+/**
+ * Copy data into a child module's private memory.
  *
  * @param module     Child module handle.
- * @param src        Pointer to data in caller's memory.
- * @param len        Number of bytes to map.
- * @param flags      WAPI_MAP_READ, WAPI_MAP_WRITE, or WAPI_MAP_READWRITE.
- * @param child_ptr  [out] Address in the child's linear memory.
+ * @param src        Pointer to data in caller's private memory.
+ * @param len        Number of bytes to copy.
+ * @param child_ptr  [out] Pointer in the child's private memory (memory 0).
  * @return WAPI_OK on success, WAPI_ERR_NOMEM if child can't allocate.
- */
-WAPI_IMPORT(wapi_module, map)
-wapi_result_t wapi_module_map(wapi_handle_t module, const void* src,
-                              wapi_size_t len, uint32_t flags,
-                              uint64_t* child_ptr);
-
-/**
- * Unmap a previously mapped region.
- * If WAPI_MAP_WRITE was set, the host copies modified data back
- * to the caller's original buffer before unmapping.
  *
- * @param module     Child module handle.
- * @param child_ptr  Address returned by wapi_module_map.
- * @return WAPI_OK on success.
+ * Wasm signature: (i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_module, unmap)
-wapi_result_t wapi_module_unmap(wapi_handle_t module, uint64_t child_ptr);
-
-/* ============================================================
- * Allocator Handles (Variable-Length Output)
- * ============================================================
- * When a child function needs to produce variable-length output,
- * the caller creates an allocator handle before the call. The
- * child uses its normal wapi_memory imports to allocate; the host
- * intercepts and tracks these allocations. After the call returns,
- * the caller reads the allocations via wapi_module_alloc_get.
- *
- * This is the Zig-style per-method allocator pattern, adapted
- * for isolated module boundaries via host mediation.
- */
-
-/**
- * Create a host-mediated allocator for a child module.
- * While active, the child's wapi_memory.alloc calls are tracked.
- *
- * @param module       Child module handle.
- * @param alloc_handle [out] Allocator handle.
- * @return WAPI_OK on success.
- */
-WAPI_IMPORT(wapi_module, alloc_create)
-wapi_result_t wapi_module_alloc_create(wapi_handle_t module,
-                                       wapi_handle_t* alloc_handle);
-
-/**
- * Read what the child allocated during a call.
- *
- * @param alloc_handle  Allocator handle from alloc_create.
- * @param index         Allocation index (0, 1, ... in allocation order).
- * @param ptr           [out] Pointer to the data in caller's memory.
- *                      The host copies from the child's allocation.
- * @param len           [out] Size of the allocation in bytes.
- * @return WAPI_OK on success, WAPI_ERR_RANGE if index out of bounds.
- */
-WAPI_IMPORT(wapi_module, alloc_get)
-wapi_result_t wapi_module_alloc_get(wapi_handle_t alloc_handle,
-                                    uint32_t index,
-                                    void** ptr, wapi_size_t* len);
-
-/**
- * Destroy an allocator handle and free all tracked allocations
- * in both the child's and caller's memory.
- *
- * @param alloc_handle  Allocator handle.
- * @return WAPI_OK on success.
- */
-WAPI_IMPORT(wapi_module, alloc_destroy)
-wapi_result_t wapi_module_alloc_destroy(wapi_handle_t alloc_handle);
-
-/* ============================================================
- * I/O Policy (Parent Controls Child's I/O)
- * ============================================================
- * By default, runtime modules have no I/O access. The parent
- * must explicitly grant I/O capabilities via policy flags.
- * The host enforces this when the child calls wapi_io imports.
- */
-
-#define WAPI_IO_POLICY_NONE     0x00  /* No I/O allowed (default) */
-#define WAPI_IO_POLICY_LOG      0x01  /* Logging only */
-#define WAPI_IO_POLICY_FS_READ  0x02  /* Filesystem read */
-#define WAPI_IO_POLICY_FS_WRITE 0x04  /* Filesystem write */
-#define WAPI_IO_POLICY_NET      0x08  /* Networking */
-#define WAPI_IO_POLICY_ALL      0xFF  /* Unrestricted */
-
-/**
- * Set the I/O policy for a child module.
- *
- * @param module        Child module handle.
- * @param policy_flags  Bitwise OR of WAPI_IO_POLICY_* flags.
- * @return WAPI_OK on success.
- */
-WAPI_IMPORT(wapi_module, set_io_policy)
-wapi_result_t wapi_module_set_io_policy(wapi_handle_t module,
-                                        uint32_t policy_flags);
+WAPI_IMPORT(wapi_module, copy_in)
+wapi_result_t wapi_module_copy_in(wapi_handle_t module,
+                                  const void* src, wapi_size_t len,
+                                  uint32_t* child_ptr);
 
 /* ============================================================
  * Module Cache

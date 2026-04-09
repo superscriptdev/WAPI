@@ -103,16 +103,6 @@ wapi_result_t wapi_authn_get_assertion(wapi_string_view_t rp_id,
                                        const void* challenge_ptr,
                                        wapi_size_t challenge_len);
 
-/**
- * Check if WebAuthn / passkey support is available on this platform.
- *
- * @return Non-zero if available, zero otherwise.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi_authn, is_available)
-wapi_bool_t wapi_authn_is_available(void);
-
 #ifdef __cplusplus
 }
 #endif

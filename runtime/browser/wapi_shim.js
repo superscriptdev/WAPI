@@ -2395,17 +2395,26 @@ class ThinPlatform {
         // wapi_module (runtime module linking - stub)
         // -------------------------------------------------------------------
         const wapi_module = {
+            // Module lifecycle
             load(hashPtr, urlPtr, urlLen, modulePtr) { return WAPI_ERR_NOTSUP; },
             get_func(mod, namePtr, nameLen, funcPtr) { return WAPI_ERR_NOTSUP; },
             get_desc(mod, descPtr) { return WAPI_ERR_NOTSUP; },
             get_hash(mod, hashPtr) { return WAPI_ERR_NOTSUP; },
             release(mod) { return WAPI_OK; },
             call(mod, func, argsPtr, nargs, resultsPtr, nresults) { return WAPI_ERR_NOTSUP; },
-            map(mod, src, len, flags, childPtrOut) { return WAPI_ERR_NOTSUP; },
-            unmap(mod, childPtr) { return WAPI_ERR_NOTSUP; },
-            alloc_create(mod, allocHandlePtr) { return WAPI_ERR_NOTSUP; },
-            alloc_get(allocHandle, index, ptrOut, lenOut) { return WAPI_ERR_NOTSUP; },
-            alloc_destroy(allocHandle) { return WAPI_ERR_NOTSUP; },
+            // Shared memory
+            shared_alloc(size, align) { return 0; },
+            shared_free(offset) { return WAPI_ERR_NOTSUP; },
+            shared_realloc(offset, newSize, align) { return 0; },
+            shared_usable_size(offset) { return 0; },
+            shared_read(srcOffset, dstPtr, len) { return WAPI_ERR_NOTSUP; },
+            shared_write(dstOffset, srcPtr, len) { return WAPI_ERR_NOTSUP; },
+            // Borrow system
+            lend(mod, offset, flags, borrowPtr) { return WAPI_ERR_NOTSUP; },
+            reclaim(borrow) { return WAPI_ERR_NOTSUP; },
+            // Explicit copy
+            copy_in(mod, srcPtr, len, childPtrOut) { return WAPI_ERR_NOTSUP; },
+            // I/O policy & cache
             set_io_policy(mod, policyFlags) { return WAPI_ERR_NOTSUP; },
             is_cached(hashPtr) { return 0; },
             prefetch(hashPtr, urlPtr, urlLen) { return WAPI_ERR_NOTSUP; },
@@ -2675,7 +2684,6 @@ class ThinPlatform {
         const wapi_authn = {
             create_credential(rpIdPtr, rpIdLen, userPtr, challengePtr, challengeLen) { return WAPI_ERR_NOTSUP; },
             get_assertion(rpIdPtr, rpIdLen, challengePtr, challengeLen) { return WAPI_ERR_NOTSUP; },
-            is_available() { return 0; },
         };
 
         // -------------------------------------------------------------------
@@ -2783,7 +2791,7 @@ class ThinPlatform {
         // -------------------------------------------------------------------
         const wapi_contacts = {
             pick(propsMask, multiple, resultsBufPtr, resultsBufLen) { return WAPI_ERR_NOTSUP; },
-            is_available() { return 0; },
+            icon_read(iconHandle, bufPtr, bufLen, outLenPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------

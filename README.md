@@ -217,13 +217,15 @@ Opaque pointers (`WGPUDevice*`) work great in native code where the caller and c
 
 async/await is a language-level concern. The ABI is a calling convention. I/O operations are submitted through `wapi_io_submit()` and completions arrive as events in the same queue as input, window, and lifecycle events. One wait point for everything -- a game loop processes key presses and file load completions in the same `switch`. This is how io_uring works (kernel I/O), how webgpu.h works (GPU commands), and how every game loop works (process events, update, render). The module can wrap this in async/await, green threads, or whatever its language prefers.
 
-### Why two worlds of module composition?
+### How does module composition work?
 
-Build-time linking and runtime linking solve different problems and need different mechanisms:
+Each module has private memory (memory 0) for isolation and access to shared memory (memory 1) for zero-copy cross-module data exchange.
 
-**Build-time** (shared memory, one binary): Libraries are linked into a single Wasm module. They share linear memory naturally. Pass pointers, call functions -- this is how shared libraries have worked for 40 years. Allocators and I/O vtables can be passed as explicit function parameters (Zig-style).
+**Build-time** (one binary): Libraries share memory 0 naturally. Pass pointers, call functions -- just C linking. Allocators and I/O vtables can be passed as explicit function parameters (Zig-style).
 
-**Runtime** (isolated memory): Each module has its own linear memory. The host mediates all data transfer via buffer mapping (`wapi_module_map`) and allocator handles (`wapi_module_alloc_*`). The parent controls the child's I/O via policy flags. No shared memory opt-in -- if you need shared memory, link at build time.
+**Runtime** (separate modules): Each module has its own memory 0. Data exchange uses shared memory (memory 1) with a borrow system (`wapi_module_lend` / `wapi_module_reclaim`) for zero-copy access, or explicit copies (`wapi_module_copy_in`) for simple cases. The parent controls the child's I/O via policy flags.
+
+A library can work in both modes by accepting a `wapi_allocator_t` vtable for private memory operations.
 
 There is no context struct. I/O, allocation, and panic reporting are host imports. GPU devices come from `wapi_gpu_request_device()`. A module starts with zero state and queries everything through capability imports. This keeps the ABI clean and enables the host to enforce per-module policy.
 

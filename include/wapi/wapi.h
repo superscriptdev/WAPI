@@ -69,8 +69,8 @@ typedef int32_t wapi_result_t;
 /** Boolean type. 0 = false, 1 = true. */
 typedef int32_t wapi_bool_t;
 
-/** Size type for buffer lengths and counts. */
-typedef uint32_t wapi_size_t;
+/** Size type for buffer lengths and counts (uint64_t for unified wasm32/wasm64 layout). */
+typedef uint64_t wapi_size_t;
 
 /** 64-bit timestamp in nanoseconds. */
 typedef uint64_t wapi_timestamp_t;
@@ -147,8 +147,7 @@ typedef uint64_t wapi_flags_t;
  *
  * Layout (16 bytes, align 8):
  *   Offset  0: uint64_t data   (linear memory address of UTF-8 bytes)
- *   Offset  8: uint32_t length (byte count, or WAPI_STRLEN for null-terminated)
- *   Offset 12: uint32_t _pad
+ *   Offset  8: uint64_t length (byte count, or WAPI_STRLEN for null-terminated)
  *
  * Semantics:
  *   {NULL, WAPI_STRLEN} = absent / null value (the default)
@@ -157,31 +156,28 @@ typedef uint64_t wapi_flags_t;
  *   {any,  0}         = empty string
  */
 
-#define WAPI_STRLEN ((wapi_size_t)UINT32_MAX)
+#define WAPI_STRLEN ((wapi_size_t)UINT64_MAX)
 
 /**
- * String view. The data field is uint64_t (not a pointer) so the
- * layout is identical for wasm32 and wasm64. Wasm32 modules
- * zero-extend their 32-bit addresses.
+ * String view. Both fields are uint64_t so the layout is identical
+ * for wasm32 and wasm64. Wasm32 modules zero-extend their 32-bit values.
  *
  * Layout (16 bytes, align 8):
  *   Offset  0: uint64_t data    (linear memory address of UTF-8 bytes)
- *   Offset  8: uint32_t length  (byte count, or WAPI_STRLEN for null-terminated)
- *   Offset 12: uint32_t _pad
+ *   Offset  8: uint64_t length  (byte count, or WAPI_STRLEN for null-terminated)
  */
 typedef struct wapi_string_view_t {
     uint64_t    data;       /* Linear memory address of UTF-8 bytes */
     wapi_size_t length;
-    uint32_t    _pad;
 } wapi_string_view_t;
 
-#define WAPI_STRING_VIEW_INIT { 0, WAPI_STRLEN, 0 }
+#define WAPI_STRING_VIEW_INIT { 0, WAPI_STRLEN }
 
 /** Create a string view from a C string literal. */
-#define WAPI_STR(s) ((wapi_string_view_t){ (uintptr_t)(s), WAPI_STRLEN, 0 })
+#define WAPI_STR(s) ((wapi_string_view_t){ (uintptr_t)(s), WAPI_STRLEN })
 
 /** Create a string view with explicit length. */
-#define WAPI_STRN(s, n) ((wapi_string_view_t){ (uintptr_t)(s), (n), 0 })
+#define WAPI_STRN(s, n) ((wapi_string_view_t){ (uintptr_t)(s), (n) })
 
 /* ============================================================
  * Chained Struct (Forward Compatibility)
@@ -417,6 +413,7 @@ typedef enum wapi_io_opcode_t {
     /* ---- Pickers (0x1A0-0x1AF) ---- */
     WAPI_IO_OP_CONTACTS_PICK       = 0x1A0, /* addr/len=results_buf, flags=properties_mask, flags2=allow_multiple -> result_ptr=count */
     WAPI_IO_OP_EYEDROPPER_PICK     = 0x1A1, /* -> result_ptr=rgba */
+    WAPI_IO_OP_CONTACTS_ICON_READ  = 0x1A3, /* fd=icon_handle, addr/len=buf -> result_ptr=bytes_written */
     WAPI_IO_OP_PAY_REQUEST_PAYMENT = 0x1A2, /* addr/len=request_desc, addr2/len2=token_buf -> result_ptr=token_len */
 
     /* ---- XR (0x200-0x20F) ---- */
@@ -450,21 +447,21 @@ typedef enum wapi_io_opcode_t {
  * layout is identical for wasm32 and wasm64. Wasm32 modules
  * zero-extend their 32-bit addresses into 64-bit fields.
  *
- * Layout (80 bytes, align 8):
+ * Layout (88 bytes, align 8):
  *   Offset  0: uint32_t opcode
  *   Offset  4: uint32_t flags
  *   Offset  8: int32_t  fd          (file descriptor / handle)
  *   Offset 12: uint32_t _pad0
  *   Offset 16: uint64_t offset      (file offset, or timeout_ns)
  *   Offset 24: uint64_t addr        (pointer to buffer)
- *   Offset 32: uint32_t len         (buffer length)
- *   Offset 36: uint32_t _pad1
+ *   Offset 32: uint64_t len         (buffer length)
  *   Offset 40: uint64_t addr2       (pointer to second buffer / path)
- *   Offset 48: uint32_t len2        (second buffer length)
- *   Offset 52: uint32_t flags2      (operation-specific flags)
- *   Offset 56: uint64_t user_data   (opaque, echoed in completion)
- *   Offset 64: uint64_t result_ptr  (pointer for output values)
- *   Offset 72: uint8_t  reserved[8]
+ *   Offset 48: uint64_t len2        (second buffer length)
+ *   Offset 56: uint32_t flags2      (operation-specific flags)
+ *   Offset 60: uint32_t _pad1
+ *   Offset 64: uint64_t user_data   (opaque, echoed in completion)
+ *   Offset 72: uint64_t result_ptr  (pointer for output values)
+ *   Offset 80: uint8_t  reserved[8]
  */
 
 typedef struct wapi_io_op_t {
@@ -474,11 +471,11 @@ typedef struct wapi_io_op_t {
     uint32_t    _pad0;
     uint64_t    offset;     /* File offset or timeout in nanoseconds */
     uint64_t    addr;       /* Pointer to buffer */
-    uint32_t    len;        /* Buffer length */
-    uint32_t    _pad1;
+    uint64_t    len;        /* Buffer length */
     uint64_t    addr2;      /* Second pointer (path for open, etc.) */
-    uint32_t    len2;       /* Second length */
+    uint64_t    len2;       /* Second length */
     uint32_t    flags2;     /* Additional operation-specific flags */
+    uint32_t    _pad1;
     uint64_t    user_data;  /* Echoed in completion, for correlation */
     uint64_t    result_ptr; /* Pointer to write output (bytes read, fd, etc.) */
     uint8_t     reserved[8];
@@ -1072,19 +1069,19 @@ typedef union wapi_event_t {
  * I/O and allocation are NOT ambient in context. Instead:
  *
  *   - Main apps call I/O host imports directly (wapi_io_submit, etc.)
- *   - Build-time libraries take vtables as explicit parameters
+ *   - Libraries take vtables as explicit parameters
  *   - Runtime modules use host imports; parent controls via I/O policy
  *
  * Vtable types (wapi_allocator_t, wapi_io_t, wapi_panic_handler_t)
- * are defined here for use by build-time library composition, but
- * they are NOT part of any context struct.
+ * are defined here for use by library composition (both build-time
+ * and runtime-linked), but they are NOT part of any context struct.
  * ################################################################ */
 
 /* ============================================================
- * Allocator Vtable (Build-Time Library Convention)
+ * Allocator Vtable (Library Convention)
  * ============================================================
- * Function table with opaque context pointer. Used when build-time
- * linked libraries accept an explicit allocator parameter (Zig-style).
+ * Function table with opaque context pointer. Used when libraries
+ * accept an explicit allocator parameter (Zig-style).
  * Pass explicitly to functions that need it.
  *
  * The `impl` pointer carries per-instance state (arena position,
@@ -1105,10 +1102,10 @@ typedef struct wapi_allocator_t {
 } wapi_allocator_t;
 
 /* ============================================================
- * I/O Vtable (Build-Time Library Convention)
+ * I/O Vtable (Library Convention)
  * ============================================================
- * Function table for I/O operations. Used when build-time linked
- * libraries accept an explicit I/O parameter. NOT part of
+ * Function table for I/O operations. Used when libraries accept
+ * an explicit I/O parameter. NOT part of any context struct.
  * Pass explicitly to functions that need I/O.
  *
  * Main applications use host imports directly (see wapi_io_submit,
@@ -1135,10 +1132,10 @@ typedef struct wapi_io_t {
 } wapi_io_t;
 
 /* ============================================================
- * Panic Handler Vtable (Build-Time Library Convention)
+ * Panic Handler Vtable (Library Convention)
  * ============================================================
- * Function table for panic reporting. Used when build-time linked
- * libraries accept an explicit panic handler parameter. NOT part
+ * Function table for panic reporting. Used when libraries accept
+ * an explicit panic handler parameter. NOT part of any context struct.
  * Pass explicitly to functions that need panic handling.
  *
  * Main applications use the wapi_panic_report host import directly.
@@ -1155,10 +1152,9 @@ typedef struct wapi_panic_handler_t {
 /* ============================================================
  * Direct I/O Host Imports
  * ============================================================
- * Main applications call these directly instead of using an I/O
- * vtable. The host routes operations based on the calling module.
- * For runtime (isolated) modules, the host enforces the parent's
- * I/O policy (set via wapi_module_set_io_policy).
+ * Main applications call these directly. Libraries and runtime
+ * modules receive I/O capability through an explicit wapi_io_t
+ * vtable passed by the caller (see wapi_io_t).
  *
  * Import module: "wapi_io"
  */
@@ -1275,6 +1271,7 @@ static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
 #define WAPI_CAP_DIALOG        "wapi.dialog"
 #define WAPI_CAP_SYSINFO       "wapi.sysinfo"
 #define WAPI_CAP_EYEDROP       "wapi.eyedrop"
+#define WAPI_CAP_CONTACTS      "wapi.contacts"
 
 /* ============================================================
  * Presets
@@ -1489,14 +1486,14 @@ _Static_assert(offsetof(wapi_io_op_t, _pad0)      == 12, "");
 _Static_assert(offsetof(wapi_io_op_t, offset)     == 16, "");
 _Static_assert(offsetof(wapi_io_op_t, addr)       == 24, "");
 _Static_assert(offsetof(wapi_io_op_t, len)        == 32, "");
-_Static_assert(offsetof(wapi_io_op_t, _pad1)      == 36, "");
 _Static_assert(offsetof(wapi_io_op_t, addr2)      == 40, "");
 _Static_assert(offsetof(wapi_io_op_t, len2)       == 48, "");
-_Static_assert(offsetof(wapi_io_op_t, flags2)     == 52, "");
-_Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
-_Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
-_Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
-_Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
+_Static_assert(offsetof(wapi_io_op_t, flags2)     == 56, "");
+_Static_assert(offsetof(wapi_io_op_t, _pad1)      == 60, "");
+_Static_assert(offsetof(wapi_io_op_t, user_data)  == 64, "");
+_Static_assert(offsetof(wapi_io_op_t, result_ptr) == 72, "");
+_Static_assert(offsetof(wapi_io_op_t, reserved)   == 80, "");
+_Static_assert(sizeof(wapi_io_op_t) == 88, "wapi_io_op_t must be 88 bytes");
 
 /* --- Event Common Header (16 bytes, align 8) --- */
 _Static_assert(offsetof(wapi_event_common_t, type)       == 0, "");
@@ -1673,7 +1670,6 @@ _Static_assert(sizeof(wapi_io_event_t) == 32, "wapi_io_event_t must be 32 bytes"
 /* String View (16 bytes, align 8) */
 _Static_assert(offsetof(wapi_string_view_t, data)   == 0, "");
 _Static_assert(offsetof(wapi_string_view_t, length) == 8, "");
-_Static_assert(offsetof(wapi_string_view_t, _pad)   == 12, "");
 _Static_assert(sizeof(wapi_string_view_t) == 16, "wapi_string_view_t must be 16 bytes");
 
 /* Chained Struct (16 bytes, align 8) */

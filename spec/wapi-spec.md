@@ -9,17 +9,16 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
-2. [Design Principles](#2-design-principles)
-3. [Calling Convention](#3-calling-convention)
-4. [Handle System](#4-handle-system)
-5. [Error Handling](#5-error-handling)
-6. [Struct Layout Rules](#6-struct-layout-rules)
-7. [Import Namespaces](#7-import-namespaces)
-8. [Async I/O Model](#8-async-io-model)
-9. [Module Entry Points](#9-module-entry-points)
-10. [Presets](#10-presets)
-11. [Module Linking](#11-module-linking)
-12. [Browser Integration](#12-browser-integration)
+2. [Calling Convention](#2-calling-convention)
+3. [Handle System](#3-handle-system)
+4. [Error Handling](#4-error-handling)
+5. [Struct Layout Rules](#5-struct-layout-rules)
+6. [Import Namespaces](#6-import-namespaces)
+7. [Async I/O Model](#7-async-io-model)
+8. [Module Entry Points](#8-module-entry-points)
+9. [Capabilities](#9-capabilities)
+10. [Module Linking](#10-module-linking)
+11. [Browser Integration](#11-browser-integration)
 ---
 
 ## 1. Overview
@@ -35,7 +34,7 @@ Where WASI and the Component Model aim for language-agnostic composability throu
 - **One binary, one ABI, every platform.** A compiled `.wasm` file runs on any conforming host without recompilation, relinking, or adaptation layers.
 - **Zero abstraction tax.** The ABI maps directly to Wasm value types. No serialization, no intermediate representations, no code generation steps between the application and the host.
 - **Capability-based security by default.** Modules start with zero access. Every resource is a host-validated handle. There is no ambient authority.
-- **Additive complexity.** A CLI tool imports only `wapi_env` and `wapi_fs`. A game imports the full graphical stack. The module declares what it needs; the host provides exactly that.
+- **Additive complexity.** A CLI tool imports only `wapi_env` and `wapi_filesystem`. A game imports the full graphical stack. The module declares what it needs; the host provides exactly that.
 
 ### 1.2 Non-Goals
 
@@ -45,59 +44,27 @@ Where WASI and the Component Model aim for language-agnostic composability throu
 
 ---
 
-## 2. Design Principles
+## 2. Calling Convention
 
-### 2.1 Capabilities All the Way Down
-
-Every external resource (file, network connection, GPU device, audio stream, clipboard, window) is represented as an opaque `i32` handle. The host validates every handle on every call. Invalid handles produce `WAPI_ERR_BADF`.
-
-Modules cannot fabricate handles. Handles are **granted** by the host in response to explicit requests (open a file, create a surface, request a GPU device). The default state is zero access.
-
-This model applies uniformly:
-- Filesystem access requires pre-opened directory handles granted by the host.
-- Network access requires connecting to an explicit URL; the host may deny the connection based on policy.
-- GPU access requires requesting a device; the host may return `WAPI_ERR_NOTCAPABLE`.
-- Clipboard access requires the clipboard capability; the host may gate it on user gesture.
-
-### 2.2 Abstracting Over Compute
-
-The WAPI separates compute into two domains:
-
-- **CPU compute** is handled by the WebAssembly ISA itself. The module's compiled code runs in the Wasm virtual machine. No additional abstraction is needed.
-- **GPU compute** is handled by `webgpu.h`. The WAPI bridges its surface model to WebGPU but does not redefine the GPU API. Modules include `webgpu.h` directly and call standard `wgpu*` functions.
-
-This separation means the ABI itself contains no shader languages, no pipeline state descriptions, and no buffer binding tables. All of that lives in `webgpu.h`, maintained independently by the webgpu-native project.
-
-### 2.3 Shared Dependencies, Not Bundled Duplicates
-
-Modules can be loaded at runtime by content hash, with the runtime caching and deduplicating common dependencies (e.g., image decoders, math libraries). Build-time linking bundles dependencies into a single binary. Runtime linking keeps modules isolated with host-mediated data transfer. This is described in detail in [Section 11: Module Linking](#11-module-linking).
-
----
-
-## 3. Calling Convention
-
-### 3.1 Value Types
+### 2.1 Value Types
 
 All functions at the ABI boundary use only WebAssembly value types:
 
 | Wasm Type | Size    | C Equivalent     | Usage                                    |
 |-----------|---------|------------------|------------------------------------------|
-| `i32`     | 4 bytes | `int32_t`        | Handles, result codes, pointers, sizes, enums, booleans, flags |
-| `i64`     | 8 bytes | `int64_t`        | Timestamps, file offsets, user data      |
+| `i32`     | 4 bytes | `int32_t`        | Handles, result codes, enums, booleans, flags |
+| `i64`     | 8 bytes | `int64_t`        | Pointers, sizes, timestamps, file offsets, user data |
 | `f32`     | 4 bytes | `float`          | Coordinates, scale factors, audio levels |
 | `f64`     | 8 bytes | `double`         | (reserved for future use)                |
 
-No other types cross the ABI boundary. Structs, strings, and arrays are passed by pointer (an `i32` in wasm32).
+No other types cross the ABI boundary. Structs, strings, and arrays are passed by pointer (`i64`).
 
-### 3.2 Pointer Representation
+### 2.2 Pointer Representation
 
-All pointers are `i32` values in wasm32. They reference byte offsets into the module's linear memory. The host reads and writes the module's linear memory directly to exchange structured data.
+**Design principle: one ABI for both wasm32 and wasm64.** All pointers and sizes at the Wasm function boundary are `i64`. Wasm32 modules zero-extend their 32-bit addresses and lengths into `i64` parameters. All address/pointer/size fields in ABI structs are `uint64_t`. This costs a few extra bytes and an extend instruction per pointer in wasm32 but eliminates the need for two ABI profiles, two sets of function signatures, two sets of struct layouts, and two code paths in every host implementation.
 
-### 3.2.1 Memory64 (wasm64)
+Pointers reference byte offsets into the module's linear memory. The host reads and writes linear memory directly to exchange structured data. This applies to:
 
-**Design principle: one struct layout for both wasm32 and wasm64.** All address/pointer fields in ABI structs are `uint64_t`, regardless of pointer width. Wasm32 modules zero-extend their 32-bit addresses into 64-bit fields. This costs a few extra bytes per struct in wasm32 but eliminates the need for two ABI profiles, two sets of struct layouts, and two code paths in every host implementation.
-
-This applies to:
 - Address fields in `wapi_io_op_t` (`addr`, `addr2`, `result_ptr`)
 - Pointer fields in `wapi_string_view_t` (`data`)
 - Chain pointers in `wapi_chained_struct_t` (`next`)
@@ -106,37 +73,39 @@ This applies to:
 
 Size and count fields that may need to span the full address space (array element counts, byte lengths) are `uint64_t`, matching the address field convention. Wasm32 modules zero-extend their 32-bit values. Fields that are inherently bounded (handles (`int32_t`), enums, flags) remain their natural width.
 
-**Cross-width module linking** is supported for runtime (isolated) modules. The module-to-module boundary is handle-based: function handles (`i32`), buffer mappings, and Wasm value types. None of these depend on pointer width. The host adapts import signatures to each module's memory type independently. A wasm64 application can load a wasm32 library (or vice versa) in isolated mode with no special handling.
+**No truncation risk:** pointers always reference the module's own linear memory. A wasm32 module's memory is bounded at 4 GB, so every valid address fits in the lower 32 bits of an `i64`. The host never writes an address exceeding 32 bits into a wasm32 module's structs because no such address exists in that module's memory.
+
+Because the import signatures are identical (`i64` for all pointers and sizes), **cross-width module linking** works for runtime (isolated) modules with no adaptation. A wasm64 application can load a wasm32 library (or vice versa) in isolated mode; the module-to-module boundary is handle-based (function handles, buffer mappings, Wasm value types), none of which depend on pointer width.
 
 **Build-time shared linear memory** requires matching pointer width. Two modules linked into the same binary must both be wasm32 or both be wasm64. This is enforced at link time.
 
-### 3.3 Return Codes
+### 2.3 Return Codes
 
 All fallible functions return `wapi_result_t` (an `i32`):
 
 - `0` (`WAPI_OK`): success.
-- Negative values: error codes (see [Section 5: Error Handling](#5-error-handling)).
-- Positive values: used by some functions to return counts (e.g., `wapi_io_submit` returns the number of operations submitted).
+- Negative values: error codes (see [Section 4: Error Handling](#4-error-handling)).
+- Positive values: used by some functions to return counts (e.g., `io->submit()` returns the number of operations submitted).
 
-### 3.4 Output Values
+### 2.4 Output Values
 
 Functions that produce output values receive a **caller-provided pointer** as a parameter. The host writes the result to the pointed-to location in linear memory. For example:
 
 ```
-wapi_result_t wapi_fs_read(wapi_handle_t fd, void* buf, uint64_t len, uint64_t* bytes_read);
+wapi_result_t wapi_filesystem_read(wapi_handle_t fd, void* buf, uint64_t len, uint64_t* bytes_read);
 ```
 
 At the Wasm level, this is:
 
 ```
-(func $wapi_fs_read (import "wapi_fs" "read") (param i32 i32 i32 i32) (result i32))
+(func $wapi_filesystem_read (import "wapi_filesystem" "read") (param i32 i64 i64 i64) (result i32))
 ```
 
-The fourth parameter (`bytes_read`) is an `i32` pointer. On success, the host writes a `uint32_t` value to that address in linear memory.
+The first parameter (`fd`) is an `i32` handle. The remaining parameters are `i64`: `buf` (pointer), `len` (size), and `bytes_read` (pointer). On success, the host writes a `uint64_t` value to the `bytes_read` address in linear memory.
 
-### 3.5 Strings
+### 2.5 Strings
 
-Strings are passed as `(pointer, length)` pairs, two `i32` parameters at the Wasm level. All strings crossing the host boundary are UTF-8 encoded. There is no null-terminator requirement when an explicit length is provided. Modules are free to use any internal string encoding (UTF-16, Latin-1, etc.); the UTF-8 requirement applies only to strings passed through WAPI host imports and exports.
+Strings are passed as `(pointer, length)` pairs, two `i64` parameters at the Wasm level. All strings crossing the host boundary are UTF-8 encoded. There is no null-terminator requirement when an explicit length is provided. Modules are free to use any internal string encoding (UTF-16, Latin-1, etc.); the UTF-8 requirement applies only to strings passed through WAPI host imports and exports.
 
 The C-level type is `wapi_string_view_t`:
 
@@ -151,23 +120,23 @@ typedef struct wapi_string_view_t {
 
 **Sentinel value:** When `length` equals `WAPI_STRLEN` (`UINT64_MAX`), the string is null-terminated and the host reads until the first `0x00` byte.
 
-When strings appear as function parameters (not inside a struct), they are split into two separate Wasm parameters: `(i32 ptr, i32 len)`.
+When strings appear as function parameters (not inside a struct), they are split into two separate Wasm parameters: `(i64 ptr, i64 len)`. Wasm32 modules zero-extend both values.
 
-### 3.6 Structs
+### 2.6 Structs
 
-Structs are passed **by pointer**. The host reads and writes struct fields directly from the module's linear memory. All struct layouts are pinned at the byte level (see [Section 6: Struct Layout Rules](#6-struct-layout-rules)).
+Structs are passed **by pointer**. The host reads and writes struct fields directly from the module's linear memory. All struct layouts are pinned at the byte level (see [Section 5: Struct Layout Rules](#5-struct-layout-rules)).
 
-At the Wasm level, a struct pointer is a single address-width parameter. The host adapts the import signature to the module's memory type (see [Section 3.2.1](#321-memory64-wasm64)).
+At the Wasm level, a struct pointer is a single `i64` parameter.
 
-### 3.7 Arrays
+### 2.7 Arrays
 
-Arrays are passed as `(pointer, count)` pairs. The pointer references the first element; the count specifies the number of elements. In struct layouts, both fields are `uint64_t` following the unified layout principle (see [Section 3.2.1](#321-memory64-wasm64)). Wasm32 modules zero-extend their 32-bit values.
+Arrays are passed as `(pointer, count)` pairs — two `i64` parameters at the Wasm level. The pointer references the first element; the count specifies the number of elements. In struct layouts, both fields are `uint64_t` following the unified layout principle (see [Section 2.2](#22-pointer-representation)). Wasm32 modules zero-extend their 32-bit values.
 
 ---
 
-## 4. Handle System
+## 3. Handle System
 
-### 4.1 Handle Type
+### 3.1 Handle Type
 
 All host-managed resources are referenced by `wapi_handle_t`, defined as `int32_t`. Handles are opaque tokens. The module must not interpret their numeric value or perform arithmetic on them.
 
@@ -175,7 +144,7 @@ All host-managed resources are referenced by `wapi_handle_t`, defined as `int32_
 typedef int32_t wapi_handle_t;
 ```
 
-### 4.2 Invalid Handle
+### 3.2 Invalid Handle
 
 The value `0` is reserved as the invalid/null handle:
 
@@ -185,7 +154,7 @@ The value `0` is reserved as the invalid/null handle:
 
 Functions that return handles return `WAPI_HANDLE_INVALID` on failure. Functions that accept handles reject `WAPI_HANDLE_INVALID` with `WAPI_ERR_BADF`.
 
-### 4.3 Pre-granted Handles
+### 3.3 Pre-granted Handles
 
 The host pre-grants a small set of handles before the module's entry point is called:
 
@@ -197,13 +166,13 @@ The host pre-grants a small set of handles before the module's entry point is ca
 
 Pre-opened filesystem directories begin at handle value `4` (`WAPI_FS_PREOPEN_BASE`).
 
-### 4.4 Handle Lifecycle
+### 3.4 Handle Lifecycle
 
-1. **Grant:** The host creates a handle and returns it to the module (e.g., `wapi_fs_open` writes a new handle to an output pointer).
+1. **Grant:** The host creates a handle and returns it to the module (e.g., `wapi_filesystem_open` writes a new handle to an output pointer).
 2. **Use:** The module passes the handle to subsequent API calls. The host validates it on every call.
-3. **Release:** The module explicitly closes or destroys the handle (e.g., `wapi_fs_close`, `wapi_surface_destroy`). After release, the handle value is invalid and must not be reused by the module.
+3. **Release:** The module explicitly closes or destroys the handle (e.g., `wapi_filesystem_close`, `wapi_surface_destroy`). After release, the handle value is invalid and must not be reused by the module.
 
-### 4.5 Handle Validation
+### 3.5 Handle Validation
 
 The host MUST validate every handle on every call. If a module passes a handle that:
 - equals `WAPI_HANDLE_INVALID`,
@@ -215,20 +184,20 @@ the host MUST return `WAPI_ERR_BADF` and MUST NOT perform the requested operatio
 
 ---
 
-## 5. Error Handling
+## 4. Error Handling
 
-### 5.1 Errors Are Values
+### 4.1 Errors Are Values
 
 Errors are `i32` return codes. There are no exceptions, no traps (for ABI errors), and no out-of-band error channels. Every fallible function returns `wapi_result_t`.
 
-### 5.2 Checking Results
+### 4.2 Checking Results
 
 ```c
 #define WAPI_FAILED(result)    ((result) < 0)
 #define WAPI_SUCCEEDED(result) ((result) >= 0)
 ```
 
-### 5.3 Error Code Table
+### 4.3 Error Code Table
 
 | Constant               | Value | Description                           |
 |------------------------|-------|---------------------------------------|
@@ -266,7 +235,7 @@ Errors are `i32` return codes. There are no exceptions, no traps (for ABI errors
 | `WAPI_ERR_DEADLK`        | -31   | Deadlock would occur                  |
 | `WAPI_ERR_NOSYS`         | -32   | Function not implemented              |
 
-### 5.4 Error Messages
+### 4.4 Error Messages
 
 The host maintains a per-thread human-readable error message for the most recent error. The module can retrieve it via:
 
@@ -276,7 +245,7 @@ wapi_result_t wapi_env_get_error(char* buf, uint64_t buf_len, uint64_t* msg_len)
 
 The message is valid until the next WAPI API call on the same thread.
 
-### 5.5 Language Bindings
+### 4.5 Language Bindings
 
 Language bindings are expected to wrap `wapi_result_t` into native error types:
 - **Rust:** `Result<T, WapiError>`
@@ -288,13 +257,13 @@ The ABI itself never throws, never traps, and never uses exceptions. Error handl
 
 ---
 
-## 6. Struct Layout Rules
+## 5. Struct Layout Rules
 
-### 6.1 Byte Order
+### 5.1 Byte Order
 
 All multi-byte values in structs are **little-endian**. This matches the WebAssembly memory model, which defines little-endian byte order for all loads and stores.
 
-### 6.2 Alignment
+### 5.2 Alignment
 
 Each field is aligned to its **natural alignment**:
 
@@ -307,7 +276,7 @@ Each field is aligned to its **natural alignment**:
 
 Struct alignment equals the alignment of its most-aligned field.
 
-### 6.3 Explicit Padding
+### 5.3 Explicit Padding
 
 All padding is **explicit**. Struct definitions include named `_pad` or `_reserved` fields to account for every byte. There are no implementation-defined gaps. This ensures that any conforming compiler targeting wasm32 produces identical struct layouts.
 
@@ -326,11 +295,11 @@ typedef struct wapi_filestat_t {
 } wapi_filestat_t;            /* Total: 56 bytes, align 8 */
 ```
 
-### 6.4 Reserved Fields for Extension
+### 5.4 Reserved Fields for Extension
 
 Structs include `_reserved` fields that must be set to zero by the module. Future ABI versions may assign meaning to these fields. Hosts MUST ignore reserved fields that are zero. This provides forward compatibility without changing struct sizes.
 
-### 6.5 Forward Compatibility via `nextInChain`
+### 5.5 Forward Compatibility via `nextInChain`
 
 Descriptor structs that may need future extension use the **chained struct** pattern from `webgpu.h`:
 
@@ -358,7 +327,7 @@ The host walks the chain, processing known `sType` values and ignoring unknown o
 | `WAPI_STYPE_AUDIO_SPATIAL_CONFIG`    | `0x0200` | Spatial audio configuration   |
 | `WAPI_STYPE_TEXT_STYLE_INLINE`       | `0x0300` | Inline text style extension   |
 
-### 6.6 Compile-Time Verification
+### 5.6 Compile-Time Verification
 
 All struct sizes AND field offsets are verified at compile time using `_Static_assert` with both `sizeof` and `offsetof`. Size-only assertions catch total-size drift but not internal layout bugs (swapped fields, wrong-sized padding that silently introduces implicit padding elsewhere). The `offsetof` assertions catch these.
 
@@ -371,14 +340,12 @@ Every ABI struct must have:
 _Static_assert(offsetof(wapi_io_op_t, opcode)     ==  0, "");
 _Static_assert(offsetof(wapi_io_op_t, flags)      ==  4, "");
 _Static_assert(offsetof(wapi_io_op_t, fd)         ==  8, "");
-_Static_assert(offsetof(wapi_io_op_t, _pad0)      == 12, "");
+_Static_assert(offsetof(wapi_io_op_t, flags2)     == 12, "");
 _Static_assert(offsetof(wapi_io_op_t, offset)     == 16, "");
 _Static_assert(offsetof(wapi_io_op_t, addr)       == 24, "");
 _Static_assert(offsetof(wapi_io_op_t, len)        == 32, "");
-_Static_assert(offsetof(wapi_io_op_t, _pad1)      == 36, "");
 _Static_assert(offsetof(wapi_io_op_t, addr2)      == 40, "");
 _Static_assert(offsetof(wapi_io_op_t, len2)       == 48, "");
-_Static_assert(offsetof(wapi_io_op_t, flags2)     == 52, "");
 _Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
 _Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
 _Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
@@ -386,52 +353,60 @@ _Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
 
 ```
 
-Address fields in ABI structs are `uint64_t` regardless of pointer width, so the layout is identical for wasm32 and wasm64 (see [Section 3.2.1](#321-memory64-wasm64)). Structs that embed C pointers (like `wapi_string_view_t`, `wapi_chained_struct_t`) use `uint64_t` for the address component, making their layout platform-independent. Assertions verify on all platforms.
+Address fields in ABI structs are `uint64_t` regardless of pointer width, so the layout is identical for wasm32 and wasm64 (see [Section 2.2](#22-pointer-representation)). Structs that embed C pointers (like `wapi_string_view_t`, `wapi_chained_struct_t`) use `uint64_t` for the address component, making their layout platform-independent. Assertions verify on all platforms.
 
 The complete set of assertions is in `wapi.h` Part 7 and in each capability module header.
 
 ---
 
-## 7. Import Namespaces
+## 6. Import Namespaces
 
-Each capability module defines a Wasm import namespace. A module's `.wasm` binary imports functions from only the namespaces it uses. The host must provide implementations for all imported functions.
+Each capability module defines a Wasm import namespace. A module's `.wasm` binary imports functions from only the namespaces it uses. The host must provide implementations for all imported functions. The C header for each module is `<module>.h` (e.g., `wapi_gpu` → `wapi_gpu.h`).
 
-| Import Module      | C Header               | Description                                    |
-|--------------------|------------------------|------------------------------------------------|
-| `wapi`               | `wapi_capability.h`      | Capability queries, ABI version                |
-| `wapi_env`           | `wapi_env.h`             | Arguments, environment variables, random, exit |
-| `wapi_memory`        | `wapi_memory.h`          | Host-provided memory allocation                |
-| `wapi_io`            | `wapi_io.h`              | Async I/O (submit/cancel/poll/wait/flush)      |
-| `wapi_clock`         | `wapi_clock.h`           | Monotonic and wall clocks, performance counter |
-| `wapi_fs`            | `wapi_fs.h`              | Capability-based filesystem                    |
-| `wapi_net`           | `wapi_net.h`             | QUIC/WebTransport networking                   |
-| `wapi_gpu`           | `wapi_gpu.h`             | WebGPU bridge (device, surface, proc table)    |
-| `wapi_surface`       | `wapi_surface.h`         | Render targets (on-screen and offscreen)       |
-| `wapi_window`        | `wapi_window.h`          | OS window management (title, fullscreen, etc.) |
-| `wapi_display`       | `wapi_display.h`         | Display enumeration, geometry, sub-pixels      |
-| `wapi_input`         | `wapi_input.h`           | Input events (keyboard, mouse, touch, gamepad) |
-| `wapi_audio`         | `wapi_audio.h`           | Audio playback and recording                   |
-| `wapi_content`       | `wapi_content.h`         | Host-rendered text, images, media              |
-| `wapi_clipboard`     | `wapi_clipboard.h`       | System clipboard access                        |
-| `wapi_font`          | `wapi_font.h`            | Font system queries and enumeration            |
-| `wapi_video`         | `wapi_video.h`           | Video/media playback                           |
-| `wapi_geolocation`   | `wapi_geolocation.h`     | GPS / location services                        |
-| `wapi_notifications` | `wapi_notifications.h`   | System notifications                           |
-| `wapi_sensors`       | `wapi_sensors.h`         | Accelerometer, gyroscope, compass              |
-| `wapi_speech`        | `wapi_speech.h`          | Speech recognition and synthesis               |
-| `wapi_crypto`        | `wapi_crypto.h`          | Hardware-accelerated cryptography              |
-| `wapi_biometric`     | `wapi_biometric.h`       | Fingerprint, face recognition                  |
-| `wapi_share`         | `wapi_share.h`           | System share sheet                             |
-| `wapi_kv_storage`    | `wapi_kv_storage.h`      | Persistent key-value storage                   |
-| `wapi_payments`      | `wapi_payments.h`        | In-app purchases / payment processing          |
-| `wapi_usb`           | `wapi_usb.h`             | USB device access                              |
-| `wapi_midi`          | `wapi_midi.h`            | MIDI device access                             |
-| `wapi_bluetooth`     | `wapi_bluetooth.h`       | Bluetooth device access                        |
-| `wapi_camera`        | `wapi_camera.h`          | Camera capture                                 |
-| `wapi_xr`            | `wapi_xr.h`              | VR/AR (WebXR, OpenXR)                          |
-| `wapi_module`        | `wapi_module.h`          | Runtime module loading, cross-module calls     |
+The `wapi` namespace provides the two vtable acquisition imports (`io_get`, `allocator_get`) and panic reporting. I/O and memory allocation are accessed through the returned vtables, not as separate import namespaces. Typed API namespaces (`wapi_gpu`, `wapi_audio`, etc.) are host imports operating on handles.
 
-### 7.1 Import Annotation
+| Module               | Description                                    |
+|----------------------|------------------------------------------------|
+| `wapi`               | Vtable acquisition (`io_get`, `allocator_get`), panic reporting |
+| `wapi_env`           | Arguments, environment variables, random bytes, exit |
+| `wapi_clock`         | Monotonic and wall clocks, performance counter |
+| `wapi_filesystem`    | Capability-based filesystem                    |
+| `wapi_network`       | QUIC/WebTransport networking                   |
+| `wapi_gpu`           | WebGPU bridge (device, surface, proc table)    |
+| `wapi_surface`       | Render targets (on-screen and offscreen)       |
+| `wapi_window`        | OS window management (title, fullscreen, etc.) |
+| `wapi_display`       | Display enumeration, geometry, sub-pixels      |
+| `wapi_input`         | Input events (keyboard, mouse, touch, gamepad) |
+| `wapi_audio`         | Audio playback and recording                   |
+| `wapi_audioplugin`   | Audio plugin hosting (VST-style)               |
+| `wapi_content`       | Host-rendered text, images, media              |
+| `wapi_clipboard`     | System clipboard access                        |
+| `wapi_font`          | Font system queries and enumeration            |
+| `wapi_video`         | Video/media playback                           |
+| `wapi_geolocation`   | GPS / location services                        |
+| `wapi_notifications` | System notifications                           |
+| `wapi_sensors`       | Accelerometer, gyroscope, compass              |
+| `wapi_speech`        | Speech recognition and synthesis               |
+| `wapi_crypto`        | Hardware-accelerated cryptography              |
+| `wapi_biometric`     | Fingerprint, face recognition                  |
+| `wapi_share`         | System share sheet                             |
+| `wapi_kvstorage`     | Persistent key-value storage                   |
+| `wapi_payments`      | In-app purchases / payment processing          |
+| `wapi_usb`           | USB device access                              |
+| `wapi_midi`          | MIDI device access                             |
+| `wapi_bluetooth`     | Bluetooth device access                        |
+| `wapi_camera`        | Camera capture                                 |
+| `wapi_xr`            | VR/AR (WebXR, OpenXR)                          |
+| `wapi_module`        | Runtime module loading, cross-module calls     |
+| `wapi_thread`        | Thread creation and management                 |
+| `wapi_sync`          | Synchronization primitives (mutex, futex)      |
+| `wapi_process`       | Process spawning and management                |
+| `wapi_dialog`        | File/save/message dialogs                      |
+| `wapi_sysinfo`       | System information queries                     |
+| `wapi_eyedrop`       | Screen color picker                            |
+| `wapi_contacts`      | Contact picker and icon access                 |
+
+### 6.1 Import Annotation
 
 When compiling to Wasm, functions are annotated with `import_module` and `import_name` attributes:
 
@@ -447,81 +422,88 @@ When compiling to Wasm, functions are annotated with `import_module` and `import
 This produces Wasm imports of the form:
 
 ```wat
-(import "wapi_fs" "open" (func ...))
-(import "wapi_io" "poll" (func ...))
+(import "wapi" "io_get" (func ...))
+(import "wapi_gpu" "request_device" (func ...))
 ```
 
 ---
 
-## 8. Async I/O Model
+## 7. Async I/O Model
 
-### 8.1 Design
+### 7.1 Design
 
-The WAPI uses a **submit + unified event queue** async I/O model inspired by Linux's `io_uring`. All asynchronous operations (file reads, network sends, audio buffer fills, timer waits) are submitted through host imports. Completions arrive as events in the same unified event queue as input, window, and lifecycle events.
+The WAPI uses a **submit + unified event queue** async I/O model inspired by Linux's `io_uring`. All asynchronous operations (file reads, network sends, audio buffer fills, timer waits) are submitted through the `wapi_io_t` vtable. Completions arrive as events in the same unified event queue as input, window, and lifecycle events.
 
-There is no `async`/`await`. There are no colored functions. There are no new types for futures or promises. The module submits operation descriptors via `wapi_io_submit()`, does other work, and then polls or waits for completion events via `wapi_io_poll()` / `wapi_io_wait()`.
+There is no `async`/`await`. There are no colored functions. There are no new types for futures or promises. The module submits operation descriptors via the vtable's `submit` function, does other work, and then polls or waits for completion events via `poll` / `wait`.
 
-This eliminates the function coloring problem for library composition. Because the I/O primitive is always the same (submit descriptors, poll for completions), there is no split between "sync" and "async" libraries. Every library uses the same interface regardless of how it structures its internal control flow. A library that batches many operations before polling and a library that submits one at a time compose freely because neither imposes a calling convention on the other. The `wapi_io_t` vtable (see below) extends this to build-time linked libraries: a library that accepts `wapi_io_t*` works identically whether backed by the real host, a logging wrapper, a mock, or a throttler.
+This eliminates the function coloring problem for library composition. Because the I/O primitive is always the same (submit descriptors, poll for completions), there is no split between "sync" and "async" libraries. Every library uses the same interface regardless of how it structures its internal control flow. A library that accepts `const wapi_io_t*` works identically whether backed by the real host, a logging wrapper, a mock, or a throttler.
 
-### 8.2 I/O Host Imports
+### 7.2 The `wapi_io_t` Vtable
 
-I/O is accessed through direct host imports in the `wapi_io` namespace:
+All I/O, event handling, and capability queries go through the `wapi_io_t` vtable:
 
 ```c
-WAPI_IMPORT(wapi_io, submit)
-int32_t wapi_io_submit(const wapi_io_op_t* ops, uint64_t count);
-
-WAPI_IMPORT(wapi_io, cancel)
-wapi_result_t wapi_io_cancel(uint64_t user_data);
-
-WAPI_IMPORT(wapi_io, poll)
-int32_t wapi_io_poll(wapi_event_t* event);
-
-WAPI_IMPORT(wapi_io, wait)
-int32_t wapi_io_wait(wapi_event_t* event, int32_t timeout_ms);
-
-WAPI_IMPORT(wapi_io, flush)
-void wapi_io_flush(uint32_t event_type);
+typedef struct wapi_io_t {
+    void*         impl;
+    int32_t       (*submit)(void* impl, const wapi_io_op_t* ops, wapi_size_t count);
+    wapi_result_t (*cancel)(void* impl, uint64_t user_data);
+    int32_t       (*poll)(void* impl, wapi_event_t* event);
+    int32_t       (*wait)(void* impl, wapi_event_t* event, int32_t timeout_ms);
+    void          (*flush)(void* impl, uint32_t event_type);
+    wapi_bool_t   (*capability_supported)(void* impl, wapi_string_view_t name);
+    wapi_result_t (*capability_version)(void* impl, wapi_string_view_t name, wapi_version_t* ver);
+    wapi_result_t (*perm_query)(void* impl, wapi_string_view_t cap, wapi_perm_state_t* state);
+} wapi_io_t;
 ```
 
-All events (I/O completions, input, lifecycle) are delivered through `poll`/`wait`. The host knows which module is calling and routes accordingly.
+A module obtains its vtable in one of two ways:
 
-I/O access follows the same dependency injection pattern as memory allocation. WAPI defines a `wapi_io_t` vtable that libraries and modules accept as an explicit parameter. The caller controls what I/O the callee can do by choosing what to pass. This applies uniformly to both build-time and runtime composition (see [Section 11: Module Linking](#11-module-linking)):
+**Module-owned (from the host):** Call `wapi_io_get()`. Returns the host-determined vtable for the calling module. This is host-controlled and cannot be influenced by any parent — safe for shared instances. For top-level apps, the host returns a fully-capable vtable. For child modules, the host returns a sandbox-only vtable (see Section 7.8).
+
+**Per-call (from caller):** Accept `const wapi_io_t*` as a function parameter. The caller passes its own vtable (or a wrapped/filtered version). This is how a module gets capabilities beyond its sandbox.
 
 ```c
-static int32_t logging_submit(void* impl, const wapi_io_op_t* ops, uint64_t count) {
+/* Module-owned — sandbox only for children */
+const wapi_io_t* io = wapi_io_get();
+
+/* Per-call — caller provides real filesystem access */
+void my_library_func(const wapi_io_t* io, const wapi_allocator_t* alloc, ...);
+```
+
+The caller can wrap the vtable for logging, throttling, or filtering:
+
+```c
+static int32_t logging_submit(void* impl, const wapi_io_op_t* ops, wapi_size_t count) {
     log_state_t* state = (log_state_t*)impl;
     log("submitting %d ops", count);
     return state->inner->submit(state->inner->impl, ops, count);
 }
 ```
 
-### 8.3 Operation Descriptor (`wapi_io_op_t`)
+### 7.3 Operation Descriptor (`wapi_io_op_t`)
 
-Each operation is described by a fixed-size **88-byte descriptor**. Address and size fields are `uint64_t` so the layout is identical for wasm32 and wasm64 (wasm32 modules zero-extend their 32-bit values):
+Each operation is described by a fixed-size **80-byte descriptor**. Address and size fields are `uint64_t` so the layout is identical for wasm32 and wasm64 (wasm32 modules zero-extend their 32-bit values):
 
 ```
-Byte Layout (88 bytes, alignment 8):
+Byte Layout (80 bytes, alignment 8):
 
 Offset  Size  Type      Field        Description
 ------  ----  --------  -----------  -----------------------------------
  0       4    uint32_t  opcode       Operation type (wapi_io_opcode_t)
  4       4    uint32_t  flags        Operation flags
  8       4    int32_t   fd           Handle / file descriptor
-12       4    uint32_t  _pad0        Padding (must be zero)
+12       4    uint32_t  flags2       Additional operation-specific flags
 16       8    uint64_t  offset       File offset or timeout (nanoseconds)
 24       8    uint64_t  addr         Pointer to buffer
 32       8    uint64_t  len          Buffer length
 40       8    uint64_t  addr2        Second pointer (path, etc.)
 48       8    uint64_t  len2         Second length
-56       4    uint32_t  flags2       Additional operation-specific flags
-60       4    uint32_t  _pad1        Padding (must be zero)
-64       8    uint64_t  user_data    Opaque, echoed in completion event
-72       8    uint64_t  result_ptr   Pointer for output values
-80       8    uint8_t[] reserved     Reserved (must be zero)
+56       8    uint64_t  user_data    Opaque, echoed in completion event
+64       8    uint64_t  result_ptr   Pointer for output values
+72       8    uint8_t[] reserved     Reserved (must be zero)
 ```
 
-### 8.4 Operation Codes
+### 7.4 Operation Codes
 
 | Opcode                  | Value | Category    | Description                         |
 |-------------------------|-------|-------------|-------------------------------------|
@@ -551,7 +533,7 @@ Offset  Size  Type      Field        Description
 
 Log is fire-and-forget — the host processes it immediately (writes to stderr, forwards to console, etc.). No completion event is pushed. `user_data` is ignored.
 
-### 8.5 Completion Events (`wapi_io_event_t`)
+### 7.5 Completion Events (`wapi_io_event_t`)
 
 I/O completions arrive as `WAPI_EVENT_IO_COMPLETION` events in the unified event queue. The event struct occupies 32 bytes within the 128-byte `wapi_event_t` union:
 
@@ -575,35 +557,72 @@ Offset  Size  Type      Field        Description
 | `WAPI_IO_CQE_F_MORE`   | `0x0001` | More completions coming for this operation |
 | `WAPI_IO_CQE_F_OVERFLOW`| `0x0002`| Completion queue overflowed               |
 
-### 8.6 Submit and Cancel
+### 7.6 Submit and Cancel
 
-Operations are submitted through the `wapi_io` host imports:
+Operations are submitted through the `wapi_io_t` vtable:
 
 ```c
+const wapi_io_t* io = wapi_io_get();
+
 /* Submit a batch of operations. Returns count submitted, or negative error.
  * Completions arrive as WAPI_EVENT_IO_COMPLETION events. */
-int32_t count = wapi_io_submit(ops, n);
+int32_t count = io->submit(io->impl, ops, n);
 
 /* Cancel a pending operation by user_data. */
-wapi_result_t result = wapi_io_cancel(user_data);
+wapi_result_t result = io->cancel(io->impl, user_data);
 ```
 
-There is no separate I/O completion queue. All completions flow through the unified event queue via `wapi_io_poll()` and `wapi_io_wait()`, alongside input, window, and lifecycle events.
+There is no separate I/O completion queue. All completions flow through the unified event queue via `io->poll()` and `io->wait()`, alongside input, window, and lifecycle events.
 
-### 8.7 Usage Patterns
+### 7.7 Usage Patterns
 
 The same API supports fundamentally different application architectures:
 
 - **Game loop:** Submit asset loads, render a frame, poll events at the end of the frame — I/O completions and input arrive in the same queue.
-- **CLI tool:** Submit a file read, call `wapi_io_wait()` to block until the I/O completion event arrives.
+- **CLI tool:** Submit a file read, call `io->wait()` to block until the I/O completion event arrives.
 - **Audio processor:** Poll events every audio callback cycle for completed buffer fills.
 - **Server:** Submit accepts and receives, wait for completion events in a loop.
 
+### 7.8 Sandboxed Filesystems
+
+Every module has access to two private filesystems through its module-owned `wapi_io_t` (from `wapi_io_get()`). Neither requires any permission.
+
+**Transient (per-instance):** Dies when the module instance is unloaded. Each instance gets its own. Use cases: temp files, scratch buffers, intermediate results.
+
+| Opcode                    | Value   | Description                     |
+|---------------------------|---------|---------------------------------|
+| `WAPI_IO_OP_SANDBOX_OPEN`  | `0x2A0` | Open/create file in transient sandbox |
+| `WAPI_IO_OP_SANDBOX_STAT`  | `0x2A1` | Stat a file in transient sandbox |
+| `WAPI_IO_OP_SANDBOX_DELETE` | `0x2A2` | Delete a file in transient sandbox |
+
+**Persistent (per-module, shared by content hash):** Survives across instances and app restarts. All instances of the same module (same content hash) share this filesystem. The host manages concurrency (read-many, write-serialized). Use cases: lookup tables, precomputed indices, caches.
+
+| Opcode                   | Value   | Description                      |
+|--------------------------|---------|----------------------------------|
+| `WAPI_IO_OP_CACHE_OPEN`   | `0x2B0` | Open/create file in persistent cache |
+| `WAPI_IO_OP_CACHE_STAT`   | `0x2B1` | Stat a file in persistent cache  |
+| `WAPI_IO_OP_CACHE_DELETE`  | `0x2B2` | Delete a file in persistent cache |
+
+Both use relative paths (e.g., `"tables.bin"`, `"index/trigrams.dat"`). Read and write on returned file descriptors use standard `WAPI_IO_OP_READ` / `WAPI_IO_OP_WRITE`.
+
+```c
+/* Example: shared library loading tables from persistent cache */
+const wapi_io_t* io = wapi_io_get();
+
+wapi_io_op_t op = {0};
+op.opcode = WAPI_IO_OP_CACHE_OPEN;
+op.addr   = (uint64_t)(uintptr_t)"tables.bin";
+op.len    = 10;
+op.flags  = WAPI_OPEN_READ;
+io->submit(io->impl, &op, 1);
+/* ... wait for completion, read from returned fd ... */
+```
+
 ---
 
-## 9. Module Entry Points
+## 8. Module Entry Points
 
-### 9.1 `wapi_main`
+### 8.1 `wapi_main`
 
 ```wat
 (func (export "wapi_main") (result i32))
@@ -615,25 +634,29 @@ The same API supports fundamentally different application architectures:
 WAPI_EXPORT(wapi_main) wapi_result_t wapi_main(void);
 ```
 
-Called by the host after module instantiation and memory initialization. There is no context struct. The module starts with zero state and obtains everything through host imports:
+Called by the host after module instantiation and memory initialization. The module obtains its vtables and queries capabilities:
 
-- **Capabilities** via `wapi_capability_supported` or enumerate with `wapi_capability_count` / `wapi_capability_name`.
-- **I/O** via host imports directly: `wapi_io_submit()`, `wapi_io_poll()`, `wapi_io_wait()`.
-- **Allocation** via host imports (`wapi_memory.alloc` etc.) or module-internal allocators.
-- **GPU** via `wapi_gpu_request_device()`.
-- **Panic** via the `wapi_panic_report` host import.
+```c
+wapi_result_t wapi_main(void) {
+    const wapi_io_t* io = wapi_io_get();
+    const wapi_allocator_t* alloc = wapi_allocator_get();
 
-This separation supports two worlds of module composition:
+    if (io->capability_supported(io->impl, WAPI_STR(WAPI_CAP_GPU))) {
+        /* Request GPU device, create surfaces, etc. */
+    }
 
-- **Build-time linked libraries** (shared memory, one binary) take allocator/I/O vtables as explicit function parameters, like Zig's allocator pattern.
-- **Runtime isolated modules** receive allocator/I/O vtables via function handle calls from the parent. The parent controls what the child can do by choosing what to pass.
+    my_library_init(io, alloc);
+    return WAPI_OK;
+}
+```
 
-The module should:
+Every module — top-level or child — is written identically:
 
-1. Query capabilities via `wapi_capability_supported` or enumerate with `wapi_capability_count` / `wapi_capability_name`.
-2. Use `wapi_io_*` imports for I/O, `wapi_memory.*` imports for allocation.
+1. Call `wapi_io_get()` and `wapi_allocator_get()` for module-owned vtables.
+2. Query capabilities via `io->capability_supported()`.
 3. For headless applications: perform work and return `WAPI_OK` to exit.
 4. For graphical applications: create surfaces, request GPU device, and return `WAPI_OK` to begin the frame loop.
+5. Pass vtables explicitly to libraries that need I/O or allocation.
 
 **Panic reporting:** When a module encounters an unrecoverable error, it calls the `wapi_panic_report` host import to record the message, then traps. The import is NOT noreturn — it records and returns; the module then hits `__builtin_trap()` (`unreachable` in wasm). The host knows which module is calling and can route the message to stderr, console, or the parent's handler.
 
@@ -648,7 +671,7 @@ static inline _Noreturn void wapi_panic(const char* msg, uint64_t msg_len) {
 
 Returns `WAPI_OK` on success, or a negative error code to abort the module.
 
-### 9.2 `wapi_frame`
+### 8.2 `wapi_frame`
 
 ```wat
 (func (export "wapi_frame") (param i64) (result i32))
@@ -662,9 +685,11 @@ WAPI_EXPORT(wapi_frame) wapi_result_t wapi_frame(wapi_timestamp_t timestamp);
 
 Called each frame for graphical applications. The host calls this at the display's refresh rate (typically 60 Hz, 120 Hz, or 144 Hz). The `timestamp` parameter is the current monotonic time in nanoseconds.
 
+The host waits for `wapi_frame` to return before scheduling the next call. If a frame overruns the refresh interval, the host skips the missed deadline(s) and calls again at the next vsync. The module computes elapsed time by differencing consecutive timestamps (i.e. `dt = current_timestamp - previous_timestamp`) and uses that delta to advance its simulation.
+
 The module should:
 
-1. Poll events via `wapi_io_poll()` (input, I/O completions, lifecycle).
+1. Poll events via `io->poll()` (input, I/O completions, lifecycle).
 2. Update application state.
 3. Render via WebGPU.
 4. Return `WAPI_OK` to continue, or `WAPI_ERR_CANCELED` to request exit.
@@ -673,9 +698,9 @@ If the module does not export `wapi_frame`, the host does not enter a frame loop
 
 ---
 
-## 10. Capabilities
+## 9. Capabilities
 
-### 10.1 Unified Capability Model
+### 9.1 Unified Capability Model
 
 All capabilities, whether foundational (memory, filesystem) or specialized (geolocation, camera), use a single, unified query mechanism. There is no distinction between "core" and "extension" capabilities. This follows the **Vulkan model**: query at startup by string name, use only if the host reports support. Each capability is independently versioned.
 
@@ -686,74 +711,128 @@ wapi.<module>          Spec-defined capabilities
 vendor.<name>.*      Vendor-specific capabilities
 ```
 
-### 10.2 Capability Query API
+### 9.2 Capability Check and Request Flow
+
+Capability queries go through the `wapi_io_t` vtable's `capability_supported`, `capability_version`, and `perm_query` function pointers. Using a capability involves up to three steps, depending on whether the capability requires user permission:
+
+**Step 1 — Check support.** The module calls `io->capability_supported()` to determine whether the host provides a capability at all. If the host does not support it, the capability is permanently unavailable — there is nothing to request.
+
+**Step 2 — Query permission state.** For capabilities that require user consent (geolocation, camera, notifications, etc.), the module calls `io->perm_query()` to check the current permission state without triggering a prompt. The result is one of:
+
+| State               | Value | Meaning                                                  |
+|---------------------|-------|----------------------------------------------------------|
+| `WAPI_PERM_GRANTED` |   0   | Permission granted — the module may use the capability   |
+| `WAPI_PERM_DENIED`  |   1   | Permission denied — do not prompt again                  |
+| `WAPI_PERM_PROMPT`  |   2   | Permission not yet requested — prompting is possible     |
+
+**Step 3 — Request permission.** If the state is `WAPI_PERM_PROMPT`, the module submits a `WAPI_IO_OP_PERM_REQUEST` operation through `io->submit()`. This is an async I/O operation — the host may show a platform-native permission dialog. The completion event writes the resulting `wapi_perm_state_t` to `result_ptr`.
+
+```
+WAPI_IO_OP_PERM_REQUEST (0x190):
+  addr/len   = capability name string (e.g., "wapi.geolocation")
+  result_ptr = pointer to wapi_perm_state_t (written on completion)
+```
+
+Not all capabilities require permissions. Foundational capabilities like memory, clock, and I/O are available immediately after `io->capability_supported()` returns true. Capabilities that access sensitive resources (location, camera, microphone, contacts, notifications) typically require a permission grant. The host decides which capabilities are gated — the module should always check.
+
+**Complete example:**
 
 ```c
-/* Check if a capability is supported by name. Returns boolean. */
-wapi_bool_t wapi_capability_supported(const char* name, uint64_t name_len);
+const wapi_io_t* io = wapi_io_get();
 
-/* Get the version of a capability. Writes wapi_version_t to output pointer. */
-wapi_result_t wapi_capability_version(const char* name, uint64_t name_len, wapi_version_t* version);
+/* 1. Check if the host supports geolocation at all */
+if (!io->capability_supported(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION))) {
+    /* Not available on this host — fall back or skip */
+    return;
+}
 
-/* Get the total count of supported capabilities. */
-int32_t wapi_capability_count(void);
+/* 2. Query current permission state (no prompt) */
+wapi_perm_state_t state;
+io->perm_query(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION), &state);
 
-/* Get the name of a capability by index. Writes name string to buffer. */
-wapi_result_t wapi_capability_name(int32_t index, char* buf, uint64_t buf_len, uint64_t* name_len);
+if (state == WAPI_PERM_DENIED) {
+    /* User previously denied — respect the decision */
+    return;
+}
 
-/* Get the ABI version. Writes wapi_version_t to output pointer. */
-wapi_result_t wapi_abi_version(wapi_version_t* version);
+if (state == WAPI_PERM_PROMPT) {
+    /* 3. Request permission (async — triggers platform prompt) */
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_PERM_REQUEST;
+    op.addr       = (uint64_t)(uintptr_t)WAPI_CAP_GEOLOCATION;
+    op.len        = sizeof(WAPI_CAP_GEOLOCATION) - 1;
+    op.result_ptr = (uint64_t)(uintptr_t)&state;
+    op.user_data  = MY_PERM_REQUEST_TAG;
+    io->submit(io->impl, &op, 1);
+    /* Handle the completion event in the poll loop */
+    return;
+}
+
+/* state == WAPI_PERM_GRANTED — use the capability */
 ```
 
-At the Wasm level:
+### 9.3 Capability Query API
 
-```wat
-(func $wapi_capability_supported (import "wapi" "capability_supported") (param i32 i32) (result i32))
-(func $wapi_capability_version   (import "wapi" "capability_version")   (param i32 i32 i32) (result i32))
-(func $wapi_capability_count     (import "wapi" "capability_count")     (result i32))
-(func $wapi_capability_name      (import "wapi" "capability_name")      (param i32 i32 i32 i32) (result i32))
-(func $wapi_abi_version          (import "wapi" "abi_version")          (param i32) (result i32))
+Capability queries are function pointers on the `wapi_io_t` vtable. String parameters use `wapi_string_view_t` (a 16-byte struct with `uint64_t data` and `uint64_t length`).
+
+```c
+const wapi_io_t* io = wapi_io_get();
+
+/* Check if a capability is supported by name. Returns WAPI_TRUE/WAPI_FALSE. */
+io->capability_supported(io->impl, name);
+
+/* Get the version of a supported capability. */
+io->capability_version(io->impl, name, &version);
+
+/* Query permission state for a capability (no prompt). */
+io->perm_query(io->impl, capability, &state);
 ```
 
-### 10.3 Spec-Defined Capability Names
+### 9.4 Spec-Defined Capability Names
 
-The following capability names are defined by the spec. Hosts report support for each independently:
+The following capability names are defined by the spec. Each has a corresponding `WAPI_CAP_*` define in `wapi.h`. Hosts report support for each independently.
 
-| Capability Name        | Import Module      | Description                                    |
-|------------------------|--------------------|------------------------------------------------|
-| `wapi.env`               | `wapi_env`           | Arguments, environment variables, random, exit |
-| `wapi.memory`            | `wapi_memory`        | Host-provided memory allocation                |
-| `wapi.io`                | `wapi_io`            | Async I/O (submit/cancel/poll/wait/flush)      |
-| `wapi.clock`             | `wapi_clock`         | Monotonic and wall clocks, performance counter |
-| `wapi.fs`                | `wapi_fs`            | Capability-based filesystem                    |
-| `wapi.net`               | `wapi_net`           | QUIC/WebTransport networking                   |
-| `wapi.gpu`               | `wapi_gpu`           | WebGPU bridge (device, surface, proc table)    |
-| `wapi.surface`           | `wapi_surface`       | Render targets (on-screen and offscreen)       |
-| `wapi.window`            | `wapi_window`        | OS window management (title, fullscreen, etc.) |
-| `wapi.display`           | `wapi_display`       | Display enumeration, geometry, sub-pixels      |
-| `wapi.input`             | `wapi_input`         | Input events (keyboard, mouse, touch, gamepad) |
-| `wapi.audio`             | `wapi_audio`         | Audio playback and recording                   |
-| `wapi.content`           | `wapi_content`       | Host-rendered text, images, media              |
-| `wapi.clipboard`         | `wapi_clipboard`     | System clipboard access                        |
-| `wapi.font`              | `wapi_font`          | Font system queries and enumeration            |
-| `wapi.video`             | `wapi_video`         | Video/media playback                           |
-| `wapi.geolocation`       | `wapi_geolocation`   | GPS / location services                        |
-| `wapi.notifications`     | `wapi_notifications` | System notifications                           |
-| `wapi.sensors`           | `wapi_sensors`       | Accelerometer, gyroscope, compass              |
-| `wapi.speech`            | `wapi_speech`        | Speech recognition and synthesis               |
-| `wapi.crypto`            | `wapi_crypto`        | Hardware-accelerated cryptography              |
-| `wapi.biometric`         | `wapi_biometric`     | Fingerprint, face recognition                  |
-| `wapi.share`             | `wapi_share`         | System share sheet                             |
-| `wapi.kv_storage`        | `wapi_kv_storage`    | Persistent key-value storage                   |
-| `wapi.payments`          | `wapi_payments`      | In-app purchases / payment processing          |
-| `wapi.usb`               | `wapi_usb`           | USB device access                              |
-| `wapi.midi`              | `wapi_midi`          | MIDI device access                             |
-| `wapi.bluetooth`         | `wapi_bluetooth`     | Bluetooth device access                        |
-| `wapi.camera`            | `wapi_camera`        | Camera capture                                 |
-| `wapi.xr`               | `wapi_xr`            | VR/AR (WebXR, OpenXR)                          |
-| `wapi.module`            | `wapi_module`        | Runtime module loading, cross-module calls     |
+| Capability Name          | Header Define              | Description                                    |
+|--------------------------|----------------------------|------------------------------------------------|
+| `wapi.env`               | `WAPI_CAP_ENV`             | Arguments, environment variables, random bytes, exit |
+| `wapi.clock`             | `WAPI_CAP_CLOCK`           | Monotonic and wall clocks, performance counter |
+| `wapi.filesystem`        | `WAPI_CAP_FILESYSTEM`      | Capability-based filesystem                    |
+| `wapi.network`           | `WAPI_CAP_NETWORK`         | QUIC/WebTransport networking                   |
+| `wapi.gpu`               | `WAPI_CAP_GPU`             | WebGPU bridge (device, surface, proc table)    |
+| `wapi.surface`           | `WAPI_CAP_SURFACE`         | Render targets (on-screen and offscreen)       |
+| `wapi.window`            | `WAPI_CAP_WINDOW`          | OS window management (title, fullscreen, etc.) |
+| `wapi.display`           | `WAPI_CAP_DISPLAY`         | Display enumeration, geometry, sub-pixels      |
+| `wapi.input`             | `WAPI_CAP_INPUT`           | Input events (keyboard, mouse, touch, gamepad) |
+| `wapi.audio`             | `WAPI_CAP_AUDIO`           | Audio playback and recording                   |
+| `wapi.audioplugin`       | `WAPI_CAP_AUDIO_PLUGIN`    | Audio plugin hosting (VST-style)               |
+| `wapi.content`           | `WAPI_CAP_CONTENT`         | Host-rendered text, images, media              |
+| `wapi.clipboard`         | `WAPI_CAP_CLIPBOARD`       | System clipboard access                        |
+| `wapi.font`              | `WAPI_CAP_FONT`            | Font system queries and enumeration            |
+| `wapi.video`             | `WAPI_CAP_VIDEO`           | Video/media playback                           |
+| `wapi.geolocation`       | `WAPI_CAP_GEOLOCATION`     | GPS / location services                        |
+| `wapi.notifications`     | `WAPI_CAP_NOTIFICATIONS`   | System notifications                           |
+| `wapi.sensors`           | `WAPI_CAP_SENSORS`         | Accelerometer, gyroscope, compass              |
+| `wapi.speech`            | `WAPI_CAP_SPEECH`          | Speech recognition and synthesis               |
+| `wapi.crypto`            | `WAPI_CAP_CRYPTO`          | Hardware-accelerated cryptography              |
+| `wapi.biometric`         | `WAPI_CAP_BIOMETRIC`       | Fingerprint, face recognition                  |
+| `wapi.share`             | `WAPI_CAP_SHARE`           | System share sheet                             |
+| `wapi.kvstorage`         | `WAPI_CAP_KV_STORAGE`      | Persistent key-value storage                   |
+| `wapi.payments`          | `WAPI_CAP_PAYMENTS`        | In-app purchases / payment processing          |
+| `wapi.usb`               | `WAPI_CAP_USB`             | USB device access                              |
+| `wapi.midi`              | `WAPI_CAP_MIDI`            | MIDI device access                             |
+| `wapi.bluetooth`         | `WAPI_CAP_BLUETOOTH`       | Bluetooth device access                        |
+| `wapi.camera`            | `WAPI_CAP_CAMERA`          | Camera capture                                 |
+| `wapi.xr`               | `WAPI_CAP_XR`              | VR/AR (WebXR, OpenXR)                          |
+| `wapi.module`            | `WAPI_CAP_MODULE`          | Runtime module loading, cross-module calls     |
+| `wapi.thread`            | `WAPI_CAP_THREAD`          | Thread creation and management                 |
+| `wapi.sync`              | `WAPI_CAP_SYNC`            | Synchronization primitives (mutex, futex)      |
+| `wapi.process`           | `WAPI_CAP_PROCESS`         | Process spawning and management                |
+| `wapi.dialog`            | `WAPI_CAP_DIALOG`          | File/save/message dialogs                      |
+| `wapi.sysinfo`           | `WAPI_CAP_SYSINFO`         | System information queries                     |
+| `wapi.eyedrop`           | `WAPI_CAP_EYEDROP`         | Screen color picker                            |
+| `wapi.contacts`          | `WAPI_CAP_CONTACTS`        | Contact picker and icon access                 |
 
-### 10.4 Vendor Capabilities
+### 9.5 Vendor Capabilities
 
 Vendors may define custom capabilities using the `vendor.<vendor_name>.*` namespace. For example:
 
@@ -761,7 +840,7 @@ Vendors may define custom capabilities using the `vendor.<vendor_name>.*` namesp
 - `vendor.apple.pencil` Apple Pencil force/tilt data
 - `vendor.valve.steamdeck` Steam Deck-specific features
 
-Vendor capabilities use the same `wapi_capability_supported` / `wapi_capability_version` query mechanism. Hosts MUST ignore vendor capability queries they do not recognize (returning false from `wapi_capability_supported`).
+Vendor capabilities use the same `io->capability_supported()` / `io->capability_version()` query mechanism. Hosts MUST ignore vendor capability queries they do not recognize (returning false from `capability_supported`).
 
 **Constraints on vendor capabilities:**
 
@@ -769,56 +848,66 @@ Vendor capabilities use the same `wapi_capability_supported` / `wapi_capability_
 - Modules MAY require vendor capabilities (e.g., a Joy-Con haptics demo that only makes sense on Nintendo hardware). There is no requirement for fallback paths. A module that requires a capability simply will not run on hosts that lack it. The capability query mechanism ensures the module can detect this at startup and report a clear error.
 - Frequently-used vendor capabilities SHOULD be considered for promotion to spec-defined capabilities in future versions.
 
-### 10.5 Capability Versioning
+### 9.6 Capability Versioning
 
-Each capability reports its own version via `wapi_capability_version`. This allows the module to detect the specific feature level within a capability:
+Each capability reports its own version via `io->capability_version()`. This allows the module to detect the specific feature level within a capability:
 
 ```c
+const wapi_io_t* io = wapi_io_get();
 wapi_version_t v;
-if (wapi_capability_supported("wapi.geolocation", 16)) {
-    wapi_capability_version("wapi.geolocation", 16, &v);
+if (io->capability_supported(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION))) {
+    io->capability_version(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION), &v);
     /* v.major, v.minor, v.patch */
 }
 ```
 
-### 10.6 Presets
+### 9.7 Presets
 
 Presets are convenience arrays of capability name strings that give developers a stable target. A host claims conformance to a preset by supporting all capabilities in the array. Presets are not exclusive; a host may support additional capabilities beyond its preset.
 
 **Preset Definitions:**
 
 ```c
-static const char* WAPI_PRESET_HEADLESS[] = {
-    "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    NULL
+static const char* const WAPI_PRESET_EMBEDDED[] = {
+    "wapi.env", "wapi.clock", NULL
 };
 
-static const char* WAPI_PRESET_COMPUTE[] = {
-    "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    "wapi.gpu",
-    NULL
+static const char* const WAPI_PRESET_HEADLESS[] = {
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
+    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
 };
 
-static const char* WAPI_PRESET_AUDIO[] = {
-    "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    "wapi.audio",
-    NULL
+static const char* const WAPI_PRESET_COMPUTE[] = {
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
+    "wapi.gpu", "wapi.thread", "wapi.sync", "wapi.process",
+    "wapi.module", NULL
 };
 
-static const char* WAPI_PRESET_GRAPHICAL[] = {
-    "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display", "wapi.input",
-    "wapi.audio", "wapi.content", "wapi.clipboard", "wapi.font",
-    NULL
+static const char* const WAPI_PRESET_AUDIO[] = {
+    "wapi.env", "wapi.clock", "wapi.filesystem",
+    "wapi.audio", "wapi.thread", "wapi.sync", "wapi.module", NULL
 };
 
-static const char* WAPI_PRESET_MOBILE[] = {
-    "wapi.env", "wapi.memory", "wapi.io", "wapi.clock", "wapi.fs", "wapi.net",
-    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display", "wapi.input",
-    "wapi.audio", "wapi.content", "wapi.clipboard", "wapi.font",
-    "wapi.geolocation", "wapi.sensors",
-    "wapi.notifications", "wapi.biometric", "wapi.camera", "wapi.share",
-    NULL
+static const char* const WAPI_PRESET_GRAPHICAL[] = {
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
+    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.font", "wapi.dialog",
+    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
+};
+
+static const char* const WAPI_PRESET_MOBILE[] = {
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
+    "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.font",
+    "wapi.thread", "wapi.sync",
+    "wapi.geolocation", "wapi.camera", "wapi.notifications",
+    "wapi.sensors", "wapi.biometric", "wapi.module", NULL
 };
 ```
 
@@ -826,25 +915,22 @@ static const char* WAPI_PRESET_MOBILE[] = {
 
 | Preset       | Includes                                      | Use Cases                                  |
 |--------------|-----------------------------------------------|--------------------------------------------|
-| **Headless** | env, memory, io, clock, fs, net               | Servers, CLI tools, edge functions, IoT    |
+| **Embedded** | env, clock                                    | Microcontrollers, RTOS, bare-metal firmware |
+| **Headless** | env, clock, filesystem, network, sysinfo, crypto, thread, sync, process, module | Servers, CLI tools, edge functions |
 | **Compute**  | Headless + gpu                                | ML inference, video transcoding, simulations |
-| **Audio**    | Headless + audio                              | VST plugins, audio processing, voice       |
-| **Graphical**| Headless + gpu, surface, window, display, input, audio, content, clipboard, font | Apps, games, creative tools |
-| **Mobile**   | Graphical + geolocation, sensors, notifications, biometric, camera, share | Mobile apps |
+| **Audio**    | env, clock, filesystem, audio, thread, sync, module | VST plugins, audio processing, voice |
+| **Graphical**| Headless + gpu, surface, window, display, input, audio, content, clipboard, font, dialog | Apps, games, creative tools |
+| **Mobile**   | Headless + gpu, surface, window, display, input, audio, content, clipboard, font, geolocation, camera, notifications, sensors, biometric | Mobile apps |
 
 **Checking preset conformance:**
 
-The `wapi_preset_supported` inline helper iterates the preset array and checks each capability:
+The `wapi_preset_supported` inline helper iterates the preset array and checks each capability via the I/O vtable:
 
 ```c
-static inline wapi_bool_t wapi_preset_supported(const char** preset) {
+static inline wapi_bool_t wapi_preset_supported(const wapi_io_t* io,
+                                                 const char* const* preset) {
     for (int i = 0; preset[i] != NULL; i++) {
-        const char* name = preset[i];
-        uint64_t len = 0;
-        while (name[len]) len++;
-        if (!wapi_capability_supported(name, len)) {
-            return 0;
-        }
+        if (!io->capability_supported(io->impl, WAPI_STR(preset[i]))) return 0;
     }
     return 1;
 }
@@ -853,33 +939,36 @@ static inline wapi_bool_t wapi_preset_supported(const char** preset) {
 Usage:
 
 ```c
-if (wapi_preset_supported(WAPI_PRESET_GRAPHICAL)) {
+const wapi_io_t* io = wapi_io_get();
+if (wapi_preset_supported(io, WAPI_PRESET_GRAPHICAL)) {
     /* Host supports the full graphical stack */
 }
 ```
 
 ---
 
-## 11. Module Linking
+## 10. Module Linking
 
-### 11.1 Hybrid Memory Model
+Runtime module linking is a capability (`wapi.module`). Query availability via `io->capability_supported(io->impl, WAPI_STR("wapi.module"))` before using any `wapi_module_*` imports. Not all hosts support runtime linking — minimal or embedded runtimes may omit it.
+
+### 10.1 Hybrid Memory Model
 
 Each module has two memories:
 
-- **Memory 0 (private):** The module's own linear memory. Stack, globals, internal state. Fully isolated — no other module can access it. Allocated via `wapi_mem_alloc`.
+- **Memory 0 (private):** The module's own linear memory. Stack, globals, internal state. Fully isolated — no other module can access it. Allocated via the module's `wapi_allocator_t` (from `wapi_allocator_get()`).
 - **Memory 1 (shared):** A single shared memory owned by the application. All loaded child modules share the same memory 1 instance. The application always has full access to all of shared memory — it owns it. Child modules can only access regions they allocated themselves or were explicitly lent via `wapi_module_lend`.
 
-**Build-time linking** (one binary): Libraries are compiled into a single `.wasm` module. They share memory 0 naturally. Pass pointers, call functions directly. Pass allocator and I/O vtables as explicit function parameters (Zig-style). No WAPI mechanism needed.
+**Build-time linking** (one binary): Libraries are compiled into a single `.wasm` module. They share memory 0 naturally. Pass pointers, call functions directly. Pass `wapi_allocator_t` and `wapi_io_t` vtables as explicit function parameters (Zig-style). No WAPI mechanism needed.
 
 **Runtime linking** (separate modules): Each module has its own memory 0. Data exchange uses shared memory (memory 1) with the borrow system for zero-copy access, or explicit copies via `wapi_module_copy_in` for simple cases. Two access paths for shared memory:
 - **Multi-memory:** Import memory 1, load/store directly (zero copy).
 - **Host-call:** `wapi_module_shared_read` / `wapi_module_shared_write` (one copy, portable C).
 
-The dependency injection pattern is the same in both modes. A library accepts `wapi_allocator_t` for memory and `wapi_io_t` for I/O. In build-time linking these are pointers into shared memory. In runtime linking the parent provides function handles that the child calls. A child module starts with zero I/O access and only gets what the parent explicitly passes.
+The dependency injection pattern is the same in both modes. A library accepts `wapi_allocator_t` for memory and `wapi_io_t` for I/O. Every module also gets its own module-owned vtables from `wapi_io_get()` / `wapi_allocator_get()` — these are host-controlled, parent-proof, and provide sandbox-only I/O for child modules. For capabilities beyond the sandbox, callers pass their own vtables explicitly.
 
-### 11.2 Build-Time Linking
+### 10.2 Build-Time Linking
 
-Build-time linked libraries are simply part of the same Wasm binary. They share linear memory and can call each other's functions directly. WAPI defines vtable types (`wapi_allocator_t`, `wapi_io_t`, `wapi_panic_handler_t`) that libraries accept as explicit parameters for dependency injection, following Zig's allocator pattern:
+Build-time linked libraries are simply part of the same Wasm binary. They share linear memory and can call each other's functions directly. The vtable model (`wapi_allocator_t`, `wapi_io_t`, `wapi_panic_handler_t`) is universal — the same types used for module-owned vtables from the host are also passed explicitly between functions for dependency injection, following Zig's allocator pattern:
 
 ```c
 // A library function that accepts an explicit allocator
@@ -894,7 +983,7 @@ void download_and_decode(const char* url, const wapi_io_t* io, const wapi_alloca
 
 This is a convention, not an ABI requirement. Libraries choose their own parameter patterns. The key principle is: if a function does I/O, it takes a `wapi_io_t*`. If it allocates, it takes a `wapi_allocator_t*`. The caller always controls the callee's capabilities.
 
-### 11.3 Runtime Module Identity
+### 10.3 Runtime Module Identity
 
 Runtime modules are identified by the SHA-256 hash of their Wasm binary. The hash IS the identity. Name and version are human-readable metadata, not the linking key.
 
@@ -906,7 +995,7 @@ wapi_module_load(&hash, WAPI_STR("https://registry.example.com/image-decoder-1.2
 
 The URL is a fetch hint, not an identity. Two calls with different URLs but the same hash produce the same module.
 
-### 11.4 Cross-Module Calling
+### 10.4 Cross-Module Calling
 
 To call functions on a runtime module, the caller uses `wapi_module_call`. Data is exchanged via shared memory with borrows (zero-copy) or via explicit copies:
 
@@ -946,7 +1035,8 @@ uint64_t result_off = result.of.i32;
 uint64_t result_len = wapi_module_shared_usable_size(result_off);
 
 // Read the decoded pixels into private memory
-void* pixels = wapi_mem_alloc(result_len, 16);
+const wapi_allocator_t* alloc = wapi_allocator_get();
+void* pixels = wapi_mem_alloc(alloc, result_len, 16);
 wapi_module_shared_read(result_off, pixels, result_len);
 
 // Free the child's shared allocation when done
@@ -968,7 +1058,7 @@ wapi_val_t args[] = {
 wapi_module_call(module, func, args, 2, &result, 1);
 ```
 
-### 11.5 Shared Memory Ownership
+### 10.5 Shared Memory Ownership
 
 The application owns shared memory (memory 1) and always has full access to every offset. Child modules have restricted access:
 
@@ -978,7 +1068,7 @@ The application owns shared memory (memory 1) and always has full access to ever
 
 The application can read, write, free, and lend **any** region — regardless of who allocated it. A child can only free and lend its own allocations. Freeing a region with active borrows fails (`WAPI_ERR_BUSY`) — reclaim all borrows first.
 
-### 11.6 Borrow System
+### 10.6 Borrow System
 
 The borrow system controls child access to shared memory regions the child did not allocate. The application does not need borrows — it always has full access.
 
@@ -992,27 +1082,30 @@ This enables concurrent module execution on different regions: module B reads re
 
 **Child output pattern:** The child allocates in shared memory, writes its result, and returns the offset as a return value. The application reads it directly — no borrow or ownership transfer needed. The application can then lend this data to another module for pipeline processing (A→B→C) without any copies.
 
-### 11.7 I/O for Runtime Modules
+### 10.7 I/O for Runtime Modules
 
-Runtime modules do not get implicit `wapi_io` host imports. By default, a child module has zero I/O access. The parent grants I/O by passing a `wapi_io_t` vtable (as function handles) when calling into the child:
+Every runtime module gets its own module-owned vtables from `wapi_io_get()` and `wapi_allocator_get()`. These are host-controlled and cannot be influenced by any parent module — critical for shared instances where multiple parents use the same child.
+
+**Module-owned I/O is sandboxed.** A child module's `wapi_io_get()` returns a vtable that can only access the module's transient and persistent filesystems (see Section 7.8). It cannot access the real filesystem, network, or any permission-gated capability.
+
+**Per-call capabilities are explicit.** For capabilities beyond the sandbox, the caller passes its own `wapi_io_t` (or a wrapped version) as a function parameter:
 
 ```c
-// Parent creates function handles for the I/O vtable
-wapi_handle_t io_submit_fn, io_poll_fn, io_wait_fn;
-wapi_module_export_func(parent, WAPI_STR("my_submit_wrapper"), &io_submit_fn);
-
-// Pass the I/O handles as arguments when calling the child
-wapi_val_t args[] = {
-    { .kind = WAPI_VAL_I32, .of.i32 = io_submit_fn },
-    { .kind = WAPI_VAL_I32, .of.i32 = io_poll_fn },
-    // ... data args
-};
-wapi_module_call(module, func, args, count, &result, 1);
+/* The child module's function signature — explicit in its requirements */
+image_t* load_image(const wapi_io_t* io, const wapi_allocator_t* alloc,
+                    const char* path, size_t path_len);
 ```
 
-The child uses whatever I/O interface the parent provides. The parent can pass the real host I/O, a restricted wrapper, a logging layer, or a mock. This is the same pattern as `wapi_allocator_t` and `wapi_io_t` in build-time linking, applied across module boundaries via function handles instead of pointers.
+The caller controls what the callee can do by choosing what to pass — the real host I/O, a restricted wrapper, a logging layer, or a mock. This is the same pattern in both build-time and runtime linking.
 
-### 11.8 Semver for ABI Contracts
+**Security properties:**
+
+1. `wapi_io_get()` is host-controlled and parent-proof. A parent cannot change what a shared child's `wapi_io_get()` returns.
+2. Module-owned I/O is sandboxed. No network, no permission-gated capabilities.
+3. Per-call vtables are explicit. A module only gets capabilities beyond its sandbox when a caller passes them.
+4. Typed API handles are validated per-call by the host.
+
+### 10.8 Semver for ABI Contracts
 
 Module versions follow **semantic versioning**:
 
@@ -1020,15 +1113,15 @@ Module versions follow **semantic versioning**:
 - **Minor version** change: backward-compatible additions. The runtime may substitute a higher minor version within the same major version.
 - **Patch version** change: bug fix. The runtime may substitute a higher patch version.
 
-### 11.9 Module Cache
+### 10.9 Module Cache
 
 The runtime maintains a cache of modules keyed by content hash. Analogous to the browser's HTTP cache or a Nix store. Modules can be pre-fetched (`wapi_module_prefetch`) for background download.
 
 ---
 
-## 12. Browser Integration
+## 11. Browser Integration
 
-### 12.1 Architecture
+### 11.1 Architecture
 
 In the browser, a JavaScript shim implements the WAPI against Web APIs. The shim is a standard JavaScript module that:
 
@@ -1036,16 +1129,15 @@ In the browser, a JavaScript shim implements the WAPI against Web APIs. The shim
 2. Provides import implementations that delegate to Web APIs.
 3. Manages the frame loop via `requestAnimationFrame`.
 
-### 12.2 API Mapping
+### 11.2 API Mapping
 
 | WAPI Module         | Web API                                                      |
 |-------------------|--------------------------------------------------------------|
+| `wapi` (vtables)    | `wapi_io_t`/`wapi_allocator_t` backed by microtask queue + linear memory |
 | `wapi_env`          | `location.search`, Web Crypto `getRandomValues`              |
-| `wapi_memory`       | Direct linear memory management                              |
-| `wapi_io`           | Internal microtask queue                                     |
 | `wapi_clock`        | `performance.now()`, `Date.now()`                            |
-| `wapi_fs`           | Origin Private File System (OPFS)                            |
-| `wapi_net`          | `fetch`, `WebSocket`, `WebTransport`                         |
+| `wapi_filesystem`           | Origin Private File System (OPFS)                            |
+| `wapi_network`          | `fetch`, `WebSocket`, `WebTransport`                         |
 | `wapi_gpu`          | `navigator.gpu` (WebGPU)                                     |
 | `wapi_surface`      | `<canvas>` element, fullscreen API                           |
 | `wapi_input`        | DOM events (`keydown`, `mousemove`, `pointerdown`, `gamepadconnected`) |
@@ -1059,13 +1151,13 @@ In the browser, a JavaScript shim implements the WAPI against Web APIs. The shim
 | `wapi_sensors`      | Generic Sensor API (`Accelerometer`, `Gyroscope`)            |
 | `wapi_camera`       | `getUserMedia`, MediaStream API                              |
 
-### 12.3 Surface Model in Browser
+### 11.3 Surface Model in Browser
 
 Each browser tab renders a single fullscreen `<canvas>` element. The `wapi_surface_create` call creates or reconfigures this canvas. Requests for multiple surfaces are either mapped to a single canvas (with host-managed compositing) or rejected based on browser policy.
 
 Surface descriptors like `width`, `height`, and `flags` are best-effort. The browser may ignore size requests and always use the viewport dimensions. The module should respond to `WAPI_SURFACE_EVENT_RESIZED` events rather than assuming the requested size was honored.
 
-### 12.4 Coexistence with Traditional Web Content
+### 11.4 Coexistence with Traditional Web Content
 
 The WAPI does not replace HTML, CSS, or JavaScript. Traditional websites continue to work unchanged. The ABI provides an alternative application model for software that benefits from a single portable binary: games, creative tools, productivity applications, simulations.
 
@@ -1106,10 +1198,10 @@ A conforming WAPI module MUST export:
 | `wapi_val_t`                 |    16       |    8      |
 | `wapi_hit_test_result_t`     |    16       |    4      |
 | `wapi_window_config_t`       |    40       |    8      |
-| `wapi_net_listen_desc_t`     |    20       |    4      |
-| `wapi_io_t`                  |    24       |    4      |
+| `wapi_network_listen_desc_t`     |    20       |    4      |
+| `wapi_io_t`                  |    36       |    4      |
 | `wapi_dirent_t`              |    24       |    8      |
-| `wapi_net_connect_desc_t`    |    24       |    4      |
+| `wapi_network_connect_desc_t`    |    24       |    4      |
 | `wapi_surface_desc_t`        |    24       |    4      |
 | `wapi_gpu_surface_config_t`  |    24       |    4      |
 | `wapi_caret_info_t`          |    24       |    4      |

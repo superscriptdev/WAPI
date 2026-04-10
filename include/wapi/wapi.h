@@ -264,9 +264,9 @@ typedef enum wapi_perm_state_t {
  *
  * Defines the I/O operation descriptor and opcodes for ALL async
  * operations across the entire platform. Operations are submitted
- * via the wapi_io_submit host import (or wapi_io_t vtable for
- * build-time library composition) and completions arrive as
- * WAPI_EVENT_IO_COMPLETION events in the unified event queue.
+ * via the wapi_io_t vtable's submit function and completions
+ * arrive as WAPI_EVENT_IO_COMPLETION events in the unified event
+ * queue.
  *
  * The host decides sync vs async behavior:
  *   - Sync: executes immediately, pushes completion before returning.
@@ -283,8 +283,6 @@ typedef enum wapi_perm_state_t {
  *   offset     File offset, timeout_ns, timestamp_us, packed params
  *   result_ptr Output pointer (handle, length, state)
  *   user_data  Correlation token (echoed in completion event)
- *
- * Import module: "wapi_io"
  * ################################################################ */
 
 /* ============================================================
@@ -327,20 +325,22 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_AUDIO_READ   = 0x1F,  /* fd=stream, addr/len=buf -> result_ptr=bytes_read */
 
     /* ---- Extended Network (0x040-0x04F) ---- */
-    WAPI_IO_OP_NET_LISTEN         = 0x040, /* addr/len=bind_addr, flags=transport, flags2=port<<16|backlog -> result_ptr=listener */
-    WAPI_IO_OP_NET_SEND_DATAGRAM  = 0x041, /* fd=conn, addr/len=data */
-    WAPI_IO_OP_NET_RECV_DATAGRAM  = 0x042, /* fd=conn, addr/len=buf -> result_ptr=recv_len */
-    WAPI_IO_OP_NET_STREAM_OPEN    = 0x043, /* fd=conn, flags=stream_type -> result_ptr=stream */
-    WAPI_IO_OP_NET_STREAM_ACCEPT  = 0x044, /* fd=conn -> result_ptr=stream */
-    WAPI_IO_OP_NET_RESOLVE        = 0x045, /* addr/len=host, addr2/len2=addrs_buf -> result_ptr=count */
+    WAPI_IO_OP_NETWORK_LISTEN         = 0x040, /* addr/len=bind_addr, flags=transport, flags2=port<<16|backlog -> result_ptr=listener */
+    WAPI_IO_OP_NETWORK_SEND_DATAGRAM  = 0x041, /* fd=conn, addr/len=data */
+    WAPI_IO_OP_NETWORK_RECV_DATAGRAM  = 0x042, /* fd=conn, addr/len=buf -> result_ptr=recv_len */
+    WAPI_IO_OP_NETWORK_STREAM_OPEN    = 0x043, /* fd=conn, flags=stream_type -> result_ptr=stream */
+    WAPI_IO_OP_NETWORK_STREAM_ACCEPT  = 0x044, /* fd=conn -> result_ptr=stream */
+    WAPI_IO_OP_NETWORK_RESOLVE        = 0x045, /* addr/len=host, addr2/len2=addrs_buf -> result_ptr=count */
 
     /* ---- P2P / WebRTC (0x050-0x05F) ---- */
-    WAPI_IO_OP_P2P_CREATE              = 0x050, /* addr/len=config -> result_ptr=conn */
-    WAPI_IO_OP_P2P_CREATE_OFFER        = 0x051, /* fd=conn, addr/len=sdp_buf -> result_ptr=sdp_len */
-    WAPI_IO_OP_P2P_CREATE_ANSWER       = 0x052, /* fd=conn, addr/len=sdp_buf -> result_ptr=sdp_len */
-    WAPI_IO_OP_P2P_ADD_ICE_CANDIDATE   = 0x053, /* fd=conn, addr/len=candidate */
-    WAPI_IO_OP_P2P_SEND                = 0x054, /* fd=conn, addr/len=data */
-    WAPI_IO_OP_P2P_SET_REMOTE_DESC     = 0x055, /* fd=conn, addr/len=sdp */
+    WAPI_IO_OP_P2P_CREATE            = 0x050, /* addr/len=config(wapi_p2p_config_t) -> result_ptr=conn */
+    WAPI_IO_OP_P2P_CREATE_CHANNEL    = 0x051, /* fd=conn, addr/len=label, flags=channel_flags -> result_ptr=channel */
+    WAPI_IO_OP_P2P_ACCEPT_CHANNEL    = 0x052, /* fd=conn -> result_ptr=channel (completes when remote opens a channel) */
+    WAPI_IO_OP_P2P_CREATE_OFFER      = 0x053, /* fd=conn, addr/len=sdp_buf -> result_ptr=sdp_len */
+    WAPI_IO_OP_P2P_CREATE_ANSWER     = 0x054, /* fd=conn, addr/len=sdp_buf -> result_ptr=sdp_len */
+    WAPI_IO_OP_P2P_SET_REMOTE_DESC   = 0x055, /* fd=conn, addr/len=sdp */
+    WAPI_IO_OP_P2P_ADD_ICE_CANDIDATE = 0x056, /* fd=conn, addr/len=candidate */
+    WAPI_IO_OP_P2P_GATHER_ICE        = 0x057, /* fd=conn, addr/len=buf -> result_ptr=candidate_len (completes per candidate; len=0 means done) */
 
     /* ---- Serial (0x080-0x08F) ---- */
     WAPI_IO_OP_SERIAL_REQUEST_PORT = 0x080, /* -> result_ptr=port_handle */
@@ -425,6 +425,16 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_GEO_GET_POSITION   = 0x210, /* offset=timeout_ms, flags=accuracy -> result_ptr=position */
     WAPI_IO_OP_GEO_WATCH_POSITION = 0x211, /* flags=accuracy -> result_ptr=watch_handle */
 
+    /* ---- Sandbox Filesystem (0x2A0-0x2AF) ---- */
+    WAPI_IO_OP_SANDBOX_OPEN   = 0x2A0, /* addr/len=path, flags=open_flags -> result_ptr=fd */
+    WAPI_IO_OP_SANDBOX_STAT   = 0x2A1, /* addr/len=path -> result_ptr=stat_buf */
+    WAPI_IO_OP_SANDBOX_DELETE = 0x2A2, /* addr/len=path */
+
+    /* ---- Persistent Cache Filesystem (0x2B0-0x2BF) ---- */
+    WAPI_IO_OP_CACHE_OPEN   = 0x2B0, /* addr/len=path, flags=open_flags -> result_ptr=fd */
+    WAPI_IO_OP_CACHE_STAT   = 0x2B1, /* addr/len=path -> result_ptr=stat_buf */
+    WAPI_IO_OP_CACHE_DELETE = 0x2B2, /* addr/len=path */
+
     WAPI_IO_OP_FORCE32 = 0x7FFFFFFF
 } wapi_io_opcode_t;
 
@@ -447,35 +457,31 @@ typedef enum wapi_io_opcode_t {
  * layout is identical for wasm32 and wasm64. Wasm32 modules
  * zero-extend their 32-bit addresses into 64-bit fields.
  *
- * Layout (88 bytes, align 8):
+ * Layout (80 bytes, align 8):
  *   Offset  0: uint32_t opcode
  *   Offset  4: uint32_t flags
  *   Offset  8: int32_t  fd          (file descriptor / handle)
- *   Offset 12: uint32_t _pad0
+ *   Offset 12: uint32_t flags2      (operation-specific flags)
  *   Offset 16: uint64_t offset      (file offset, or timeout_ns)
  *   Offset 24: uint64_t addr        (pointer to buffer)
  *   Offset 32: uint64_t len         (buffer length)
  *   Offset 40: uint64_t addr2       (pointer to second buffer / path)
  *   Offset 48: uint64_t len2        (second buffer length)
- *   Offset 56: uint32_t flags2      (operation-specific flags)
- *   Offset 60: uint32_t _pad1
- *   Offset 64: uint64_t user_data   (opaque, echoed in completion)
- *   Offset 72: uint64_t result_ptr  (pointer for output values)
- *   Offset 80: uint8_t  reserved[8]
+ *   Offset 56: uint64_t user_data   (opaque, echoed in completion)
+ *   Offset 64: uint64_t result_ptr  (pointer for output values)
+ *   Offset 72: uint8_t  reserved[8]
  */
 
 typedef struct wapi_io_op_t {
     uint32_t    opcode;     /* wapi_io_opcode_t */
     uint32_t    flags;      /* Operation flags */
     int32_t     fd;         /* Handle / file descriptor */
-    uint32_t    _pad0;
+    uint32_t    flags2;     /* Additional operation-specific flags */
     uint64_t    offset;     /* File offset or timeout in nanoseconds */
     uint64_t    addr;       /* Pointer to buffer */
     uint64_t    len;        /* Buffer length */
     uint64_t    addr2;      /* Second pointer (path for open, etc.) */
     uint64_t    len2;       /* Second length */
-    uint32_t    flags2;     /* Additional operation-specific flags */
-    uint32_t    _pad1;
     uint64_t    user_data;  /* Echoed in completion, for correlation */
     uint64_t    result_ptr; /* Pointer to write output (bytes read, fd, etc.) */
     uint8_t     reserved[8];
@@ -488,11 +494,11 @@ typedef struct wapi_io_op_t {
  * union for all platform events: input, lifecycle, I/O completions,
  * device changes, drag-and-drop, and more.
  *
- * Event delivery is through the I/O imports (wapi_io_poll /
- * wapi_io_wait). There is no separate event system.
+ * Event delivery is through the I/O vtable (poll / wait).
+ * There is no separate event system.
  * All events -- whether initiated by the module (I/O completions) or
  * pushed by the host (input, lifecycle) -- arrive through the same
- * poll/wait imports (wapi_io_poll / wapi_io_wait).
+ * poll/wait vtable calls (io->poll / io->wait).
  * ################################################################ */
 
 /* ============================================================
@@ -1063,26 +1069,26 @@ typedef union wapi_event_t {
 } wapi_event_t;
 
 /* ################################################################
- * PART 4 — CONTEXT, I/O IMPORTS, AND VTABLE TYPES
+ * PART 4 — VTABLE TYPES AND HOST IMPORTS
  *
- * The execution context is minimal: GPU device handle and flags.
- * I/O and allocation are NOT ambient in context. Instead:
+ * I/O and allocation are accessed through vtables, not ambient
+ * imports. Every module — top-level or child — is written the
+ * same way:
  *
- *   - Main apps call I/O host imports directly (wapi_io_submit, etc.)
- *   - Libraries take vtables as explicit parameters
- *   - Runtime modules use host imports; parent controls via I/O policy
+ *   1. Call wapi_io_get() / wapi_allocator_get() for module-owned
+ *      vtables (host-controlled, parent-proof, sandbox-only for
+ *      child modules).
+ *   2. Accept caller-provided vtables as function parameters for
+ *      capabilities beyond the sandbox.
  *
- * Vtable types (wapi_allocator_t, wapi_io_t, wapi_panic_handler_t)
- * are defined here for use by library composition (both build-time
- * and runtime-linked), but they are NOT part of any context struct.
+ * Vtable types: wapi_allocator_t, wapi_io_t, wapi_panic_handler_t
  * ################################################################ */
 
 /* ============================================================
- * Allocator Vtable (Library Convention)
+ * Allocator Vtable
  * ============================================================
- * Function table with opaque context pointer. Used when libraries
- * accept an explicit allocator parameter (Zig-style).
- * Pass explicitly to functions that need it.
+ * Function table with opaque context pointer (Zig-style).
+ * Obtained via wapi_allocator_get() or passed by callers.
  *
  * The `impl` pointer carries per-instance state (arena position,
  * pool free list, etc.) -- without it, you can't have two different
@@ -1102,23 +1108,22 @@ typedef struct wapi_allocator_t {
 } wapi_allocator_t;
 
 /* ============================================================
- * I/O Vtable (Library Convention)
+ * I/O Vtable
  * ============================================================
- * Function table for I/O operations. Used when libraries accept
- * an explicit I/O parameter. NOT part of any context struct.
- * Pass explicitly to functions that need I/O.
+ * Universal interface for I/O operations, event handling, and
+ * capability queries. Obtained via wapi_io_get() (module-owned,
+ * host-controlled) or passed explicitly by callers.
  *
- * Main applications use host imports directly (see wapi_io_submit,
- * wapi_io_poll, wapi_io_wait below). This vtable is for libraries
- * that need I/O injection without coupling to host imports.
- *
- * Layout (24 bytes, align 4):
- *   Offset  0: ptr  impl       Opaque implementation context
- *   Offset  4: ptr  submit     (impl, ops, count) -> i32
- *   Offset  8: ptr  cancel     (impl, user_data) -> i32
- *   Offset 12: ptr  poll       (impl, event) -> i32
- *   Offset 16: ptr  wait       (impl, event, timeout_ms) -> i32
- *   Offset 20: ptr  flush      (impl, event_type) -> void
+ * Layout (36 bytes, align 4):
+ *   Offset  0: ptr  impl                  Opaque implementation context
+ *   Offset  4: ptr  submit                (impl, ops, count) -> i32
+ *   Offset  8: ptr  cancel                (impl, user_data) -> i32
+ *   Offset 12: ptr  poll                  (impl, event) -> i32
+ *   Offset 16: ptr  wait                  (impl, event, timeout_ms) -> i32
+ *   Offset 20: ptr  flush                 (impl, event_type) -> void
+ *   Offset 24: ptr  capability_supported  (impl, name) -> bool
+ *   Offset 28: ptr  capability_version    (impl, name, ver) -> result
+ *   Offset 32: ptr  perm_query            (impl, cap, state) -> result
  */
 typedef struct wapi_io_t {
     void*         impl;
@@ -1129,16 +1134,21 @@ typedef struct wapi_io_t {
     int32_t       (*wait)(void* impl, wapi_event_t* event,
                           int32_t timeout_ms);
     void          (*flush)(void* impl, uint32_t event_type);
+    wapi_bool_t   (*capability_supported)(void* impl,
+                                          wapi_string_view_t name);
+    wapi_result_t (*capability_version)(void* impl,
+                                        wapi_string_view_t name,
+                                        wapi_version_t* version);
+    wapi_result_t (*perm_query)(void* impl,
+                                wapi_string_view_t capability,
+                                wapi_perm_state_t* state);
 } wapi_io_t;
 
 /* ============================================================
- * Panic Handler Vtable (Library Convention)
+ * Panic Handler Vtable
  * ============================================================
- * Function table for panic reporting. Used when libraries accept
- * an explicit panic handler parameter. NOT part of any context struct.
- * Pass explicitly to functions that need panic handling.
- *
- * Main applications use the wapi_panic_report host import directly.
+ * Function table for panic reporting. Pass explicitly to
+ * functions that need panic handling.
  *
  * Layout (8 bytes, align 4):
  *   Offset  0: ptr  impl   Opaque implementation context
@@ -1148,36 +1158,6 @@ typedef struct wapi_panic_handler_t {
     void* impl;
     void  (*fn)(void* impl, const char* msg, wapi_size_t msg_len);
 } wapi_panic_handler_t;
-
-/* ============================================================
- * Direct I/O Host Imports
- * ============================================================
- * Main applications call these directly. Libraries and runtime
- * modules receive I/O capability through an explicit wapi_io_t
- * vtable passed by the caller (see wapi_io_t).
- *
- * Import module: "wapi_io"
- */
-
-/** Submit I/O operations. Returns number submitted, or negative on error. */
-WAPI_IMPORT(wapi_io, submit)
-int32_t wapi_io_submit(const wapi_io_op_t* ops, wapi_size_t count);
-
-/** Cancel a pending I/O operation by user_data. */
-WAPI_IMPORT(wapi_io, cancel)
-wapi_result_t wapi_io_cancel(uint64_t user_data);
-
-/** Poll for the next event (non-blocking). Returns 1 if event available. */
-WAPI_IMPORT(wapi_io, poll)
-int32_t wapi_io_poll(wapi_event_t* event);
-
-/** Wait for the next event. timeout_ms=-1 blocks indefinitely. Returns 1 if event available. */
-WAPI_IMPORT(wapi_io, wait)
-int32_t wapi_io_wait(wapi_event_t* event, int32_t timeout_ms);
-
-/** Flush queued events of a given type (0 = all). */
-WAPI_IMPORT(wapi_io, flush)
-void wapi_io_flush(uint32_t event_type);
 
 /* ============================================================
  * Panic Host Import
@@ -1206,47 +1186,77 @@ static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
     __builtin_trap();
 }
 
+/* ============================================================
+ * Vtable Acquisition Host Imports
+ * ============================================================
+ * Every module obtains its I/O and allocator vtables from the host.
+ * These are the module-owned vtables — host-controlled, immutable
+ * by any parent module. Safe for shared instances.
+ *
+ * - Top-level apps get a fully-capable I/O vtable.
+ * - Child modules get a sandbox-only I/O vtable (transient +
+ *   persistent filesystems, no network/real-FS/permissions).
+ * - For capabilities beyond the sandbox, callers pass their own
+ *   vtables explicitly as function parameters.
+ *
+ * Import module: "wapi"
+ */
+
+/**
+ * Get the module-owned I/O vtable.
+ *
+ * Returns the host-determined vtable for the calling module.
+ * Deterministic, safe, not influenced by any parent.
+ *
+ * Wasm signature: () -> i32
+ */
+WAPI_IMPORT(wapi, io_get)
+const wapi_io_t* wapi_io_get(void);
+
+/**
+ * Get the module-owned allocator vtable.
+ *
+ * Returns the host-determined allocator for the calling module.
+ * The host manages allocation within the module's linear memory.
+ *
+ * Wasm signature: () -> i32
+ */
+WAPI_IMPORT(wapi, allocator_get)
+const wapi_allocator_t* wapi_allocator_get(void);
+
 /* ################################################################
  * PART 5 — CAPABILITY DETECTION
  *
- * A module queries which capabilities the host provides at startup.
- * No runtime identification -- only feature detection. The module
- * asks "do you support GPU?" not "are you Chrome?"
- *
- * All capabilities are equal. There is no distinction between "core"
- * and "extension" capabilities. A host supports whatever set of
- * capabilities it chooses. The spec defines capabilities under the
- * "wapi.*" namespace; third-party vendors define their own under
- * "vendor.<name>.*".
+ * Capabilities are queried through the wapi_io_t vtable's
+ * capability_supported and capability_version function pointers.
+ * There is no distinction between "core" and "extension"
+ * capabilities.
  *
  * Capability names use dot-separated namespacing:
  *   "wapi.gpu"              - Spec-defined capability
  *   "wapi.geolocation"      - Spec-defined capability
  *   "vendor.acme.feature"   - Vendor-defined capability
- *
- * Import module: "wapi"
  * ################################################################ */
 
 /* ============================================================
  * Capability Names
  * ============================================================
  * String constants for all spec-defined capabilities.
- * These are the canonical names used with wapi_capability_supported().
+ * These are the canonical names used with io->capability_supported().
  */
 
-#define WAPI_CAP_MEMORY        "wapi.memory"
+#define WAPI_CAP_ENV           "wapi.env"
+#define WAPI_CAP_CLOCK         "wapi.clock"
 #define WAPI_CAP_FILESYSTEM    "wapi.filesystem"
 #define WAPI_CAP_NETWORK       "wapi.network"
-#define WAPI_CAP_CLOCK         "wapi.clock"
-#define WAPI_CAP_RANDOM        "wapi.random"
 #define WAPI_CAP_GPU           "wapi.gpu"
 #define WAPI_CAP_SURFACE       "wapi.surface"
+#define WAPI_CAP_WINDOW        "wapi.window"
+#define WAPI_CAP_DISPLAY       "wapi.display"
 #define WAPI_CAP_INPUT         "wapi.input"
 #define WAPI_CAP_AUDIO         "wapi.audio"
 #define WAPI_CAP_CONTENT       "wapi.content"
 #define WAPI_CAP_CLIPBOARD     "wapi.clipboard"
-#define WAPI_CAP_IO            "wapi.io"
-#define WAPI_CAP_ENV           "wapi.env"
 #define WAPI_CAP_MODULE        "wapi.module"
 #define WAPI_CAP_FONT          "wapi.font"
 #define WAPI_CAP_VIDEO         "wapi.video"
@@ -1272,6 +1282,7 @@ static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
 #define WAPI_CAP_SYSINFO       "wapi.sysinfo"
 #define WAPI_CAP_EYEDROP       "wapi.eyedrop"
 #define WAPI_CAP_CONTACTS      "wapi.contacts"
+#define WAPI_CAP_P2P           "wapi.p2p"
 
 /* ============================================================
  * Presets
@@ -1282,133 +1293,47 @@ static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
  * module can always query capabilities individually.
  */
 
+static const char* const WAPI_PRESET_EMBEDDED[] = {
+    "wapi.env", "wapi.clock", NULL
+};
+
 static const char* const WAPI_PRESET_HEADLESS[] = {
-    "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
-    "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
-    "wapi.thread", "wapi.sync", "wapi.process", NULL
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
+    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_COMPUTE[] = {
-    "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
-    "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
-    "wapi.gpu", "wapi.thread", "wapi.sync", "wapi.process", NULL
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
+    "wapi.gpu", "wapi.thread", "wapi.sync", "wapi.process",
+    "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_AUDIO[] = {
-    "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
-    "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
-    "wapi.audio", "wapi.thread", "wapi.sync", NULL
+    "wapi.env", "wapi.clock", "wapi.filesystem",
+    "wapi.audio", "wapi.thread", "wapi.sync", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_GRAPHICAL[] = {
-    "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
-    "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
     "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
-    "wapi.thread", "wapi.sync", "wapi.process", "wapi.dialog", NULL
+    "wapi.font", "wapi.dialog",
+    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_MOBILE[] = {
-    "wapi.memory", "wapi.filesystem", "wapi.network", "wapi.clock",
-    "wapi.random", "wapi.io", "wapi.env", "wapi.sysinfo",
+    "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
+    "wapi.sysinfo", "wapi.crypto",
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
     "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
-    "wapi.thread", "wapi.sync", "wapi.geolocation", "wapi.camera",
-    "wapi.notifications", "wapi.sensors", "wapi.biometric", NULL
+    "wapi.font",
+    "wapi.thread", "wapi.sync",
+    "wapi.geolocation", "wapi.camera", "wapi.notifications",
+    "wapi.sensors", "wapi.biometric", "wapi.module", NULL
 };
-
-/* ============================================================
- * Capability Query Functions
- * ============================================================
- * These are the first functions a module calls at startup.
- * The host reports what it provides; the module adapts.
- *
- * All capabilities -- spec-defined and vendor-defined -- use
- * the same query mechanism. No separate "extension" API.
- */
-
-/**
- * Query whether a capability is supported by name.
- *
- * @param name  Capability name (e.g., "wapi.gpu", "vendor.acme.feature").
- * @return WAPI_TRUE if the host provides this capability.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi, capability_supported)
-wapi_bool_t wapi_capability_supported(wapi_string_view_t name);
-
-/**
- * Get the version of a supported capability.
- *
- * @param name     Capability name.
- * @param version  [out] Version struct (major, minor, patch).
- * @return WAPI_OK on success, WAPI_ERR_NOENT if not supported.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi, capability_version)
-wapi_result_t wapi_capability_version(wapi_string_view_t name,
-                                      wapi_version_t* version);
-
-/**
- * Get the number of capabilities the host supports.
- * Use with wapi_capability_name() to enumerate all capabilities.
- *
- * @return Number of supported capabilities.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi, capability_count)
-int32_t wapi_capability_count(void);
-
-/**
- * Get the name of a supported capability by index.
- * For enumerating all capabilities at startup.
- *
- * @param index     Capability index (0 .. wapi_capability_count()-1).
- * @param buf       [out] Buffer to write the name into.
- * @param buf_len   Buffer capacity in bytes.
- * @param name_len  [out] Actual name length in bytes.
- * @return WAPI_OK on success, WAPI_ERR_RANGE if index out of bounds,
- *         WAPI_ERR_NOMEM if buffer too small (name_len still set).
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi, capability_name)
-wapi_result_t wapi_capability_name(uint32_t index, char* buf, wapi_size_t buf_len,
-                                wapi_size_t* name_len);
-
-/**
- * Get the WAPI version the host implements.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi, abi_version)
-wapi_result_t wapi_abi_version(wapi_version_t* version);
-
-/* ============================================================
- * Permission Queries
- * ============================================================
- * Query the current permission state for a capability without
- * triggering a user prompt. To actually request permission,
- * submit WAPI_IO_OP_PERM_REQUEST through wapi_io_submit.
- */
-
-/**
- * Query the permission state for a capability.
- *
- * Does not trigger a prompt. Returns the current state only.
- *
- * @param capability  Capability name (e.g., "wapi.geolocation").
- * @param state       [out] Current permission state.
- * @return WAPI_OK on success, WAPI_ERR_NOENT if capability unknown.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi, perm_query)
-wapi_result_t wapi_perm_query(wapi_string_view_t capability,
-                              wapi_perm_state_t* state);
 
 /* ============================================================
  * Convenience: Preset Checking
@@ -1416,14 +1341,16 @@ wapi_result_t wapi_perm_query(wapi_string_view_t capability,
 
 /**
  * Check if all capabilities in a NULL-terminated preset array
- * are supported by the host.
+ * are supported, using the given I/O vtable.
  *
  * Usage:
- *   if (wapi_preset_supported(WAPI_PRESET_GRAPHICAL)) { ... }
+ *   const wapi_io_t* io = wapi_io_get();
+ *   if (wapi_preset_supported(io, WAPI_PRESET_GRAPHICAL)) { ... }
  */
-static inline wapi_bool_t wapi_preset_supported(const char* const* preset) {
+static inline wapi_bool_t wapi_preset_supported(const wapi_io_t* io,
+                                                 const char* const* preset) {
     for (int i = 0; preset[i] != NULL; i++) {
-        if (!wapi_capability_supported(WAPI_STR(preset[i]))) return 0;
+        if (!io->capability_supported(io->impl, WAPI_STR(preset[i]))) return 0;
     }
     return 1;
 }
@@ -1436,9 +1363,8 @@ static inline wapi_bool_t wapi_preset_supported(const char* const* preset) {
 
 /**
  * Module entry point. Called by the host after instantiation.
- * The module queries capabilities and uses host imports directly
- * (wapi_io_*, wapi_gpu_*, etc.). No context struct needed --
- * everything is available through imports.
+ * The module calls wapi_io_get() / wapi_allocator_get() to obtain
+ * its vtables, queries capabilities, and initializes.
  * Returns WAPI_OK on success, or a negative error code to abort.
  *
  * Wasm signature: () -> i32
@@ -1482,18 +1408,16 @@ _Static_assert(sizeof(wapi_event_t) == 128, "wapi_event_t must be 128 bytes");
 _Static_assert(offsetof(wapi_io_op_t, opcode)     ==  0, "");
 _Static_assert(offsetof(wapi_io_op_t, flags)      ==  4, "");
 _Static_assert(offsetof(wapi_io_op_t, fd)         ==  8, "");
-_Static_assert(offsetof(wapi_io_op_t, _pad0)      == 12, "");
+_Static_assert(offsetof(wapi_io_op_t, flags2)     == 12, "");
 _Static_assert(offsetof(wapi_io_op_t, offset)     == 16, "");
 _Static_assert(offsetof(wapi_io_op_t, addr)       == 24, "");
 _Static_assert(offsetof(wapi_io_op_t, len)        == 32, "");
 _Static_assert(offsetof(wapi_io_op_t, addr2)      == 40, "");
 _Static_assert(offsetof(wapi_io_op_t, len2)       == 48, "");
-_Static_assert(offsetof(wapi_io_op_t, flags2)     == 56, "");
-_Static_assert(offsetof(wapi_io_op_t, _pad1)      == 60, "");
-_Static_assert(offsetof(wapi_io_op_t, user_data)  == 64, "");
-_Static_assert(offsetof(wapi_io_op_t, result_ptr) == 72, "");
-_Static_assert(offsetof(wapi_io_op_t, reserved)   == 80, "");
-_Static_assert(sizeof(wapi_io_op_t) == 88, "wapi_io_op_t must be 88 bytes");
+_Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
+_Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
+_Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
+_Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
 
 /* --- Event Common Header (16 bytes, align 8) --- */
 _Static_assert(offsetof(wapi_event_common_t, type)       == 0, "");
@@ -1689,13 +1613,16 @@ _Static_assert(offsetof(wapi_allocator_t, realloc_fn) == 12, "");
 _Static_assert(sizeof(wapi_allocator_t) == 16, "wapi_allocator_t must be 16 bytes");
 
 /* I/O Vtable (24 bytes, align 4) */
-_Static_assert(offsetof(wapi_io_t, impl)   ==  0, "");
-_Static_assert(offsetof(wapi_io_t, submit) ==  4, "");
-_Static_assert(offsetof(wapi_io_t, cancel) ==  8, "");
-_Static_assert(offsetof(wapi_io_t, poll)   == 12, "");
-_Static_assert(offsetof(wapi_io_t, wait)   == 16, "");
-_Static_assert(offsetof(wapi_io_t, flush)  == 20, "");
-_Static_assert(sizeof(wapi_io_t) == 24, "wapi_io_t must be 24 bytes");
+_Static_assert(offsetof(wapi_io_t, impl)                 ==  0, "");
+_Static_assert(offsetof(wapi_io_t, submit)               ==  4, "");
+_Static_assert(offsetof(wapi_io_t, cancel)               ==  8, "");
+_Static_assert(offsetof(wapi_io_t, poll)                 == 12, "");
+_Static_assert(offsetof(wapi_io_t, wait)                 == 16, "");
+_Static_assert(offsetof(wapi_io_t, flush)                == 20, "");
+_Static_assert(offsetof(wapi_io_t, capability_supported) == 24, "");
+_Static_assert(offsetof(wapi_io_t, capability_version)   == 28, "");
+_Static_assert(offsetof(wapi_io_t, perm_query)           == 32, "");
+_Static_assert(sizeof(wapi_io_t) == 36, "wapi_io_t must be 36 bytes");
 
 /* Panic Handler (8 bytes, align 4) */
 _Static_assert(offsetof(wapi_panic_handler_t, impl) == 0, "");

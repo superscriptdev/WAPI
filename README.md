@@ -11,7 +11,7 @@ A concrete proposal for the platform WebAssembly was supposed to enable: a thin,
 - **C-style calling convention.** Functions accept integers, floats, and pointers to caller-owned memory. No WIT. No IDL. No Canonical ABI with lifting and lowering. Every language on earth can call these functions.
 - **Capabilities all the way down.** A module starts with zero access. Every resource is a handle the host explicitly granted. No ambient authority.
 - **webgpu.h directly.** GPU access uses the existing `webgpu.h` header from the webgpu-native project, implemented by both Dawn (Google) and wgpu-native (Rust).
-- **Submit + unified events.** Async I/O follows the io_uring pattern: submit operations via a vtable, completions arrive as events in the same queue as input and window events. One wait point for everything.
+- **Submit + unified events.** Async I/O follows the io_uring pattern: submit operations via the `wapi_io_t` vtable, completions arrive as events in the same queue as input and window events. One wait point for everything.
 
 ## Design Lineage
 
@@ -90,7 +90,6 @@ wapi/
 │       ├── wapi_types.h                 # Core types, handles, errors
 │       ├── wapi_capability.h            # Capability enumeration (string-based)
 │       ├── wapi_env.h                   # Environment and process
-│       ├── wapi_memory.h                # Memory allocation
 │       ├── wapi_io.h                    # Async I/O (submit/poll/wait)
 │       ├── wapi_clock.h                 # Clocks and timers
 │       ├── wapi_fs.h                    # Filesystem
@@ -140,8 +139,12 @@ wapi/
 
 WAPI_EXPORT(wapi_main)
 wapi_result_t wapi_main(void) {
+    // Obtain module-owned vtables from the host
+    const wapi_io_t* io = wapi_io_get();
+    const wapi_allocator_t* alloc = wapi_allocator_get();
+
     // Check what the host provides (string-based capability query)
-    if (!wapi_preset_supported(WAPI_PRESET_GRAPHICAL)) {
+    if (!wapi_preset_supported(io, WAPI_PRESET_GRAPHICAL)) {
         return WAPI_ERR_NOTCAPABLE;
     }
 
@@ -171,9 +174,9 @@ wapi_result_t wapi_main(void) {
     };
     wapi_gpu_configure_surface(&config);
 
-    // Event loop: input, I/O completions, and timers all come through host imports
+    // Event loop: all events come through the I/O vtable
     wapi_event_t ev;
-    while (wapi_io_wait(&ev, -1)) {
+    while (io->wait(io->impl, &ev, -1)) {
         switch (ev.type) {
         case WAPI_EVENT_IO_COMPLETION:   /* async I/O finished */ break;
         case WAPI_EVENT_KEY_DOWN:        /* keyboard input */     break;
@@ -203,7 +206,7 @@ These principles emerged from iterating on the design and apply across all WAPI 
 
 ### Why string-based capabilities?
 
-Bitmasks are fast but limited to 32 or 64 capabilities before requiring a breaking change. String-based capability names (like Vulkan's extension model) scale indefinitely -- any vendor can add `vendor.mycompany.myfeature` without coordination. Every capability uses the same query path: `wapi_capability_supported("wapi.gpu", 6)`. There is no "core" vs "extension" distinction. Presets are just convenience arrays of these strings. The cost of a few string comparisons at startup is negligible compared to the architectural flexibility this provides.
+Bitmasks are fast but limited to 32 or 64 capabilities before requiring a breaking change. String-based capability names (like Vulkan's extension model) scale indefinitely -- any vendor can add `vendor.mycompany.myfeature` without coordination. Every capability uses the same query path: `io->capability_supported(io->impl, WAPI_STR("wapi.gpu"))`. There is no "core" vs "extension" distinction. Presets are just convenience arrays of these strings. The cost of a few string comparisons at startup is negligible compared to the architectural flexibility this provides.
 
 ### Why not the Component Model?
 
@@ -215,7 +218,7 @@ Opaque pointers (`WGPUDevice*`) work great in native code where the caller and c
 
 ### Why submit + unified event queue, not async/await?
 
-async/await is a language-level concern. The ABI is a calling convention. I/O operations are submitted through `wapi_io_submit()` and completions arrive as events in the same queue as input, window, and lifecycle events. One wait point for everything -- a game loop processes key presses and file load completions in the same `switch`. This is how io_uring works (kernel I/O), how webgpu.h works (GPU commands), and how every game loop works (process events, update, render). The module can wrap this in async/await, green threads, or whatever its language prefers.
+async/await is a language-level concern. The ABI is a calling convention. I/O operations are submitted through the `wapi_io_t` vtable and completions arrive as events in the same queue as input, window, and lifecycle events. One wait point for everything -- a game loop processes key presses and file load completions in the same `switch`. This is how io_uring works (kernel I/O), how webgpu.h works (GPU commands), and how every game loop works (process events, update, render). The module can wrap this in async/await, green threads, or whatever its language prefers.
 
 ### How does module composition work?
 
@@ -223,11 +226,11 @@ Each module has private memory (memory 0) for isolation and access to shared mem
 
 **Build-time** (one binary): Libraries share memory 0 naturally. Pass pointers, call functions -- just C linking. Allocators and I/O vtables can be passed as explicit function parameters (Zig-style).
 
-**Runtime** (separate modules): Each module has its own memory 0. Data exchange uses shared memory (memory 1) with a borrow system (`wapi_module_lend` / `wapi_module_reclaim`) for zero-copy access, or explicit copies (`wapi_module_copy_in`) for simple cases. The parent controls the child's I/O via policy flags.
+**Runtime** (separate modules): Each module has its own memory 0. Data exchange uses shared memory (memory 1) with a borrow system (`wapi_module_lend` / `wapi_module_reclaim`) for zero-copy access, or explicit copies (`wapi_module_copy_in`) for simple cases. Every module gets host-controlled, sandbox-only vtables from `wapi_io_get()` / `wapi_allocator_get()`. For capabilities beyond the sandbox, callers pass vtables explicitly.
 
-A library can work in both modes by accepting a `wapi_allocator_t` vtable for private memory operations.
+A library can work in both modes by accepting a `wapi_allocator_t` and `wapi_io_t` vtable as explicit parameters.
 
-There is no context struct. I/O, allocation, and panic reporting are host imports. GPU devices come from `wapi_gpu_request_device()`. A module starts with zero state and queries everything through capability imports. This keeps the ABI clean and enables the host to enforce per-module policy.
+There is no context struct. Every module obtains its I/O and allocator vtables from the host via `wapi_io_get()` / `wapi_allocator_get()`. GPU devices come from `wapi_gpu_request_device()`. A module starts with zero state and queries capabilities through its `wapi_io_t` vtable. This keeps the ABI clean and enables safe shared module instances.
 
 ### Why errors as values and panics as a host import?
 
@@ -237,7 +240,7 @@ Panics are different -- they represent unrecoverable bugs (assertion failures, u
 
 ### Why is logging an I/O opcode?
 
-Logging is I/O -- a message going out to the world. Rather than adding a dedicated logging API, log messages are submitted through the same I/O imports as everything else (`WAPI_IO_OP_LOG`). For runtime modules, the host enforces I/O policy -- a child that only has `WAPI_IO_POLICY_LOG` can log but not access files or network. For build-time libraries, wrapping the I/O vtable controls logging too. The host maps it to stderr, `console.log`, or whatever is appropriate for the platform. Fire-and-forget: no completion event, no blocking.
+Logging is I/O -- a message going out to the world. Rather than adding a dedicated logging API, log messages are submitted through the same `wapi_io_t` vtable as everything else (`WAPI_IO_OP_LOG`). A child module's sandbox-only vtable from `wapi_io_get()` supports logging without any permissions. For build-time libraries, wrapping the I/O vtable controls logging too. The host maps it to stderr, `console.log`, or whatever is appropriate for the platform. Fire-and-forget: no completion event, no blocking.
 
 ### Why include content rendering?
 

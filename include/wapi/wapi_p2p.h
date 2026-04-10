@@ -2,10 +2,13 @@
  * WAPI - Peer-to-Peer Data Channels Capability
  * Version 1.0.0
  *
- * Peer-to-peer data channels for direct communication between modules.
+ * WebRTC-based peer-to-peer connections with data channels.
+ * All operations are asynchronous via the unified I/O queue.
+ * Send/receive on data channels uses the generic SEND/RECV ops.
+ * Close connections and channels with the generic CLOSE op.
  *
- * Maps to: WebRTC RTCPeerConnection/RTCDataChannel (Web),
- *          native WebRTC libraries (Desktop/Mobile)
+ * Maps to: RTCPeerConnection/RTCDataChannel (Web),
+ *          libwebrtc / native WebRTC libraries (Desktop/Mobile)
  *
  * Import module: "wapi_p2p"
  *
@@ -22,15 +25,6 @@ extern "C" {
 #endif
 
 /* ============================================================
- * P2P Events
- * ============================================================ */
-
-/** @deprecated Use WAPI_EVENT_IO_COMPLETION with the unified I/O queue instead. */
-#define WAPI_EVENT_P2P_STATE_CHANGED  0x1400
-/** @deprecated Use WAPI_EVENT_IO_COMPLETION with the unified I/O queue instead. */
-#define WAPI_EVENT_P2P_DATA           0x1401
-
-/* ============================================================
  * P2P Types
  * ============================================================ */
 
@@ -44,125 +38,81 @@ typedef enum wapi_p2p_state_t {
     WAPI_P2P_STATE_FORCE32      = 0x7FFFFFFF
 } wapi_p2p_state_t;
 
-/**
- * P2P connection configuration.
- *
- * Layout (64 bytes, align 8):
- *   Offset  0: wapi_string_view_t stun_server  (16 bytes)
- *   Offset 16: wapi_string_view_t turn_server  (16 bytes)
- *   Offset 32: wapi_string_view_t turn_user    (16 bytes)
- *   Offset 48: wapi_string_view_t turn_pass    (16 bytes)
- */
-typedef struct wapi_p2p_config_t {
-    wapi_string_view_t stun_server;
-    wapi_string_view_t turn_server;
-    wapi_string_view_t turn_user;
-    wapi_string_view_t turn_pass;
-} wapi_p2p_config_t;
+/* ---- Data channel flags (WAPI_IO_OP_P2P_CREATE_CHANNEL flags field) ---- */
 
-_Static_assert(sizeof(wapi_p2p_config_t) == 64,
-               "wapi_p2p_config_t must be 64 bytes");
+#define WAPI_P2P_CHANNEL_UNORDERED   0x01  /* Default: ordered */
+#define WAPI_P2P_CHANNEL_UNRELIABLE  0x02  /* Default: reliable */
 
 /* ============================================================
- * P2P Functions
- * ============================================================ */
-
-/**
- * Create a new P2P connection.
+ * ICE Server Configuration
+ * ============================================================
  *
- * @see WAPI_IO_OP_P2P_CREATE
- *
- * @param config  Connection configuration (STUN/TURN servers).
- * @param conn    [out] P2P connection handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
+ * Layout (48 bytes, align 8):
+ *   Offset  0: wapi_string_view_t url         (16 bytes) e.g. "stun:stun.l.google.com:19302"
+ *   Offset 16: wapi_string_view_t username     (16 bytes) empty for STUN
+ *   Offset 32: wapi_string_view_t credential   (16 bytes) empty for STUN
  */
-WAPI_IMPORT(wapi_p2p, create)
-wapi_result_t wapi_p2p_create(const wapi_p2p_config_t* config,
-                              wapi_handle_t* conn);
+typedef struct wapi_p2p_ice_server_t {
+    wapi_string_view_t url;
+    wapi_string_view_t username;
+    wapi_string_view_t credential;
+} wapi_p2p_ice_server_t;
 
-/**
- * Create an SDP offer for the connection.
- *
- * @see WAPI_IO_OP_P2P_CREATE_OFFER
- *
- * @param conn     P2P connection handle.
- * @param sdp_buf  [out] Buffer to receive the SDP offer string.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_p2p, create_offer)
-wapi_result_t wapi_p2p_create_offer(wapi_handle_t conn, void* sdp_buf);
+_Static_assert(offsetof(wapi_p2p_ice_server_t, url)        ==  0, "");
+_Static_assert(offsetof(wapi_p2p_ice_server_t, username)    == 16, "");
+_Static_assert(offsetof(wapi_p2p_ice_server_t, credential)  == 32, "");
+_Static_assert(sizeof(wapi_p2p_ice_server_t) == 48,
+               "wapi_p2p_ice_server_t must be 48 bytes");
 
-/**
- * Create an SDP answer for the connection.
+/* ============================================================
+ * P2P Connection Configuration
+ * ============================================================
  *
- * @see WAPI_IO_OP_P2P_CREATE_ANSWER
+ * Passed to WAPI_IO_OP_P2P_CREATE via addr/len.
  *
- * @param conn     P2P connection handle.
- * @param sdp_buf  [out] Buffer to receive the SDP answer string.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
+ * Layout (16 bytes, align 8):
+ *   Offset  0: uint64_t servers       pointer to wapi_p2p_ice_server_t[]
+ *   Offset  8: uint64_t server_count  number of ICE servers
  */
-WAPI_IMPORT(wapi_p2p, create_answer)
-wapi_result_t wapi_p2p_create_answer(wapi_handle_t conn, void* sdp_buf);
+typedef struct wapi_p2p_config_t {
+    uint64_t servers;       /* Linear memory address of wapi_p2p_ice_server_t[] */
+    uint64_t server_count;
+} wapi_p2p_config_t;
 
-/**
- * Set the remote SDP description.
- *
- * @param conn     P2P connection handle.
- * @param sdp      Remote SDP string.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_p2p, set_remote_desc)
-wapi_result_t wapi_p2p_set_remote_desc(wapi_handle_t conn, wapi_string_view_t sdp);
+_Static_assert(offsetof(wapi_p2p_config_t, servers)      == 0, "");
+_Static_assert(offsetof(wapi_p2p_config_t, server_count) == 8, "");
+_Static_assert(sizeof(wapi_p2p_config_t) == 16,
+               "wapi_p2p_config_t must be 16 bytes");
 
-/**
- * Add an ICE candidate to the connection.
+/* ============================================================
+ * I/O Operations
+ * ============================================================
  *
- * @see WAPI_IO_OP_P2P_ADD_ICE_CANDIDATE
+ * All P2P operations go through the unified I/O queue.
+ * See wapi_io_opcode_t in wapi.h for opcode definitions.
  *
- * @param conn           P2P connection handle.
- * @param candidate      ICE candidate string.
- * @return WAPI_OK on success.
+ * Typical offerer flow:
+ *   1. P2P_CREATE           → conn handle
+ *   2. P2P_CREATE_CHANNEL   → channel handle
+ *   3. P2P_CREATE_OFFER     → local SDP
+ *   4. Send SDP to remote via signaling (application's responsibility)
+ *   5. P2P_SET_REMOTE_DESC  ← remote SDP
+ *   6. P2P_GATHER_ICE       → local candidates (send each via signaling)
+ *   7. P2P_ADD_ICE_CANDIDATE← remote candidates
+ *   8. SEND/RECV on channel handle
+ *   9. CLOSE channel, CLOSE conn
  *
- * Wasm signature: (i32, i32) -> i32
+ * Typical answerer flow:
+ *   1. P2P_CREATE           → conn handle
+ *   2. P2P_SET_REMOTE_DESC  ← remote SDP (the offer)
+ *   3. P2P_CREATE_ANSWER    → local SDP
+ *   4. Send SDP to remote via signaling
+ *   5. P2P_GATHER_ICE       → local candidates
+ *   6. P2P_ADD_ICE_CANDIDATE← remote candidates
+ *   7. P2P_ACCEPT_CHANNEL   → channel handle (from remote)
+ *   8. SEND/RECV on channel handle
+ *   9. CLOSE channel, CLOSE conn
  */
-WAPI_IMPORT(wapi_p2p, add_ice_candidate)
-wapi_result_t wapi_p2p_add_ice_candidate(wapi_handle_t conn,
-                                         wapi_string_view_t candidate);
-
-/**
- * Send data over the P2P data channel.
- *
- * @see WAPI_IO_OP_P2P_SEND
- *
- * @param conn      P2P connection handle.
- * @param data      Pointer to data to send.
- * @param data_len  Length of the data.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_p2p, send)
-wapi_result_t wapi_p2p_send(wapi_handle_t conn, const void* data,
-                            wapi_size_t data_len);
-
-/**
- * Close a P2P connection.
- *
- * @param conn  P2P connection handle.
- * @return WAPI_OK on success, WAPI_ERR_BADF if invalid handle.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_p2p, close)
-wapi_result_t wapi_p2p_close(wapi_handle_t conn);
 
 #ifdef __cplusplus
 }

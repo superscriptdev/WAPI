@@ -107,7 +107,7 @@ void wapi_yield(void);
 
 /**
  * Sleep for a specified duration.
- * For non-blocking waits, submit a WAPI_IO_OP_TIMEOUT via wapi_io_submit instead.
+ * For non-blocking waits, submit a WAPI_IO_OP_TIMEOUT via the wapi_io_t vtable instead.
  *
  * @param duration_ns  Duration in nanoseconds.
  *

@@ -10,11 +10,11 @@
  * use the async I/O queue. Modules that need high-throughput I/O
  * should use wapi_io.h directly with WAPI_IO_OP_READ/WRITE/OPEN opcodes.
  *
- * Import module: "wapi_fs"
+ * Import module: "wapi_filesystem"
  */
 
-#ifndef WAPI_FS_H
-#define WAPI_FS_H
+#ifndef WAPI_FILESYSTEM_H
+#define WAPI_FILESYSTEM_H
 
 #include "wapi.h"
 
@@ -40,19 +40,19 @@ typedef enum wapi_filetype_t {
  * Open Flags
  * ============================================================ */
 
-#define WAPI_FS_OFLAG_CREATE    0x0001  /* Create file if it doesn't exist */
-#define WAPI_FS_OFLAG_DIRECTORY 0x0002  /* Fail if not a directory */
-#define WAPI_FS_OFLAG_EXCL      0x0004  /* Fail if file exists (with CREATE) */
-#define WAPI_FS_OFLAG_TRUNC     0x0008  /* Truncate file to zero length */
+#define WAPI_FILESYSTEM_OFLAG_CREATE    0x0001  /* Create file if it doesn't exist */
+#define WAPI_FILESYSTEM_OFLAG_DIRECTORY 0x0002  /* Fail if not a directory */
+#define WAPI_FILESYSTEM_OFLAG_EXCL      0x0004  /* Fail if file exists (with CREATE) */
+#define WAPI_FILESYSTEM_OFLAG_TRUNC     0x0008  /* Truncate file to zero length */
 
 /* ============================================================
  * File Descriptor Flags
  * ============================================================ */
 
-#define WAPI_FS_FDFLAG_APPEND   0x0001  /* Append mode */
-#define WAPI_FS_FDFLAG_DSYNC    0x0002  /* Data integrity sync */
-#define WAPI_FS_FDFLAG_NONBLOCK 0x0004  /* Non-blocking mode */
-#define WAPI_FS_FDFLAG_SYNC     0x0010  /* File integrity sync */
+#define WAPI_FILESYSTEM_FDFLAG_APPEND   0x0001  /* Append mode */
+#define WAPI_FILESYSTEM_FDFLAG_DSYNC    0x0002  /* Data integrity sync */
+#define WAPI_FILESYSTEM_FDFLAG_NONBLOCK 0x0004  /* Non-blocking mode */
+#define WAPI_FILESYSTEM_FDFLAG_SYNC     0x0010  /* File integrity sync */
 
 /* ============================================================
  * Seek Whence
@@ -117,18 +117,18 @@ _Static_assert(sizeof(wapi_dirent_t) == 24, "wapi_dirent_t must be 24 bytes");
  * Pre-opened Directory Discovery
  * ============================================================
  * The host pre-opens directories and assigns them handles starting
- * at WAPI_FS_PREOPEN_BASE. The module discovers them at startup.
+ * at WAPI_FILESYSTEM_PREOPEN_BASE. The module discovers them at startup.
  */
 
-#define WAPI_FS_PREOPEN_BASE 4  /* First pre-opened directory handle */
+#define WAPI_FILESYSTEM_PREOPEN_BASE 4  /* First pre-opened directory handle */
 
 /**
  * Get the number of pre-opened directories.
  *
  * Wasm signature: () -> i32
  */
-WAPI_IMPORT(wapi_fs, preopen_count)
-int32_t wapi_fs_preopen_count(void);
+WAPI_IMPORT(wapi_filesystem, preopen_count)
+int32_t wapi_filesystem_preopen_count(void);
 
 /**
  * Get the path of a pre-opened directory.
@@ -141,8 +141,8 @@ int32_t wapi_fs_preopen_count(void);
  *
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, preopen_path)
-wapi_result_t wapi_fs_preopen_path(int32_t index, char* buf, wapi_size_t buf_len,
+WAPI_IMPORT(wapi_filesystem, preopen_path)
+wapi_result_t wapi_filesystem_preopen_path(int32_t index, char* buf, wapi_size_t buf_len,
                                 wapi_size_t* path_len);
 
 /**
@@ -153,8 +153,8 @@ wapi_result_t wapi_fs_preopen_path(int32_t index, char* buf, wapi_size_t buf_len
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, preopen_handle)
-wapi_handle_t wapi_fs_preopen_handle(int32_t index);
+WAPI_IMPORT(wapi_filesystem, preopen_handle)
+wapi_handle_t wapi_filesystem_preopen_handle(int32_t index);
 
 /* ============================================================
  * Synchronous File Operations
@@ -168,15 +168,15 @@ wapi_handle_t wapi_fs_preopen_handle(int32_t index);
  *
  * @param dir_fd    Base directory handle (from preopens).
  * @param path      Relative path (UTF-8).
- * @param oflags    Open flags (WAPI_FS_OFLAG_*).
- * @param fdflags   File descriptor flags (WAPI_FS_FDFLAG_*).
+ * @param oflags    Open flags (WAPI_FILESYSTEM_OFLAG_*).
+ * @param fdflags   File descriptor flags (WAPI_FILESYSTEM_FDFLAG_*).
  * @param fd        [out] New file descriptor handle.
  * @return WAPI_OK on success.
  *
  * Wasm signature: (i32, i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, open)
-wapi_result_t wapi_fs_open(wapi_handle_t dir_fd, wapi_string_view_t path,
+WAPI_IMPORT(wapi_filesystem, open)
+wapi_result_t wapi_filesystem_open(wapi_handle_t dir_fd, wapi_string_view_t path,
                         uint32_t oflags, uint32_t fdflags, wapi_handle_t* fd);
 
 /**
@@ -190,8 +190,8 @@ wapi_result_t wapi_fs_open(wapi_handle_t dir_fd, wapi_string_view_t path,
  *
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, read)
-wapi_result_t wapi_fs_read(wapi_handle_t fd, void* buf, wapi_size_t len,
+WAPI_IMPORT(wapi_filesystem, read)
+wapi_result_t wapi_filesystem_read(wapi_handle_t fd, void* buf, wapi_size_t len,
                         wapi_size_t* bytes_read);
 
 /**
@@ -205,8 +205,8 @@ wapi_result_t wapi_fs_read(wapi_handle_t fd, void* buf, wapi_size_t len,
  *
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, write)
-wapi_result_t wapi_fs_write(wapi_handle_t fd, const void* buf, wapi_size_t len,
+WAPI_IMPORT(wapi_filesystem, write)
+wapi_result_t wapi_filesystem_write(wapi_handle_t fd, const void* buf, wapi_size_t len,
                          wapi_size_t* bytes_written);
 
 /**
@@ -214,8 +214,8 @@ wapi_result_t wapi_fs_write(wapi_handle_t fd, const void* buf, wapi_size_t len,
  *
  * Wasm signature: (i32, i32, i32, i64, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, pread)
-wapi_result_t wapi_fs_pread(wapi_handle_t fd, void* buf, wapi_size_t len,
+WAPI_IMPORT(wapi_filesystem, pread)
+wapi_result_t wapi_filesystem_pread(wapi_handle_t fd, void* buf, wapi_size_t len,
                          wapi_filesize_t offset, wapi_size_t* bytes_read);
 
 /**
@@ -223,8 +223,8 @@ wapi_result_t wapi_fs_pread(wapi_handle_t fd, void* buf, wapi_size_t len,
  *
  * Wasm signature: (i32, i32, i32, i64, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, pwrite)
-wapi_result_t wapi_fs_pwrite(wapi_handle_t fd, const void* buf, wapi_size_t len,
+WAPI_IMPORT(wapi_filesystem, pwrite)
+wapi_result_t wapi_filesystem_pwrite(wapi_handle_t fd, const void* buf, wapi_size_t len,
                           wapi_filesize_t offset, wapi_size_t* bytes_written);
 
 /**
@@ -238,8 +238,8 @@ wapi_result_t wapi_fs_pwrite(wapi_handle_t fd, const void* buf, wapi_size_t len,
  *
  * Wasm signature: (i32, i64, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, seek)
-wapi_result_t wapi_fs_seek(wapi_handle_t fd, wapi_filedelta_t offset,
+WAPI_IMPORT(wapi_filesystem, seek)
+wapi_result_t wapi_filesystem_seek(wapi_handle_t fd, wapi_filedelta_t offset,
                         wapi_whence_t whence, wapi_filesize_t* new_offset);
 
 /**
@@ -247,32 +247,32 @@ wapi_result_t wapi_fs_seek(wapi_handle_t fd, wapi_filedelta_t offset,
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, close)
-wapi_result_t wapi_fs_close(wapi_handle_t fd);
+WAPI_IMPORT(wapi_filesystem, close)
+wapi_result_t wapi_filesystem_close(wapi_handle_t fd);
 
 /**
  * Sync file data to storage.
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, sync)
-wapi_result_t wapi_fs_sync(wapi_handle_t fd);
+WAPI_IMPORT(wapi_filesystem, sync)
+wapi_result_t wapi_filesystem_sync(wapi_handle_t fd);
 
 /**
  * Get file status.
  *
  * Wasm signature: (i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, stat)
-wapi_result_t wapi_fs_stat(wapi_handle_t fd, wapi_filestat_t* stat);
+WAPI_IMPORT(wapi_filesystem, stat)
+wapi_result_t wapi_filesystem_stat(wapi_handle_t fd, wapi_filestat_t* stat);
 
 /**
  * Get file status by path.
  *
  * Wasm signature: (i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, path_stat)
-wapi_result_t wapi_fs_path_stat(wapi_handle_t dir_fd, wapi_string_view_t path,
+WAPI_IMPORT(wapi_filesystem, path_stat)
+wapi_result_t wapi_filesystem_path_stat(wapi_handle_t dir_fd, wapi_string_view_t path,
                              wapi_filestat_t* stat);
 
 /**
@@ -280,40 +280,40 @@ wapi_result_t wapi_fs_path_stat(wapi_handle_t dir_fd, wapi_string_view_t path,
  *
  * Wasm signature: (i32, i64) -> i32
  */
-WAPI_IMPORT(wapi_fs, set_size)
-wapi_result_t wapi_fs_set_size(wapi_handle_t fd, wapi_filesize_t size);
+WAPI_IMPORT(wapi_filesystem, set_size)
+wapi_result_t wapi_filesystem_set_size(wapi_handle_t fd, wapi_filesize_t size);
 
 /**
  * Create a directory.
  *
  * Wasm signature: (i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, mkdir)
-wapi_result_t wapi_fs_mkdir(wapi_handle_t dir_fd, wapi_string_view_t path);
+WAPI_IMPORT(wapi_filesystem, mkdir)
+wapi_result_t wapi_filesystem_mkdir(wapi_handle_t dir_fd, wapi_string_view_t path);
 
 /**
  * Remove a directory (must be empty).
  *
  * Wasm signature: (i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, rmdir)
-wapi_result_t wapi_fs_rmdir(wapi_handle_t dir_fd, wapi_string_view_t path);
+WAPI_IMPORT(wapi_filesystem, rmdir)
+wapi_result_t wapi_filesystem_rmdir(wapi_handle_t dir_fd, wapi_string_view_t path);
 
 /**
  * Remove a file.
  *
  * Wasm signature: (i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, unlink)
-wapi_result_t wapi_fs_unlink(wapi_handle_t dir_fd, wapi_string_view_t path);
+WAPI_IMPORT(wapi_filesystem, unlink)
+wapi_result_t wapi_filesystem_unlink(wapi_handle_t dir_fd, wapi_string_view_t path);
 
 /**
  * Rename a file or directory.
  *
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, rename)
-wapi_result_t wapi_fs_rename(wapi_handle_t old_dir_fd, wapi_string_view_t old_path,
+WAPI_IMPORT(wapi_filesystem, rename)
+wapi_result_t wapi_filesystem_rename(wapi_handle_t old_dir_fd, wapi_string_view_t old_path,
                           wapi_handle_t new_dir_fd, wapi_string_view_t new_path);
 
 /**
@@ -328,12 +328,12 @@ wapi_result_t wapi_fs_rename(wapi_handle_t old_dir_fd, wapi_string_view_t old_pa
  *
  * Wasm signature: (i32, i32, i32, i64, i32) -> i32
  */
-WAPI_IMPORT(wapi_fs, readdir)
-wapi_result_t wapi_fs_readdir(wapi_handle_t fd, void* buf, wapi_size_t buf_len,
+WAPI_IMPORT(wapi_filesystem, readdir)
+wapi_result_t wapi_filesystem_readdir(wapi_handle_t fd, void* buf, wapi_size_t buf_len,
                            uint64_t cookie, wapi_size_t* used);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* WAPI_FS_H */
+#endif /* WAPI_FILESYSTEM_H */

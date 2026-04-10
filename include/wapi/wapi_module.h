@@ -1,18 +1,25 @@
 /**
- * WAPI - Runtime Module Linking
+ * WAPI - Runtime Module Linking Capability
  * Version 1.0.0
  *
+ * Query availability with wapi_capability_supported("wapi.module", 11)
+ *
  * This module defines how Wasm modules compose at RUNTIME: loading
- * isolated modules by content hash, calling their functions, sharing
- * data via a borrow system on shared memory, and controlling child
- * I/O via policy.
+ * isolated modules by content hash, calling their functions, and
+ * sharing data via a borrow system on shared memory.
+ *
+ * I/O MODEL: Every module (top-level or child) obtains its own
+ * I/O and allocator vtables from the host via wapi_io_get() and
+ * wapi_allocator_get(). These are host-controlled and cannot be
+ * influenced by any parent — safe for shared instances. For
+ * capabilities beyond the sandbox, callers pass vtables explicitly.
  *
  * MEMORY MODEL:
  *
  *   Memory 0 (private):
  *     Each module's own linear memory. Stack, globals, internal state.
  *     Fully isolated — no other module can access it. Allocated via
- *     wapi_memory.h (wapi_mem_alloc, etc.).
+ *     the module's wapi_allocator_t (from wapi_allocator_get()).
  *
  *   Memory 1 (shared):
  *     A single shared linear memory owned by the application. All

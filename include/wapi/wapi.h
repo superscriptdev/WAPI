@@ -893,7 +893,6 @@ typedef struct wapi_drop_event_t {
     uint64_t    timestamp;
     uint64_t    data;        /* Linear memory address of file path or text (valid until next poll) */
     wapi_size_t data_len;
-    uint32_t    _pad;
 } wapi_drop_event_t;
 
 /** Pen/stylus event */
@@ -1243,6 +1242,7 @@ const wapi_allocator_t* wapi_allocator_get(void);
  * ============================================================
  * String constants for all spec-defined capabilities.
  * These are the canonical names used with io->capability_supported().
+ * Obtain the io vtable via wapi_io_get().
  */
 
 #define WAPI_CAP_ENV           "wapi.env"
@@ -1341,7 +1341,7 @@ static const char* const WAPI_PRESET_MOBILE[] = {
 
 /**
  * Check if all capabilities in a NULL-terminated preset array
- * are supported, using the given I/O vtable.
+ * are supported, using the I/O vtable.
  *
  * Usage:
  *   const wapi_io_t* io = wapi_io_get();

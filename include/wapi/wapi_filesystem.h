@@ -139,7 +139,7 @@ int32_t wapi_filesystem_preopen_count(void);
  * @param path_len  [out] Actual path length.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, preopen_path)
 wapi_result_t wapi_filesystem_preopen_path(int32_t index, char* buf, wapi_size_t buf_len,
@@ -188,7 +188,7 @@ wapi_result_t wapi_filesystem_open(wapi_handle_t dir_fd, wapi_string_view_t path
  * @param bytes_read  [out] Actual bytes read.
  * @return WAPI_OK on success. bytes_read == 0 indicates EOF.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, read)
 wapi_result_t wapi_filesystem_read(wapi_handle_t fd, void* buf, wapi_size_t len,
@@ -203,7 +203,7 @@ wapi_result_t wapi_filesystem_read(wapi_handle_t fd, void* buf, wapi_size_t len,
  * @param bytes_written  [out] Actual bytes written.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, write)
 wapi_result_t wapi_filesystem_write(wapi_handle_t fd, const void* buf, wapi_size_t len,
@@ -212,7 +212,7 @@ wapi_result_t wapi_filesystem_write(wapi_handle_t fd, const void* buf, wapi_size
 /**
  * Read from a file at a specific offset without changing the position.
  *
- * Wasm signature: (i32, i32, i32, i64, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, pread)
 wapi_result_t wapi_filesystem_pread(wapi_handle_t fd, void* buf, wapi_size_t len,
@@ -221,7 +221,7 @@ wapi_result_t wapi_filesystem_pread(wapi_handle_t fd, void* buf, wapi_size_t len
 /**
  * Write to a file at a specific offset without changing the position.
  *
- * Wasm signature: (i32, i32, i32, i64, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, pwrite)
 wapi_result_t wapi_filesystem_pwrite(wapi_handle_t fd, const void* buf, wapi_size_t len,
@@ -326,7 +326,7 @@ wapi_result_t wapi_filesystem_rename(wapi_handle_t old_dir_fd, wapi_string_view_
  * @param used     [out] Bytes written to buffer.
  * @return WAPI_OK on success. used == 0 indicates end of directory.
  *
- * Wasm signature: (i32, i32, i32, i64, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, readdir)
 wapi_result_t wapi_filesystem_readdir(wapi_handle_t fd, void* buf, wapi_size_t buf_len,

@@ -122,13 +122,13 @@ wapi_result_t wapi_gpu_release_device(wapi_handle_t device);
  * (HWND, CAMetalLayer, XCB, etc.) with a single WAPI surface handle.
  */
 
-/** Texture format for surface rendering (matching WGPUTextureFormat subset) */
+/** Texture format for surface rendering (matching WGPUTextureFormat values) */
 typedef enum wapi_gpu_texture_format_t {
-    WAPI_GPU_FORMAT_BGRA8_UNORM       = 0x0057,  /* WGPUTextureFormat_BGRA8Unorm */
-    WAPI_GPU_FORMAT_RGBA8_UNORM       = 0x0012,  /* WGPUTextureFormat_RGBA8Unorm */
-    WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB  = 0x0058,  /* WGPUTextureFormat_BGRA8UnormSrgb */
-    WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB  = 0x0013,  /* WGPUTextureFormat_RGBA8UnormSrgb */
-    WAPI_GPU_FORMAT_RGBA16_FLOAT      = 0x0021,  /* WGPUTextureFormat_RGBA16Float */
+    WAPI_GPU_FORMAT_RGBA8_UNORM       = 0x0016,  /* WGPUTextureFormat_RGBA8Unorm */
+    WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB  = 0x0017,  /* WGPUTextureFormat_RGBA8UnormSrgb */
+    WAPI_GPU_FORMAT_BGRA8_UNORM       = 0x001B,  /* WGPUTextureFormat_BGRA8Unorm */
+    WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB  = 0x001C,  /* WGPUTextureFormat_BGRA8UnormSrgb */
+    WAPI_GPU_FORMAT_RGBA16_FLOAT      = 0x0028,  /* WGPUTextureFormat_RGBA16Float */
     WAPI_GPU_FORMAT_FORCE32           = 0x7FFFFFFF
 } wapi_gpu_texture_format_t;
 

@@ -27,28 +27,21 @@
 <body>
     <div id="loading">Loading...</div>
     <script type="module">
-        import { ThinPlatform } from './wapi_shim.js';
+        import { WAPI } from './wapi_shim.js';
 
         async function main() {
             const params = new URLSearchParams(window.location.search);
             const wasmUrl = params.get('app') || 'app.wasm';
 
-            const wapi = new ThinPlatform({
-                // Pre-opened directories (virtual filesystem)
-                preopens: {
-                    '/': {},
-                    '/tmp': {},
-                },
-                // Command-line arguments
-                args: [wasmUrl, ...params.getAll('arg')],
-                // Environment variables
-                env: {},
-            });
+            const wapi = new WAPI();
 
             try {
-                await wapi.load(wasmUrl);
+                await wapi.load(wasmUrl, {
+                    preopens: { '/': {}, '/tmp': {} },
+                    args: [wasmUrl, ...params.getAll('arg')],
+                    env: {},
+                });
                 document.getElementById('loading').classList.add('hidden');
-                wapi.run();
             } catch (e) {
                 document.getElementById('loading').textContent =
                     `Failed to load: ${e.message}`;

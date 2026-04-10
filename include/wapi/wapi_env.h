@@ -38,7 +38,7 @@ int32_t wapi_env_args_count(void);
  * @param arg_len  [out] Actual argument length.
  * @return WAPI_OK on success, WAPI_ERR_RANGE if index out of bounds.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_env, args_get)
 wapi_result_t wapi_env_args_get(int32_t index, char* buf, wapi_size_t buf_len,
@@ -66,7 +66,7 @@ int32_t wapi_env_environ_count(void);
  * @param var_len  [out] Actual length.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_env, environ_get)
 wapi_result_t wapi_env_environ_get(int32_t index, char* buf, wapi_size_t buf_len,
@@ -81,7 +81,8 @@ wapi_result_t wapi_env_environ_get(int32_t index, char* buf, wapi_size_t buf_len
  * @param val_len   [out] Actual value length.
  * @return WAPI_OK on success, WAPI_ERR_NOENT if not found.
  *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
+ *   (name is a pointer to wapi_string_view_t passed indirectly)
  */
 WAPI_IMPORT(wapi_env, getenv)
 wapi_result_t wapi_env_getenv(wapi_string_view_t name,
@@ -98,7 +99,7 @@ wapi_result_t wapi_env_getenv(wapi_string_view_t name,
  * @param len  Number of random bytes to generate.
  * @return WAPI_OK on success.
  *
- * Wasm signature: (i32, i32) -> i32
+ * Wasm signature: (i32, i64) -> i32
  */
 WAPI_IMPORT(wapi_env, random_get)
 wapi_result_t wapi_env_random_get(void* buf, wapi_size_t len);
@@ -167,7 +168,7 @@ wapi_result_t wapi_env_open_url(wapi_string_view_t url);
  * @param val_len  [out] Actual value length.
  * @return WAPI_OK on success, WAPI_ERR_NOENT if key unknown.
  *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_env, host_get)
 wapi_result_t wapi_env_host_get(wapi_string_view_t key,

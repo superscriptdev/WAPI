@@ -3,7 +3,7 @@
  * Maps WAPI ABI imports to browser Web APIs.
  *
  * Usage:
- *   const wapi = new ThinPlatform();
+ *   const wapi = new WAPI();
  *   await wapi.load("module.wasm", { args: ["--flag"], preopens: { "/data": filesMap } });
  *
  * This file implements every import module defined by the WAPI ABI headers:
@@ -52,7 +52,8 @@ const WAPI_HANDLE_INVALID = 0;
 const WAPI_STDIN  = 1;
 const WAPI_STDOUT = 2;
 const WAPI_STDERR = 3;
-const WAPI_STRLEN = 0xFFFFFFFF;
+const WAPI_STRLEN = 0xFFFFFFFF;          // 32-bit sentinel for _readString
+const WAPI_STRLEN64 = 0xFFFFFFFFFFFFFFFFn; // 64-bit sentinel in wapi_string_view_t
 
 // (Capability constants removed -- now using string-based capability names)
 
@@ -139,11 +140,11 @@ const WAPI_AUDIO_F32 = 0x8120;
 const WAPI_AUDIO_DEFAULT_PLAYBACK  = -1;
 const WAPI_AUDIO_DEFAULT_RECORDING = -2;
 
-// GPU texture formats
-const WAPI_GPU_FORMAT_BGRA8_UNORM      = 0x0057;
-const WAPI_GPU_FORMAT_RGBA8_UNORM      = 0x0012;
-const WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB = 0x0058;
-const WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB = 0x0013;
+// GPU texture formats (matching WGPUTextureFormat values from webgpu.h)
+const WAPI_GPU_FORMAT_RGBA8_UNORM      = 0x0016;
+const WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB = 0x0017;
+const WAPI_GPU_FORMAT_BGRA8_UNORM      = 0x001B;
+const WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB = 0x001C;
 
 // Clipboard formats
 const WAPI_CLIPBOARD_TEXT  = 0;
@@ -153,6 +154,115 @@ const WAPI_CLIPBOARD_IMAGE = 2;
 // Surface flags
 const WAPI_SURFACE_FLAG_RESIZABLE  = 0x0001;
 const WAPI_SURFACE_FLAG_HIGH_DPI   = 0x0010;
+
+// ---------------------------------------------------------------------------
+// WebGPU enum mapping tables (C integer <-> browser string)
+// ---------------------------------------------------------------------------
+
+const WGPU_TEXTURE_FORMAT_MAP = {
+    0x00: undefined,       // Undefined
+    0x01: "r8unorm", 0x02: "r8snorm", 0x03: "r8uint", 0x04: "r8sint",
+    0x05: "r16unorm", 0x06: "r16snorm", 0x07: "r16uint", 0x08: "r16sint", 0x09: "r16float",
+    0x0A: "rg8unorm", 0x0B: "rg8snorm", 0x0C: "rg8uint", 0x0D: "rg8sint",
+    0x0E: "r32float", 0x0F: "r32uint", 0x10: "r32sint",
+    0x11: "rg16unorm", 0x12: "rg16snorm", 0x13: "rg16uint", 0x14: "rg16sint", 0x15: "rg16float",
+    0x16: "rgba8unorm", 0x17: "rgba8unorm-srgb", 0x18: "rgba8snorm", 0x19: "rgba8uint", 0x1A: "rgba8sint",
+    0x1B: "bgra8unorm", 0x1C: "bgra8unorm-srgb",
+    0x1D: "rgb10a2uint", 0x1E: "rgb10a2unorm", 0x1F: "rg11b10ufloat", 0x20: "rgb9e5ufloat",
+    0x21: "rg32float", 0x22: "rg32uint", 0x23: "rg32sint",
+    0x24: "rgba16unorm", 0x25: "rgba16snorm", 0x26: "rgba16uint", 0x27: "rgba16sint", 0x28: "rgba16float",
+    0x29: "rgba32float", 0x2A: "rgba32uint", 0x2B: "rgba32sint",
+    0x2C: "stencil8", 0x2D: "depth16unorm", 0x2E: "depth24plus", 0x2F: "depth24plus-stencil8",
+    0x30: "depth32float", 0x31: "depth32float-stencil8",
+    0x32: "bc1-rgba-unorm", 0x33: "bc1-rgba-unorm-srgb", 0x34: "bc2-rgba-unorm", 0x35: "bc2-rgba-unorm-srgb",
+    0x36: "bc3-rgba-unorm", 0x37: "bc3-rgba-unorm-srgb", 0x38: "bc4-r-unorm", 0x39: "bc4-r-snorm",
+    0x3A: "bc5-rg-unorm", 0x3B: "bc5-rg-snorm", 0x3C: "bc6h-rgb-ufloat", 0x3D: "bc6h-rgb-float",
+    0x3E: "bc7-rgba-unorm", 0x3F: "bc7-rgba-unorm-srgb",
+    0x40: "etc2-rgb8unorm", 0x41: "etc2-rgb8unorm-srgb", 0x42: "etc2-rgb8a1unorm", 0x43: "etc2-rgb8a1unorm-srgb",
+    0x44: "etc2-rgba8unorm", 0x45: "etc2-rgba8unorm-srgb",
+    0x46: "eac-r11unorm", 0x47: "eac-r11snorm", 0x48: "eac-rg11unorm", 0x49: "eac-rg11snorm",
+    0x4A: "astc-4x4-unorm", 0x4B: "astc-4x4-unorm-srgb", 0x4C: "astc-5x4-unorm", 0x4D: "astc-5x4-unorm-srgb",
+    0x4E: "astc-5x5-unorm", 0x4F: "astc-5x5-unorm-srgb", 0x50: "astc-6x5-unorm", 0x51: "astc-6x5-unorm-srgb",
+    0x52: "astc-6x6-unorm", 0x53: "astc-6x6-unorm-srgb", 0x54: "astc-8x5-unorm", 0x55: "astc-8x5-unorm-srgb",
+    0x56: "astc-8x6-unorm", 0x57: "astc-8x6-unorm-srgb", 0x58: "astc-8x8-unorm", 0x59: "astc-8x8-unorm-srgb",
+    0x5A: "astc-10x5-unorm", 0x5B: "astc-10x5-unorm-srgb", 0x5C: "astc-10x6-unorm", 0x5D: "astc-10x6-unorm-srgb",
+    0x5E: "astc-10x8-unorm", 0x5F: "astc-10x8-unorm-srgb", 0x60: "astc-10x10-unorm", 0x61: "astc-10x10-unorm-srgb",
+    0x62: "astc-12x10-unorm", 0x63: "astc-12x10-unorm-srgb", 0x64: "astc-12x12-unorm", 0x65: "astc-12x12-unorm-srgb",
+};
+
+// Reverse map for browser format string -> C enum value
+const WGPU_TEXTURE_FORMAT_REV = {};
+for (const [k, v] of Object.entries(WGPU_TEXTURE_FORMAT_MAP)) {
+    if (v) WGPU_TEXTURE_FORMAT_REV[v] = Number(k);
+}
+
+const WGPU_PRIMITIVE_TOPOLOGY = {
+    0x01: "point-list", 0x02: "line-list", 0x03: "line-strip",
+    0x04: "triangle-list", 0x05: "triangle-strip",
+};
+
+const WGPU_FRONT_FACE = { 0x01: "ccw", 0x02: "cw" };
+const WGPU_CULL_MODE = { 0x01: "none", 0x02: "front", 0x03: "back" };
+
+const WGPU_LOAD_OP = { 0x01: "load", 0x02: "clear" };
+const WGPU_STORE_OP = { 0x01: "store", 0x02: "discard" };
+
+const WGPU_BLEND_FACTOR = {
+    0x01: "zero", 0x02: "one", 0x03: "src", 0x04: "one-minus-src",
+    0x05: "src-alpha", 0x06: "one-minus-src-alpha",
+    0x07: "dst", 0x08: "one-minus-dst",
+    0x09: "dst-alpha", 0x0A: "one-minus-dst-alpha",
+    0x0B: "src-alpha-saturated", 0x0C: "constant", 0x0D: "one-minus-constant",
+    0x0E: "src1", 0x0F: "one-minus-src1",
+    0x10: "src1-alpha", 0x11: "one-minus-src1-alpha",
+};
+
+const WGPU_BLEND_OP = {
+    0x01: "add", 0x02: "subtract", 0x03: "reverse-subtract", 0x04: "min", 0x05: "max",
+};
+
+const WGPU_COMPARE_FUNCTION = {
+    0x01: "never", 0x02: "less", 0x03: "equal", 0x04: "less-equal",
+    0x05: "greater", 0x06: "not-equal", 0x07: "greater-equal", 0x08: "always",
+};
+
+const WGPU_STENCIL_OP = {
+    0x01: "keep", 0x02: "zero", 0x03: "replace", 0x04: "invert",
+    0x05: "increment-clamp", 0x06: "decrement-clamp",
+    0x07: "increment-wrap", 0x08: "decrement-wrap",
+};
+
+const WGPU_INDEX_FORMAT = { 0x01: "uint16", 0x02: "uint32" };
+
+const WGPU_VERTEX_FORMAT = {
+    0x01: "uint8",    0x02: "uint8x2",   0x03: "uint8x4",
+    0x04: "sint8",    0x05: "sint8x2",   0x06: "sint8x4",
+    0x07: "unorm8",   0x08: "unorm8x2",  0x09: "unorm8x4",
+    0x0A: "snorm8",   0x0B: "snorm8x2",  0x0C: "snorm8x4",
+    0x0D: "uint16",   0x0E: "uint16x2",  0x0F: "uint16x4",
+    0x10: "sint16",   0x11: "sint16x2",  0x12: "sint16x4",
+    0x13: "unorm16",  0x14: "unorm16x2", 0x15: "unorm16x4",
+    0x16: "snorm16",  0x17: "snorm16x2", 0x18: "snorm16x4",
+    0x19: "float16",  0x1A: "float16x2", 0x1B: "float16x4",
+    0x1C: "float32",  0x1D: "float32x2", 0x1E: "float32x3", 0x1F: "float32x4",
+    0x20: "uint32",   0x21: "uint32x2",  0x22: "uint32x3",  0x23: "uint32x4",
+    0x24: "sint32",   0x25: "sint32x2",  0x26: "sint32x3",  0x27: "sint32x4",
+    0x28: "unorm10-10-10-2",
+};
+
+const WGPU_VERTEX_STEP_MODE = { 0x01: "vertex", 0x02: "instance" };
+
+const WGPU_ADDRESS_MODE = { 0x01: "clamp-to-edge", 0x02: "repeat", 0x03: "mirror-repeat" };
+const WGPU_FILTER_MODE = { 0x01: "nearest", 0x02: "linear" };
+const WGPU_MIPMAP_FILTER_MODE = { 0x01: "nearest", 0x02: "linear" };
+
+const WGPU_TEXTURE_DIMENSION = { 0x01: "1d", 0x02: "2d", 0x03: "3d" };
+const WGPU_TEXTURE_VIEW_DIMENSION = {
+    0x01: "1d", 0x02: "2d", 0x03: "2d-array", 0x04: "cube", 0x05: "cube-array", 0x06: "3d",
+};
+const WGPU_TEXTURE_ASPECT = { 0x01: "all", 0x02: "stencil-only", 0x03: "depth-only" };
+
+const WGPU_STYPE_SHADER_SOURCE_WGSL = 0x02;
 
 // ---------------------------------------------------------------------------
 // HandleTable - maps integer handles to JS objects
@@ -331,31 +441,21 @@ function domButtonToTP(b) {
 // GPU format helpers
 // ---------------------------------------------------------------------------
 
+// Since WAPI format values now match WGPUTextureFormat, we can use the
+// shared WGPU_TEXTURE_FORMAT_MAP for both wapi_gpu and wapi_wgpu.
 function tpFormatToGPU(fmt) {
-    switch (fmt) {
-        case WAPI_GPU_FORMAT_BGRA8_UNORM:      return "bgra8unorm";
-        case WAPI_GPU_FORMAT_RGBA8_UNORM:       return "rgba8unorm";
-        case WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB:  return "bgra8unorm-srgb";
-        case WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB:   return "rgba8unorm-srgb";
-        default: return "bgra8unorm";
-    }
+    return WGPU_TEXTURE_FORMAT_MAP[fmt] || "bgra8unorm";
 }
 
 function gpuFormatToTP(fmt) {
-    switch (fmt) {
-        case "bgra8unorm":      return WAPI_GPU_FORMAT_BGRA8_UNORM;
-        case "rgba8unorm":      return WAPI_GPU_FORMAT_RGBA8_UNORM;
-        case "bgra8unorm-srgb": return WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB;
-        case "rgba8unorm-srgb": return WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB;
-        default: return WAPI_GPU_FORMAT_BGRA8_UNORM;
-    }
+    return WGPU_TEXTURE_FORMAT_REV[fmt] || WAPI_GPU_FORMAT_BGRA8_UNORM;
 }
 
 // ---------------------------------------------------------------------------
-// ThinPlatform - the main shim class
+// WAPI - the main shim class
 // ---------------------------------------------------------------------------
 
-class ThinPlatform {
+class WAPI {
     constructor() {
         this.instance = null;     // WebAssembly.Instance
         this.module = null;       // WebAssembly.Module
@@ -419,6 +519,10 @@ class ThinPlatform {
 
         // Performance counter origin
         this._perfOrigin = performance.now();
+
+        // Vtable pointers (lazily built after instantiation)
+        this._ioVtablePtr = 0;
+        this._allocVtablePtr = 0;
     }
 
     // -----------------------------------------------------------------------
@@ -491,6 +595,41 @@ class ThinPlatform {
     _readF32(ptr) {
         this._refreshViews();
         return this._dv.getFloat32(ptr, true);
+    }
+
+    /**
+     * Read a wapi_string_view_t struct (16 bytes) from linear memory.
+     *   Offset 0: uint64_t data   (linear memory address)
+     *   Offset 8: uint64_t length (byte count, or WAPI_STRLEN64 for null-terminated)
+     * Returns a JS string, or null if the view is absent ({NULL, WAPI_STRLEN64}).
+     */
+    _readStringView(svPtr) {
+        this._refreshViews();
+        const dataPtr = Number(this._dv.getBigUint64(svPtr, true));
+        const lenBig  = this._dv.getBigUint64(svPtr + 8, true);
+        if (dataPtr === 0 && lenBig === WAPI_STRLEN64) return null; // absent
+        if (lenBig === WAPI_STRLEN64) {
+            return this._readString(dataPtr, WAPI_STRLEN); // null-terminated
+        }
+        return this._readString(dataPtr, Number(lenBig));
+    }
+
+    /**
+     * Read a WGPUStringView struct (8 bytes, wasm32 C ABI) from linear memory.
+     *   Offset 0: const char* data  (4 bytes, wasm32 pointer)
+     *   Offset 4: size_t length     (4 bytes, wasm32 size_t)
+     * Returns a JS string, or "" if pointer is NULL.
+     * NOTE: This is DIFFERENT from _readStringView which reads wapi_string_view_t (16 bytes).
+     */
+    _readWGPUStringView(ptr) {
+        this._refreshViews();
+        const dataPtr = this._dv.getUint32(ptr, true);
+        const len = this._dv.getUint32(ptr + 4, true);
+        if (dataPtr === 0) return "";
+        if (len === 0xFFFFFFFF) { // SIZE_MAX sentinel
+            return this._readString(dataPtr, WAPI_STRLEN);
+        }
+        return this._readString(dataPtr, len);
     }
 
     // -----------------------------------------------------------------------
@@ -567,6 +706,55 @@ class ThinPlatform {
     }
 
     // -----------------------------------------------------------------------
+    // Typed wasm function reference helper (portable, no WebAssembly.Function)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Create a wasm function reference with the correct type signature.
+     * Builds a tiny wasm module that imports a JS function and re-exports
+     * it as a typed wasm function, suitable for table.set().
+     *
+     * @param {string[]} params - Param types: 'i32', 'i64', 'f32', 'f64'
+     * @param {string[]} results - Result types (same options)
+     * @param {Function} impl - JS implementation function
+     * @returns {Function} Typed wasm function reference
+     */
+    _makeWasmFunc(params, results, impl) {
+        const T = { 'i32': 0x7f, 'i64': 0x7e, 'f32': 0x7d, 'f64': 0x7c };
+        const bytes = [];
+
+        // Header
+        bytes.push(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00);
+
+        // Type section (id=1): one func type
+        const type = [0x01, 0x60,
+            params.length, ...params.map(p => T[p]),
+            results.length, ...results.map(r => T[r])];
+        bytes.push(0x01, type.length, ...type);
+
+        // Import section (id=2): import "env"."f" as func type 0
+        const imp = [0x01, 0x03, 0x65, 0x6e, 0x76, 0x01, 0x66, 0x00, 0x00];
+        bytes.push(0x02, imp.length, ...imp);
+
+        // Function section (id=3): one function, type 0
+        bytes.push(0x03, 0x02, 0x01, 0x00);
+
+        // Export section (id=7): export func index 1 as "w"
+        bytes.push(0x07, 0x05, 0x01, 0x01, 0x77, 0x00, 0x01);
+
+        // Code section (id=10): wrapper body that forwards all params to import
+        const body = [0x00]; // 0 local decls
+        for (let i = 0; i < params.length; i++) body.push(0x20, i); // local.get i
+        body.push(0x10, 0x00, 0x0b); // call 0, end
+        const code = [0x01, body.length, ...body];
+        bytes.push(0x0a, code.length, ...code);
+
+        const mod = new WebAssembly.Module(new Uint8Array(bytes));
+        const inst = new WebAssembly.Instance(mod, { env: { f: impl } });
+        return inst.exports.w;
+    }
+
+    // -----------------------------------------------------------------------
     // Capability detection
     // -----------------------------------------------------------------------
 
@@ -579,8 +767,8 @@ class ThinPlatform {
         if (typeof navigator !== "undefined" && navigator.gpu) {
             caps.push("wapi.gpu");
         }
-        // Surface and input always available in browser (we create a canvas)
-        caps.push("wapi.surface", "wapi.input");
+        // Surface, window, display, and input always available in browser
+        caps.push("wapi.surface", "wapi.window", "wapi.display", "wapi.input");
 
         if (typeof AudioContext !== "undefined" || typeof webkitAudioContext !== "undefined") {
             caps.push("wapi.audio");
@@ -592,7 +780,7 @@ class ThinPlatform {
             caps.push("wapi.clipboard");
         }
         if (typeof WebSocket !== "undefined" || typeof fetch !== "undefined") {
-            caps.push("wapi.net");
+            caps.push("wapi.network");
         }
 
         // KV storage and font queries always available in browser
@@ -706,6 +894,12 @@ class ThinPlatform {
         // DnD always available in browsers
         caps.push("wapi.dnd");
 
+        // Browser can provide sysinfo and dialog (alert/confirm/prompt)
+        caps.push("wapi.sysinfo", "wapi.dialog");
+
+        // Module loading (dynamic import of child wasm modules)
+        caps.push("wapi.module");
+
         return caps;
     }
 
@@ -722,16 +916,16 @@ class ThinPlatform {
         const supportedCaps = self._detectCapabilities();
 
         const wapi = {
-            capability_supported(namePtr, nameLen) {
-                self._refreshViews();
-                const name = self._readString(namePtr, nameLen);
+            // wapi_string_view_t passed by value → pointer to 16-byte struct on wasm32
+            capability_supported(svPtr) {
+                const name = self._readStringView(svPtr);
+                if (!name) return 0;
                 return supportedCaps.includes(name) ? 1 : 0;
             },
 
-            capability_version(namePtr, nameLen, versionPtr) {
-                self._refreshViews();
-                const name = self._readString(namePtr, nameLen);
-                if (!supportedCaps.includes(name)) {
+            capability_version(svPtr, versionPtr) {
+                const name = self._readStringView(svPtr);
+                if (!name || !supportedCaps.includes(name)) {
                     self._writeU32(versionPtr, 0);
                     self._writeU32(versionPtr + 4, 0);
                     return WAPI_ERR_NOTSUP;
@@ -752,8 +946,8 @@ class ThinPlatform {
                 if (index < 0 || index >= supportedCaps.length) return WAPI_ERR_OVERFLOW;
                 self._refreshViews();
                 const name = supportedCaps[index];
-                const written = self._writeString(bufPtr, bufLen, name);
-                self._writeU32(nameLenPtr, written);
+                const written = self._writeString(bufPtr, Number(bufLen), name);
+                self._writeU64(nameLenPtr, written);
                 return WAPI_OK;
             },
 
@@ -767,8 +961,114 @@ class ThinPlatform {
             },
 
             panic_report(msgPtr, msgLen) {
-                const msg = self._readString(msgPtr, msgLen);
+                const msg = self._readString(msgPtr, Number(msgLen));
                 console.error(`[WAPI PANIC] ${msg}`);
+            },
+
+            io_get() {
+                if (self._ioVtablePtr) return self._ioVtablePtr;
+
+                const table = self.instance.exports.__indirect_function_table;
+                if (!table) {
+                    console.error("[WAPI] Module must export __indirect_function_table for vtable support");
+                    return 0;
+                }
+
+                const mf = (p, r, fn) => self._makeWasmFunc(p, r, fn);
+
+                // Grow table to fit 8 new entries
+                const baseIdx = table.length;
+                table.grow(8);
+
+                // submit: (impl, ops, count) -> i32
+                table.set(baseIdx + 0, mf(['i32','i32','i64'], ['i32'],
+                    (_impl, opsPtr, count) => wapi_io.submit(opsPtr, Number(count))));
+                // cancel: (impl, user_data) -> i32
+                table.set(baseIdx + 1, mf(['i32','i64'], ['i32'],
+                    (_impl, userData) => wapi_io.cancel(userData)));
+                // poll: (impl, event) -> i32
+                table.set(baseIdx + 2, mf(['i32','i32'], ['i32'],
+                    (_impl, eventPtr) => wapi_io.poll(eventPtr)));
+                // wait: (impl, event, timeout_ms) -> i32
+                table.set(baseIdx + 3, mf(['i32','i32','i32'], ['i32'],
+                    (_impl, eventPtr, timeoutMs) => wapi_io.wait(eventPtr, timeoutMs)));
+                // flush: (impl, event_type) -> void
+                table.set(baseIdx + 4, mf(['i32','i32'], [],
+                    (_impl, eventType) => wapi_io.flush(eventType)));
+                // capability_supported: (impl, name_sv_ptr) -> i32
+                table.set(baseIdx + 5, mf(['i32','i32'], ['i32'],
+                    (_impl, svPtr) => {
+                        const name = self._readStringView(svPtr);
+                        if (!name) return 0;
+                        return supportedCaps.includes(name) ? 1 : 0;
+                    }));
+                // capability_version: (impl, name_sv_ptr, version_ptr) -> i32
+                table.set(baseIdx + 6, mf(['i32','i32','i32'], ['i32'],
+                    (_impl, svPtr, versionPtr) => wapi.capability_version(svPtr, versionPtr)));
+                // perm_query: (impl, cap_sv_ptr, state_ptr) -> i32
+                table.set(baseIdx + 7, mf(['i32','i32','i32'], ['i32'],
+                    (_impl, _capSvPtr, statePtr) => {
+                        self._writeU32(statePtr, 0);
+                        return WAPI_ERR_NOTSUP;
+                    }));
+
+                // Allocate 36 bytes in linear memory for wapi_io_t
+                // Layout: impl(4) submit(4) cancel(4) poll(4) wait(4)
+                //         flush(4) capability_supported(4) capability_version(4) perm_query(4)
+                const ptr = self._hostAlloc(36, 4);
+                if (!ptr) return 0;
+                self._refreshViews();
+                self._dv.setUint32(ptr +  0, 0,            true); // impl (unused)
+                self._dv.setUint32(ptr +  4, baseIdx + 0,  true); // submit
+                self._dv.setUint32(ptr +  8, baseIdx + 1,  true); // cancel
+                self._dv.setUint32(ptr + 12, baseIdx + 2,  true); // poll
+                self._dv.setUint32(ptr + 16, baseIdx + 3,  true); // wait
+                self._dv.setUint32(ptr + 20, baseIdx + 4,  true); // flush
+                self._dv.setUint32(ptr + 24, baseIdx + 5,  true); // capability_supported
+                self._dv.setUint32(ptr + 28, baseIdx + 6,  true); // capability_version
+                self._dv.setUint32(ptr + 32, baseIdx + 7,  true); // perm_query
+
+                self._ioVtablePtr = ptr;
+                return ptr;
+            },
+
+            allocator_get() {
+                if (self._allocVtablePtr) return self._allocVtablePtr;
+
+                const table = self.instance.exports.__indirect_function_table;
+                if (!table) {
+                    console.error("[WAPI] Module must export __indirect_function_table for vtable support");
+                    return 0;
+                }
+
+                const mf = (p, r, fn) => self._makeWasmFunc(p, r, fn);
+
+                // Grow table to fit 3 new entries
+                const baseIdx = table.length;
+                table.grow(3);
+
+                // alloc_fn: (impl, size, align) -> i32
+                table.set(baseIdx + 0, mf(['i32','i64','i64'], ['i32'],
+                    (_impl, size, align) => wapi_memory.alloc(Number(size), Number(align))));
+                // free_fn: (impl, ptr) -> void
+                table.set(baseIdx + 1, mf(['i32','i32'], [],
+                    (_impl, ptr) => wapi_memory.free(ptr)));
+                // realloc_fn: (impl, ptr, new_size, align) -> i32
+                table.set(baseIdx + 2, mf(['i32','i32','i64','i64'], ['i32'],
+                    (_impl, ptr, newSize, align) => wapi_memory.realloc(ptr, Number(newSize), Number(align))));
+
+                // Allocate 16 bytes in linear memory for wapi_allocator_t
+                // Layout: impl(4) alloc_fn(4) free_fn(4) realloc_fn(4)
+                const ptr = self._hostAlloc(16, 4);
+                if (!ptr) return 0;
+                self._refreshViews();
+                self._dv.setUint32(ptr +  0, 0,            true); // impl (unused)
+                self._dv.setUint32(ptr +  4, baseIdx + 0,  true); // alloc_fn
+                self._dv.setUint32(ptr +  8, baseIdx + 1,  true); // free_fn
+                self._dv.setUint32(ptr + 12, baseIdx + 2,  true); // realloc_fn
+
+                self._allocVtablePtr = ptr;
+                return ptr;
             },
         };
 
@@ -780,11 +1080,12 @@ class ThinPlatform {
                 return self._args.length;
             },
 
+            // (i32 index, i32 buf, i64 buf_len, i32 arg_len_ptr) -> i32
             args_get(index, bufPtr, bufLen, argLenPtr) {
                 if (index < 0 || index >= self._args.length) return WAPI_ERR_OVERFLOW;
                 const arg = self._args[index];
-                const written = self._writeString(bufPtr, bufLen, arg);
-                self._writeU32(argLenPtr, written);
+                const written = self._writeString(bufPtr, Number(bufLen), arg);
+                self._writeU64(argLenPtr, written);
                 return WAPI_OK;
             },
 
@@ -792,27 +1093,32 @@ class ThinPlatform {
                 return Object.keys(self._env).length;
             },
 
+            // (i32 index, i32 buf, i64 buf_len, i32 var_len_ptr) -> i32
             environ_get(index, bufPtr, bufLen, varLenPtr) {
                 const keys = Object.keys(self._env);
                 if (index < 0 || index >= keys.length) return WAPI_ERR_OVERFLOW;
                 const entry = keys[index] + "=" + self._env[keys[index]];
-                const written = self._writeString(bufPtr, bufLen, entry);
-                self._writeU32(varLenPtr, written);
+                const written = self._writeString(bufPtr, Number(bufLen), entry);
+                self._writeU64(varLenPtr, written);
                 return WAPI_OK;
             },
 
-            getenv(namePtr, nameLen, bufPtr, bufLen, valLenPtr) {
-                const name = self._readString(namePtr, nameLen);
-                if (!(name in self._env)) return WAPI_ERR_NOENT;
+            // (i32 sv_ptr, i32 buf, i64 buf_len, i32 val_len_ptr) -> i32
+            // name is wapi_string_view_t passed indirectly (pointer)
+            getenv(svPtr, bufPtr, bufLen, valLenPtr) {
+                const name = self._readStringView(svPtr);
+                if (!name || !(name in self._env)) return WAPI_ERR_NOENT;
                 const val = self._env[name];
-                const written = self._writeString(bufPtr, bufLen, val);
-                self._writeU32(valLenPtr, written);
+                const written = self._writeString(bufPtr, Number(bufLen), val);
+                self._writeU64(valLenPtr, written);
                 return WAPI_OK;
             },
 
+            // (i32 buf, i64 len) -> i32
             random_get(bufPtr, len) {
                 self._refreshViews();
-                const sub = self._u8.subarray(bufPtr, bufPtr + len);
+                const n = Number(len);
+                const sub = self._u8.subarray(bufPtr, bufPtr + n);
                 crypto.getRandomValues(sub);
                 return WAPI_OK;
             },
@@ -824,14 +1130,43 @@ class ThinPlatform {
                     self._frameHandle = 0;
                 }
                 console.log(`[WAPI] Module exited with code ${code}`);
-                // In a browser we cannot truly exit; throw to unwind.
                 throw new Error(`wapi_exit(${code})`);
             },
 
+            // (i32 sv_ptr) -> i32
+            open_url(svPtr) {
+                const url = self._readStringView(svPtr);
+                if (!url) return WAPI_ERR_INVAL;
+                try { window.open(url, "_blank"); return WAPI_OK; }
+                catch (_) { return WAPI_ERR_NOTSUP; }
+            },
+
+            // (i32 key_sv_ptr, i32 buf, i64 buf_len, i32 val_len_ptr) -> i32
+            host_get(keySvPtr, bufPtr, bufLen, valLenPtr) {
+                const key = self._readStringView(keySvPtr);
+                const hostInfo = {
+                    "os.family":       "browser",
+                    "runtime.name":    "wapi-browser",
+                    "runtime.version": "0.1.0",
+                    "device.form":     "desktop",
+                    "browser.engine":  navigator.userAgent.includes("Chrome") ? "chromium"
+                                     : navigator.userAgent.includes("Firefox") ? "gecko"
+                                     : navigator.userAgent.includes("Safari") ? "webkit"
+                                     : "unknown",
+                    "locale":          navigator.language || "en-US",
+                };
+                if (!key || !(key in hostInfo)) return WAPI_ERR_NOENT;
+                const val = hostInfo[key];
+                const written = self._writeString(bufPtr, Number(bufLen), val);
+                self._writeU64(valLenPtr, written);
+                return WAPI_OK;
+            },
+
+            // (i32 buf, i64 buf_len, i32 msg_len_ptr) -> i32
             get_error(bufPtr, bufLen, msgLenPtr) {
                 const msg = self._lastError;
-                const written = self._writeString(bufPtr, bufLen, msg);
-                self._writeU32(msgLenPtr, written);
+                const written = self._writeString(bufPtr, Number(bufLen), msg);
+                self._writeU64(msgLenPtr, written);
                 return WAPI_OK;
             },
         };
@@ -877,8 +1212,9 @@ class ThinPlatform {
 
         // -------------------------------------------------------------------
         // wapi_io (unified I/O + event delivery)
-        // Direct host imports: submit, cancel, poll, wait, flush.
+        // Implementation functions for the wapi_io_t vtable.
         // All events (I/O completions, input, lifecycle) come through poll/wait.
+        // Accessed by modules via: const wapi_io_t* io = wapi_io_get();
         // -------------------------------------------------------------------
         const WAPI_EVENT_IO_COMPLETION = 0x2000;
         const _ioPending = new Map();
@@ -1122,18 +1458,19 @@ class ThinPlatform {
         };
 
         // -------------------------------------------------------------------
-        // wapi_fs (filesystem - MEMFS)
+        // wapi_filesystem (filesystem - MEMFS)
         // -------------------------------------------------------------------
-        const wapi_fs = {
+        const wapi_filesystem = {
             preopen_count() {
                 return self._preopens.length;
             },
 
+            // (i32 index, i32 buf, i64 buf_len, i32 path_len_ptr) -> i32
             preopen_path(index, bufPtr, bufLen, pathLenPtr) {
                 if (index < 0 || index >= self._preopens.length) return WAPI_ERR_OVERFLOW;
                 const path = self._preopens[index].path;
-                const written = self._writeString(bufPtr, bufLen, path);
-                self._writeU32(pathLenPtr, written);
+                const written = self._writeString(bufPtr, Number(bufLen), path);
+                self._writeU64(pathLenPtr, written);
                 return WAPI_OK;
             },
 
@@ -1142,8 +1479,9 @@ class ThinPlatform {
                 return self._preopens[index].handle;
             },
 
-            open(dirFd, pathPtr, pathLen, oflags, fdflags, fdOutPtr) {
-                const relPath = self._readString(pathPtr, pathLen);
+            // (i32 dir_fd, i32 path_sv_ptr, i32 oflags, i32 fdflags, i32 fd_out) -> i32
+            open(dirFd, pathSvPtr, oflags, fdflags, fdOutPtr) {
+                const relPath = self._readStringView(pathSvPtr);
                 // Resolve the base directory path
                 let basePath = "/";
                 if (dirFd >= 4) {
@@ -1179,10 +1517,11 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
+            // (i32 fd, i32 buf, i64 len, i32 bytes_read_ptr) -> i32
             read(fd, bufPtr, len, bytesReadPtr) {
+                const n = Number(len);
                 if (fd === WAPI_STDIN) {
-                    // No stdin in browser
-                    self._writeU32(bytesReadPtr, 0);
+                    self._writeU64(bytesReadPtr, 0);
                     return WAPI_OK;
                 }
                 const entry = self.handles.get(fd);
@@ -1190,7 +1529,7 @@ class ThinPlatform {
                 if (entry.node.type !== WAPI_FILETYPE_REGULAR) return WAPI_ERR_ISDIR;
 
                 const avail = entry.node.data.length - entry.position;
-                const readLen = Math.min(len, avail);
+                const readLen = Math.min(n, avail);
                 if (readLen > 0) {
                     self._refreshViews();
                     self._u8.set(
@@ -1199,17 +1538,19 @@ class ThinPlatform {
                     );
                     entry.position += readLen;
                 }
-                self._writeU32(bytesReadPtr, readLen);
+                self._writeU64(bytesReadPtr, readLen);
                 return WAPI_OK;
             },
 
+            // (i32 fd, i32 buf, i64 len, i32 bytes_written_ptr) -> i32
             write(fd, bufPtr, len, bytesWrittenPtr) {
+                const n = Number(len);
                 self._refreshViews();
                 if (fd === WAPI_STDOUT || fd === WAPI_STDERR) {
-                    const text = self._readString(bufPtr, len);
+                    const text = self._readString(bufPtr, n);
                     if (fd === WAPI_STDERR) console.error(text);
                     else console.log(text);
-                    self._writeU32(bytesWrittenPtr, len);
+                    self._writeU64(bytesWrittenPtr, n);
                     return WAPI_OK;
                 }
                 const entry = self.handles.get(fd);
@@ -1217,41 +1558,45 @@ class ThinPlatform {
                 if (entry.node.type !== WAPI_FILETYPE_REGULAR) return WAPI_ERR_ISDIR;
 
                 const node = entry.node;
-                const writeData = self._u8.slice(bufPtr, bufPtr + len);
-                const needed = entry.position + len;
+                const writeData = self._u8.slice(bufPtr, bufPtr + n);
+                const needed = entry.position + n;
                 if (needed > node.data.length) {
                     const newBuf = new Uint8Array(needed);
                     newBuf.set(node.data);
                     node.data = newBuf;
                 }
                 node.data.set(writeData, entry.position);
-                entry.position += len;
+                entry.position += n;
                 node.mtime = Date.now();
-                self._writeU32(bytesWrittenPtr, len);
+                self._writeU64(bytesWrittenPtr, n);
                 return WAPI_OK;
             },
 
+            // (i32 fd, i32 buf, i64 len, i64 offset, i32 bytes_read_ptr) -> i32
             pread(fd, bufPtr, len, offset, bytesReadPtr) {
                 const entry = self.handles.get(fd);
                 if (!entry || !entry.node) return WAPI_ERR_BADF;
+                const n = Number(len);
                 const off = Number(offset);
                 const avail = entry.node.data.length - off;
-                const readLen = Math.min(len, Math.max(0, avail));
+                const readLen = Math.min(n, Math.max(0, avail));
                 if (readLen > 0) {
                     self._refreshViews();
                     self._u8.set(entry.node.data.subarray(off, off + readLen), bufPtr);
                 }
-                self._writeU32(bytesReadPtr, readLen);
+                self._writeU64(bytesReadPtr, readLen);
                 return WAPI_OK;
             },
 
+            // (i32 fd, i32 buf, i64 len, i64 offset, i32 bytes_written_ptr) -> i32
             pwrite(fd, bufPtr, len, offset, bytesWrittenPtr) {
                 const entry = self.handles.get(fd);
                 if (!entry || !entry.node) return WAPI_ERR_BADF;
+                const n = Number(len);
                 const off = Number(offset);
                 self._refreshViews();
-                const writeData = self._u8.slice(bufPtr, bufPtr + len);
-                const needed = off + len;
+                const writeData = self._u8.slice(bufPtr, bufPtr + n);
+                const needed = off + n;
                 if (needed > entry.node.data.length) {
                     const newBuf = new Uint8Array(needed);
                     newBuf.set(entry.node.data);
@@ -1259,7 +1604,7 @@ class ThinPlatform {
                 }
                 entry.node.data.set(writeData, off);
                 entry.node.mtime = Date.now();
-                self._writeU32(bytesWrittenPtr, len);
+                self._writeU64(bytesWrittenPtr, n);
                 return WAPI_OK;
             },
 
@@ -1298,13 +1643,14 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
-            path_stat(dirFd, pathPtr, pathLen, statPtr) {
+            // (i32 dir_fd, i32 path_sv_ptr, i32 stat_ptr) -> i32
+            path_stat(dirFd, pathSvPtr, statPtr) {
                 let basePath = "/";
                 if (dirFd >= 4) {
                     const dirEntry = self.handles.get(dirFd);
                     if (dirEntry && dirEntry.path) basePath = dirEntry.path;
                 }
-                const relPath = self._readString(pathPtr, pathLen);
+                const relPath = self._readStringView(pathSvPtr);
                 const fullPath = self.memfs._normPath(basePath, relPath);
                 const node = self.memfs.stat(fullPath);
                 if (!node) return WAPI_ERR_NOENT;
@@ -1323,26 +1669,28 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
-            mkdir(dirFd, pathPtr, pathLen) {
+            // (i32 dir_fd, i32 path_sv_ptr) -> i32
+            mkdir(dirFd, pathSvPtr) {
                 let basePath = "/";
                 if (dirFd >= 4) {
                     const dirEntry = self.handles.get(dirFd);
                     if (dirEntry && dirEntry.path) basePath = dirEntry.path;
                 }
-                const relPath = self._readString(pathPtr, pathLen);
+                const relPath = self._readStringView(pathSvPtr);
                 const fullPath = self.memfs._normPath(basePath, relPath);
                 if (self.memfs.stat(fullPath)) return WAPI_ERR_EXIST;
                 const node = self.memfs.mkdirp(fullPath);
                 return node ? WAPI_OK : WAPI_ERR_IO;
             },
 
-            rmdir(dirFd, pathPtr, pathLen) {
+            // (i32 dir_fd, i32 path_sv_ptr) -> i32
+            rmdir(dirFd, pathSvPtr) {
                 let basePath = "/";
                 if (dirFd >= 4) {
                     const dirEntry = self.handles.get(dirFd);
                     if (dirEntry && dirEntry.path) basePath = dirEntry.path;
                 }
-                const relPath = self._readString(pathPtr, pathLen);
+                const relPath = self._readStringView(pathSvPtr);
                 const fullPath = self.memfs._normPath(basePath, relPath);
                 const node = self.memfs.stat(fullPath);
                 if (!node) return WAPI_ERR_NOENT;
@@ -1353,13 +1701,14 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
-            unlink(dirFd, pathPtr, pathLen) {
+            // (i32 dir_fd, i32 path_sv_ptr) -> i32
+            unlink(dirFd, pathSvPtr) {
                 let basePath = "/";
                 if (dirFd >= 4) {
                     const dirEntry = self.handles.get(dirFd);
                     if (dirEntry && dirEntry.path) basePath = dirEntry.path;
                 }
-                const relPath = self._readString(pathPtr, pathLen);
+                const relPath = self._readStringView(pathSvPtr);
                 const fullPath = self.memfs._normPath(basePath, relPath);
                 const node = self.memfs.stat(fullPath);
                 if (!node) return WAPI_ERR_NOENT;
@@ -1369,7 +1718,8 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
-            rename(oldDirFd, oldPathPtr, oldPathLen, newDirFd, newPathPtr, newPathLen) {
+            // (i32 old_dir_fd, i32 old_path_sv_ptr, i32 new_dir_fd, i32 new_path_sv_ptr) -> i32
+            rename(oldDirFd, oldPathSvPtr, newDirFd, newPathSvPtr) {
                 let oldBase = "/", newBase = "/";
                 if (oldDirFd >= 4) {
                     const e = self.handles.get(oldDirFd);
@@ -1379,8 +1729,8 @@ class ThinPlatform {
                     const e = self.handles.get(newDirFd);
                     if (e && e.path) newBase = e.path;
                 }
-                const oldPath = self.memfs._normPath(oldBase, self._readString(oldPathPtr, oldPathLen));
-                const newPath = self.memfs._normPath(newBase, self._readString(newPathPtr, newPathLen));
+                const oldPath = self.memfs._normPath(oldBase, self._readStringView(oldPathSvPtr));
+                const newPath = self.memfs._normPath(newBase, self._readStringView(newPathSvPtr));
 
                 const node = self.memfs.stat(oldPath);
                 if (!node) return WAPI_ERR_NOENT;
@@ -1395,20 +1745,22 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
+            // (i32 fd, i32 buf, i64 buf_len, i64 cookie, i32 used_ptr) -> i32
             readdir(fd, bufPtr, bufLen, cookie, usedPtr) {
                 const entry = self.handles.get(fd);
                 if (!entry || !entry.node || entry.node.type !== WAPI_FILETYPE_DIRECTORY) return WAPI_ERR_BADF;
 
+                const cap = Number(bufLen);
                 const entries = Array.from(entry.node.children.values());
                 let offset = 0;
                 let idx = Number(cookie);
                 self._refreshViews();
 
-                while (idx < entries.length && offset + 24 < bufLen) {
+                while (idx < entries.length && offset + 24 < cap) {
                     const child = entries[idx];
                     const nameBytes = new TextEncoder().encode(child.name);
                     const entrySize = 24 + nameBytes.length;
-                    if (offset + entrySize > bufLen) break;
+                    if (offset + entrySize > cap) break;
 
                     const base = bufPtr + offset;
                     // dirent_t: next(u64), ino(u64), namlen(u32), type(u32)
@@ -1422,7 +1774,7 @@ class ThinPlatform {
                     idx++;
                 }
 
-                self._writeU32(usedPtr, offset);
+                self._writeU64(usedPtr, offset);
                 return WAPI_OK;
             },
         };
@@ -1599,13 +1951,19 @@ class ThinPlatform {
 
             configure_surface(configPtr) {
                 self._refreshViews();
-                // Read wapi_gpu_surface_config_t (24 bytes)
-                const nextInChain = self._readU32(configPtr + 0);
-                const surfaceHandle = self._readI32(configPtr + 4);
-                const deviceHandle = self._readI32(configPtr + 8);
-                const format = self._readU32(configPtr + 12);
-                const presentMode = self._readU32(configPtr + 16);
-                const usage = self._readU32(configPtr + 20);
+                // Read wapi_gpu_surface_config_t (unified ABI layout, 32 bytes):
+                //   Offset  0: uint64_t nextInChain  (8 bytes)
+                //   Offset  8: int32_t  surface      (4 bytes)
+                //   Offset 12: int32_t  device       (4 bytes)
+                //   Offset 16: uint32_t format       (4 bytes)
+                //   Offset 20: uint32_t present_mode (4 bytes)
+                //   Offset 24: uint32_t usage        (4 bytes)
+                //   Offset 28: uint32_t _pad         (4 bytes)
+                const surfaceHandle = self._readI32(configPtr + 8);
+                const deviceHandle = self._readI32(configPtr + 12);
+                const format = self._readU32(configPtr + 16);
+                const presentMode = self._readU32(configPtr + 20);
+                const usage = self._readU32(configPtr + 24);
 
                 const surfInfo = self._surfaces.get(surfaceHandle);
                 if (!surfInfo) return WAPI_ERR_BADF;
@@ -1639,8 +1997,8 @@ class ThinPlatform {
                 const texture = cfg.context.getCurrentTexture();
                 const view = texture.createView();
 
-                const th = self.handles.insert({ type: "gpu_texture", texture });
-                const vh = self.handles.insert({ type: "gpu_texture_view", view });
+                const th = self.handles.insert({ type: "gpu_texture", gpuObj: texture });
+                const vh = self.handles.insert({ type: "gpu_texture_view", gpuObj: view });
 
                 self._writeI32(textureOutPtr, th);
                 self._writeI32(viewOutPtr, vh);
@@ -1663,6 +2021,26 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
+            // (i32 texture_view, f32 r, f32 g, f32 b, f32 a) -> i32
+            clear(textureViewHandle, r, g, b, a) {
+                const entry = self.handles.get(textureViewHandle);
+                if (!entry || !entry.gpuObj) return WAPI_ERR_BADF;
+                const device = self._gpuDevice;
+                if (!device) return WAPI_ERR_BADF;
+                const encoder = device.createCommandEncoder();
+                const pass = encoder.beginRenderPass({
+                    colorAttachments: [{
+                        view: entry.gpuObj,
+                        clearValue: { r, g, b, a },
+                        loadOp: 'clear',
+                        storeOp: 'store',
+                    }],
+                });
+                pass.end();
+                device.queue.submit([encoder.finish()]);
+                return WAPI_OK;
+            },
+
             get_proc_address(namePtr, nameLen) {
                 // In the browser, WebGPU functions are not exposed as a proc
                 // table. Return 0 (NULL) -- modules should use the WAPI bridge.
@@ -1671,20 +2049,1059 @@ class ThinPlatform {
         };
 
         // -------------------------------------------------------------------
+        // wapi_wgpu (standard webgpu.h functions via wasm32 C ABI)
+        // -------------------------------------------------------------------
+        // All handles are i32 (wasm32 pointers). Structs use wasm32 C ABI
+        // (4-byte pointers, 4-byte size_t), NOT the WAPI unified ABI.
+
+        // Helper: resolve a GPU handle from the handle table
+        // Supports both wapi_gpu entries ({type, device/queue/texture/view}) and
+        // wapi_wgpu entries ({type, gpuObj}).
+        const gpuH = (h) => {
+            const obj = self.handles.get(h);
+            if (!obj) return null;
+            if (obj.gpuObj) return obj.gpuObj;
+            // Legacy wapi_gpu bridge entries
+            return obj.device || obj.queue || obj.texture || obj.view || null;
+        };
+
+        // Helper: insert a GPU object into the handle table, return i32 handle
+        const gpuInsert = (type, gpuObj) => {
+            return self.handles.insert({ type, gpuObj });
+        };
+
+        // Helper: read WGPUBlendComponent (12 bytes) at ptr
+        //   Offset 0: WGPUBlendOperation operation (u32)
+        //   Offset 4: WGPUBlendFactor srcFactor (u32)
+        //   Offset 8: WGPUBlendFactor dstFactor (u32)
+        const readBlendComponent = (ptr) => ({
+            operation: WGPU_BLEND_OP[self._readU32(ptr)] || "add",
+            srcFactor: WGPU_BLEND_FACTOR[self._readU32(ptr + 4)] || "one",
+            dstFactor: WGPU_BLEND_FACTOR[self._readU32(ptr + 8)] || "zero",
+        });
+
+        const wapi_wgpu = {
+            // --- Device creation functions ---
+
+            // WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, const WGPUShaderModuleDescriptor* descriptor)
+            // Wasm sig: (i32, i32) -> i32
+            device_create_shader_module(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+
+                // WGPUShaderModuleDescriptor (12 bytes):
+                //   Offset 0: WGPUChainedStruct* nextInChain (4)
+                //   Offset 4: WGPUStringView label (8)
+                const chainPtr = self._readU32(descPtr);
+                const label = self._readWGPUStringView(descPtr + 4);
+
+                // Follow chain to find WGPUShaderSourceWGSL (sType=0x02)
+                let code = null;
+                let p = chainPtr;
+                while (p) {
+                    // WGPUChainedStruct: next(4), sType(4)
+                    const nextP = self._readU32(p);
+                    const sType = self._readU32(p + 4);
+                    if (sType === WGPU_STYPE_SHADER_SOURCE_WGSL) {
+                        // WGPUShaderSourceWGSL: chain(8) + code WGPUStringView(8)
+                        code = self._readWGPUStringView(p + 8);
+                        break;
+                    }
+                    p = nextP;
+                }
+
+                if (code === null) {
+                    console.error("[wapi_wgpu] device_create_shader_module: no WGSL source in chain");
+                    return 0;
+                }
+
+                const desc = { code };
+                if (label) desc.label = label;
+                const sm = dev.createShaderModule(desc);
+                return gpuInsert("gpu_shader_module", sm);
+            },
+
+            // WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, const WGPURenderPipelineDescriptor* descriptor)
+            // Wasm sig: (i32, i32) -> i32
+            device_create_render_pipeline(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+
+                // WGPURenderPipelineDescriptor (96 bytes on wasm32):
+                //   Offset  0: nextInChain (4)
+                //   Offset  4: label WGPUStringView (8)
+                //   Offset 12: layout (4) - WGPUPipelineLayout handle
+                //   Offset 16: vertex WGPUVertexState (32 bytes inline)
+                //   Offset 48: primitive WGPUPrimitiveState (24 bytes inline)
+                //   Offset 72: depthStencil ptr (4)
+                //   Offset 76: multisample WGPUMultisampleState (16 bytes inline)
+                //   Offset 92: fragment ptr (4)
+
+                const label = self._readWGPUStringView(descPtr + 4);
+                const layoutHandle = self._readU32(descPtr + 12);
+
+                // --- Vertex State (offset 16, 32 bytes) ---
+                const vp = descPtr + 16;
+                // WGPUVertexState:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: module (4)
+                //   Offset 8: entryPoint WGPUStringView (8)
+                //   Offset 16: constantCount (4)
+                //   Offset 20: constants ptr (4)
+                //   Offset 24: bufferCount (4)
+                //   Offset 28: buffers ptr (4)
+                const vertexModule = gpuH(self._readU32(vp + 4));
+                const vertexEntry = self._readWGPUStringView(vp + 8);
+                const bufferCount = self._readU32(vp + 24);
+                const buffersPtr = self._readU32(vp + 28);
+
+                const vertexBuffers = [];
+                for (let i = 0; i < bufferCount; i++) {
+                    // WGPUVertexBufferLayout (24 bytes):
+                    //   Offset 0: nextInChain (4)
+                    //   Offset 4: stepMode (4)
+                    //   Offset 8: arrayStride (8, uint64)
+                    //   Offset 16: attributeCount (4)
+                    //   Offset 20: attributes ptr (4)
+                    const bp = buffersPtr + i * 24;
+                    const stepMode = WGPU_VERTEX_STEP_MODE[self._readU32(bp + 4)] || "vertex";
+                    const arrayStride = Number(self._dv.getBigUint64(bp + 8, true));
+                    const attrCount = self._readU32(bp + 16);
+                    const attrPtr = self._readU32(bp + 20);
+
+                    const attributes = [];
+                    for (let j = 0; j < attrCount; j++) {
+                        // WGPUVertexAttribute (20 bytes):
+                        //   Offset 0: nextInChain (4)
+                        //   Offset 4: format (4)
+                        //   Offset 8: offset (8, uint64)
+                        //   Offset 16: shaderLocation (4)
+                        const ap = attrPtr + j * 20;
+                        attributes.push({
+                            format: WGPU_VERTEX_FORMAT[self._readU32(ap + 4)] || "float32",
+                            offset: Number(self._dv.getBigUint64(ap + 8, true)),
+                            shaderLocation: self._readU32(ap + 16),
+                        });
+                    }
+                    vertexBuffers.push({ arrayStride, stepMode, attributes });
+                }
+
+                const vertexState = { module: vertexModule, buffers: vertexBuffers };
+                if (vertexEntry) vertexState.entryPoint = vertexEntry;
+
+                // --- Primitive State (offset 48, 24 bytes) ---
+                const pp = descPtr + 48;
+                // WGPUPrimitiveState:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: topology (4)
+                //   Offset 8: stripIndexFormat (4)
+                //   Offset 12: frontFace (4)
+                //   Offset 16: cullMode (4)
+                //   Offset 20: unclippedDepth (4)
+                const topologyVal = self._readU32(pp + 4);
+                const primitiveState = {
+                    topology: WGPU_PRIMITIVE_TOPOLOGY[topologyVal] || "triangle-list",
+                };
+                const stripFmt = self._readU32(pp + 8);
+                if (stripFmt) primitiveState.stripIndexFormat = WGPU_INDEX_FORMAT[stripFmt];
+                const ff = self._readU32(pp + 12);
+                if (ff) primitiveState.frontFace = WGPU_FRONT_FACE[ff];
+                const cm = self._readU32(pp + 16);
+                if (cm) primitiveState.cullMode = WGPU_CULL_MODE[cm];
+
+                // --- Depth/Stencil (offset 72, pointer) ---
+                const dsPtr = self._readU32(descPtr + 72);
+                let depthStencil = undefined;
+                if (dsPtr) {
+                    // WGPUDepthStencilState (68 bytes):
+                    //   Offset 0: nextInChain (4)
+                    //   Offset 4: format (4)
+                    //   Offset 8: depthWriteEnabled (4, WGPUOptionalBool)
+                    //   Offset 12: depthCompare (4)
+                    //   Offset 16: stencilFront (16 bytes: compare,failOp,depthFailOp,passOp)
+                    //   Offset 32: stencilBack (16 bytes)
+                    //   Offset 48: stencilReadMask (4)
+                    //   Offset 52: stencilWriteMask (4)
+                    //   Offset 56: depthBias (4, i32)
+                    //   Offset 60: depthBiasSlopeScale (4, f32)
+                    //   Offset 64: depthBiasClamp (4, f32)
+                    const readStencilFace = (sp) => ({
+                        compare: WGPU_COMPARE_FUNCTION[self._readU32(sp)] || "always",
+                        failOp: WGPU_STENCIL_OP[self._readU32(sp + 4)] || "keep",
+                        depthFailOp: WGPU_STENCIL_OP[self._readU32(sp + 8)] || "keep",
+                        passOp: WGPU_STENCIL_OP[self._readU32(sp + 12)] || "keep",
+                    });
+                    const depthWriteVal = self._readU32(dsPtr + 8);
+                    depthStencil = {
+                        format: WGPU_TEXTURE_FORMAT_MAP[self._readU32(dsPtr + 4)] || "depth24plus",
+                        depthWriteEnabled: depthWriteVal === 1, // WGPUOptionalBool: 0=undef, 1=true, 2=false
+                        depthCompare: WGPU_COMPARE_FUNCTION[self._readU32(dsPtr + 12)] || "always",
+                        stencilFront: readStencilFace(dsPtr + 16),
+                        stencilBack: readStencilFace(dsPtr + 32),
+                        stencilReadMask: self._readU32(dsPtr + 48),
+                        stencilWriteMask: self._readU32(dsPtr + 52),
+                        depthBias: self._readI32(dsPtr + 56),
+                        depthBiasSlopeScale: self._dv.getFloat32(dsPtr + 60, true),
+                        depthBiasClamp: self._dv.getFloat32(dsPtr + 64, true),
+                    };
+                }
+
+                // --- Multisample State (offset 76, 16 bytes inline) ---
+                const mp = descPtr + 76;
+                // WGPUMultisampleState:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: count (4)
+                //   Offset 8: mask (4)
+                //   Offset 12: alphaToCoverageEnabled (4)
+                const msCount = self._readU32(mp + 4) || 1;
+                const msMask = self._readU32(mp + 8) || 0xFFFFFFFF;
+                const multisample = {
+                    count: msCount,
+                    mask: msMask,
+                    alphaToCoverageEnabled: self._readU32(mp + 12) !== 0,
+                };
+
+                // --- Fragment State (offset 92, pointer) ---
+                const fragPtr = self._readU32(descPtr + 92);
+                let fragment = undefined;
+                if (fragPtr) {
+                    // WGPUFragmentState (32 bytes):
+                    //   Offset 0: nextInChain (4)
+                    //   Offset 4: module (4)
+                    //   Offset 8: entryPoint WGPUStringView (8)
+                    //   Offset 16: constantCount (4)
+                    //   Offset 20: constants ptr (4)
+                    //   Offset 24: targetCount (4)
+                    //   Offset 28: targets ptr (4)
+                    const fragModule = gpuH(self._readU32(fragPtr + 4));
+                    const fragEntry = self._readWGPUStringView(fragPtr + 8);
+                    const targetCount = self._readU32(fragPtr + 24);
+                    const targetsPtr = self._readU32(fragPtr + 28);
+
+                    const targets = [];
+                    for (let i = 0; i < targetCount; i++) {
+                        // WGPUColorTargetState (24 bytes, align 8):
+                        //   Offset 0: nextInChain (4)
+                        //   Offset 4: format (4)
+                        //   Offset 8: blend ptr (4)
+                        //   Offset 12: _pad (4)
+                        //   Offset 16: writeMask (8, uint64 WGPUColorWriteMask)
+                        const tp = targetsPtr + i * 24;
+                        const fmt = self._readU32(tp + 4);
+                        const blendPtr = self._readU32(tp + 8);
+                        const writeMask = Number(self._dv.getBigUint64(tp + 16, true));
+
+                        const target = {
+                            format: WGPU_TEXTURE_FORMAT_MAP[fmt] || "bgra8unorm",
+                        };
+
+                        if (blendPtr) {
+                            // WGPUBlendState (24 bytes): color(12) + alpha(12)
+                            target.blend = {
+                                color: readBlendComponent(blendPtr),
+                                alpha: readBlendComponent(blendPtr + 12),
+                            };
+                        }
+
+                        if (writeMask !== 0) target.writeMask = writeMask;
+                        targets.push(target);
+                    }
+
+                    fragment = { module: fragModule, targets };
+                    if (fragEntry) fragment.entryPoint = fragEntry;
+                }
+
+                // Build the pipeline descriptor
+                const pipelineDesc = {
+                    vertex: vertexState,
+                    primitive: primitiveState,
+                    multisample,
+                };
+                if (label) pipelineDesc.label = label;
+                if (layoutHandle) {
+                    pipelineDesc.layout = gpuH(layoutHandle);
+                } else {
+                    pipelineDesc.layout = "auto";
+                }
+                if (depthStencil) pipelineDesc.depthStencil = depthStencil;
+                if (fragment) pipelineDesc.fragment = fragment;
+
+                const pipeline = dev.createRenderPipeline(pipelineDesc);
+                return gpuInsert("gpu_render_pipeline", pipeline);
+            },
+
+            // WGPUComputePipeline wgpuDeviceCreateComputePipeline(WGPUDevice device, const WGPUComputePipelineDescriptor* descriptor)
+            device_create_compute_pipeline(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUComputePipelineDescriptor:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: layout (4)
+                //   Offset 16: compute WGPUComputeState inline
+                //     WGPUComputeState:
+                //       Offset 0: nextInChain (4)
+                //       Offset 4: module (4)
+                //       Offset 8: entryPoint (8)
+                //       Offset 16: constantCount (4)
+                //       Offset 20: constants ptr (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const layoutHandle = self._readU32(descPtr + 12);
+                const cp = descPtr + 16;
+                const computeModule = gpuH(self._readU32(cp + 4));
+                const computeEntry = self._readWGPUStringView(cp + 8);
+
+                const desc = {
+                    layout: layoutHandle ? gpuH(layoutHandle) : "auto",
+                    compute: { module: computeModule },
+                };
+                if (label) desc.label = label;
+                if (computeEntry) desc.compute.entryPoint = computeEntry;
+
+                const pipeline = dev.createComputePipeline(desc);
+                return gpuInsert("gpu_compute_pipeline", pipeline);
+            },
+
+            // WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, const WGPUCommandEncoderDescriptor* descriptor)
+            device_create_command_encoder(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUCommandEncoderDescriptor (12 bytes):
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                const desc = {};
+                if (descPtr) {
+                    const label = self._readWGPUStringView(descPtr + 4);
+                    if (label) desc.label = label;
+                }
+                const encoder = dev.createCommandEncoder(desc);
+                return gpuInsert("gpu_command_encoder", encoder);
+            },
+
+            // WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, const WGPUBufferDescriptor* descriptor)
+            device_create_buffer(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUBufferDescriptor (40 bytes, align 8):
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label WGPUStringView (8)
+                //   Offset 12: _pad (4)
+                //   Offset 16: usage (8, uint64 WGPUBufferUsage)
+                //   Offset 24: size (8, uint64)
+                //   Offset 32: mappedAtCreation (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const usage = Number(self._dv.getBigUint64(descPtr + 16, true));
+                const size = Number(self._dv.getBigUint64(descPtr + 24, true));
+                const mappedAtCreation = self._readU32(descPtr + 32) !== 0;
+
+                const desc = { size, usage, mappedAtCreation };
+                if (label) desc.label = label;
+                const buffer = dev.createBuffer(desc);
+                return gpuInsert("gpu_buffer", buffer);
+            },
+
+            // WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, const WGPUTextureDescriptor* descriptor)
+            device_create_texture(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUTextureDescriptor (60 bytes, align 8):
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label WGPUStringView (8)
+                //   Offset 12: _pad (4)
+                //   Offset 16: usage (8, uint64 WGPUTextureUsage)
+                //   Offset 24: dimension (4)
+                //   Offset 28: size WGPUExtent3D (12: w,h,d)
+                //   Offset 40: format (4)
+                //   Offset 44: mipLevelCount (4)
+                //   Offset 48: sampleCount (4)
+                //   Offset 52: viewFormatCount (4)
+                //   Offset 56: viewFormats ptr (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const usage = Number(self._dv.getBigUint64(descPtr + 16, true));
+                const dimension = WGPU_TEXTURE_DIMENSION[self._readU32(descPtr + 24)] || "2d";
+                const width = self._readU32(descPtr + 28);
+                const height = self._readU32(descPtr + 32);
+                const depthOrArrayLayers = self._readU32(descPtr + 36);
+                const format = WGPU_TEXTURE_FORMAT_MAP[self._readU32(descPtr + 40)] || "rgba8unorm";
+                const mipLevelCount = self._readU32(descPtr + 44) || 1;
+                const sampleCount = self._readU32(descPtr + 48) || 1;
+
+                const desc = {
+                    size: { width, height, depthOrArrayLayers },
+                    format, usage, dimension, mipLevelCount, sampleCount,
+                };
+                if (label) desc.label = label;
+                const texture = dev.createTexture(desc);
+                return gpuInsert("gpu_texture", texture);
+            },
+
+            // WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, const WGPUSamplerDescriptor* descriptor)
+            device_create_sampler(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUSamplerDescriptor:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: addressModeU (4)
+                //   Offset 16: addressModeV (4)
+                //   Offset 20: addressModeW (4)
+                //   Offset 24: magFilter (4)
+                //   Offset 28: minFilter (4)
+                //   Offset 32: mipmapFilter (4)
+                //   Offset 36: lodMinClamp (f32)
+                //   Offset 40: lodMaxClamp (f32)
+                //   Offset 44: compare (4)
+                //   Offset 48: maxAnisotropy (u16)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const desc = {
+                    addressModeU: WGPU_ADDRESS_MODE[self._readU32(descPtr + 12)] || "clamp-to-edge",
+                    addressModeV: WGPU_ADDRESS_MODE[self._readU32(descPtr + 16)] || "clamp-to-edge",
+                    addressModeW: WGPU_ADDRESS_MODE[self._readU32(descPtr + 20)] || "clamp-to-edge",
+                    magFilter: WGPU_FILTER_MODE[self._readU32(descPtr + 24)] || "nearest",
+                    minFilter: WGPU_FILTER_MODE[self._readU32(descPtr + 28)] || "nearest",
+                    mipmapFilter: WGPU_MIPMAP_FILTER_MODE[self._readU32(descPtr + 32)] || "nearest",
+                    lodMinClamp: self._dv.getFloat32(descPtr + 36, true),
+                    lodMaxClamp: self._dv.getFloat32(descPtr + 40, true),
+                    maxAnisotropy: self._dv.getUint16(descPtr + 48, true) || 1,
+                };
+                const cmp = self._readU32(descPtr + 44);
+                if (cmp) desc.compare = WGPU_COMPARE_FUNCTION[cmp];
+                if (label) desc.label = label;
+                const sampler = dev.createSampler(desc);
+                return gpuInsert("gpu_sampler", sampler);
+            },
+
+            // WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(...)
+            device_create_bind_group_layout(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUBindGroupLayoutDescriptor:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: entryCount (4)
+                //   Offset 16: entries ptr (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const entryCount = self._readU32(descPtr + 12);
+                const entriesPtr = self._readU32(descPtr + 16);
+                // TODO: full bind group layout entry parsing for advanced use
+                const entries = [];
+                // For now, return a basic layout
+                const desc = { entries };
+                if (label) desc.label = label;
+                const layout = dev.createBindGroupLayout(desc);
+                return gpuInsert("gpu_bind_group_layout", layout);
+            },
+
+            // WGPUBindGroup wgpuDeviceCreateBindGroup(...)
+            device_create_bind_group(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUBindGroupDescriptor:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: layout (4)
+                //   Offset 16: entryCount (4)
+                //   Offset 20: entries ptr (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const layoutH = self._readU32(descPtr + 12);
+                const entryCount = self._readU32(descPtr + 16);
+                const entriesPtr = self._readU32(descPtr + 20);
+
+                const entries = [];
+                for (let i = 0; i < entryCount; i++) {
+                    // WGPUBindGroupEntry (36 bytes):
+                    //   Offset 0: nextInChain (4)
+                    //   Offset 4: binding (4)
+                    //   Offset 8: buffer (4, handle)
+                    //   Offset 12: offset (8, u64)
+                    //   Offset 20: size (8, u64)
+                    //   Offset 28: sampler (4, handle)
+                    //   Offset 32: textureView (4, handle)
+                    const ep = entriesPtr + i * 36;
+                    const binding = self._readU32(ep + 4);
+                    const bufH = self._readU32(ep + 8);
+                    const offset = Number(self._dv.getBigUint64(ep + 12, true));
+                    const size = Number(self._dv.getBigUint64(ep + 20, true));
+                    const samplerH = self._readU32(ep + 28);
+                    const texViewH = self._readU32(ep + 32);
+
+                    const entry = { binding };
+                    if (bufH) {
+                        entry.resource = { buffer: gpuH(bufH), offset, size };
+                    } else if (samplerH) {
+                        entry.resource = gpuH(samplerH);
+                    } else if (texViewH) {
+                        entry.resource = gpuH(texViewH);
+                    }
+                    entries.push(entry);
+                }
+
+                const desc = { layout: gpuH(layoutH), entries };
+                if (label) desc.label = label;
+                const bg = dev.createBindGroup(desc);
+                return gpuInsert("gpu_bind_group", bg);
+            },
+
+            // WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(...)
+            device_create_pipeline_layout(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUPipelineLayoutDescriptor:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: bindGroupLayoutCount (4)
+                //   Offset 16: bindGroupLayouts ptr (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const count = self._readU32(descPtr + 12);
+                const layoutsPtr = self._readU32(descPtr + 16);
+
+                const bindGroupLayouts = [];
+                for (let i = 0; i < count; i++) {
+                    const h = self._readU32(layoutsPtr + i * 4);
+                    bindGroupLayouts.push(gpuH(h));
+                }
+
+                const desc = { bindGroupLayouts };
+                if (label) desc.label = label;
+                const layout = dev.createPipelineLayout(desc);
+                return gpuInsert("gpu_pipeline_layout", layout);
+            },
+
+            // WGPUQuerySet wgpuDeviceCreateQuerySet(...)
+            device_create_query_set(device, descPtr) {
+                self._refreshViews();
+                const dev = gpuH(device);
+                if (!dev) return 0;
+                // WGPUQuerySetDescriptor:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: type (4)
+                //   Offset 16: count (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const type = self._readU32(descPtr + 12) === 1 ? "timestamp" : "occlusion";
+                const count = self._readU32(descPtr + 16);
+
+                const desc = { type, count };
+                if (label) desc.label = label;
+                const qs = dev.createQuerySet(desc);
+                return gpuInsert("gpu_query_set", qs);
+            },
+
+            // --- Queue functions ---
+
+            // void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, const WGPUCommandBuffer* commands)
+            // Wasm sig: (i32, i32, i32) -> void
+            queue_submit(queue, commandCount, commandsPtr) {
+                self._refreshViews();
+                const q = gpuH(queue);
+                if (!q) return;
+
+                const cmdBufs = [];
+                for (let i = 0; i < commandCount; i++) {
+                    const h = self._readU32(commandsPtr + i * 4);
+                    const cb = gpuH(h);
+                    if (cb) cmdBufs.push(cb);
+                }
+                q.submit(cmdBufs);
+            },
+
+            // void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, const void* data, size_t size)
+            // Wasm sig: (i32, i32, i64, i32, i32) -> void
+            queue_write_buffer(queue, buffer, bufferOffsetLo, bufferOffsetHi, dataPtr, size) {
+                self._refreshViews();
+                const q = gpuH(queue);
+                const buf = gpuH(buffer);
+                if (!q || !buf) return;
+                // On wasm32 with 64-bit args, they may be split. Handle both cases.
+                let bufferOffset, data, dataSize;
+                if (typeof bufferOffsetHi === 'number' && bufferOffsetHi > 0xFFFF) {
+                    // Arguments: queue, buffer, bufferOffset(i64 as single BigInt), dataPtr, size
+                    // This path handles when the runtime passes i64 as BigInt
+                    bufferOffset = Number(bufferOffsetLo);
+                    data = bufferOffsetHi; // actually dataPtr
+                    dataSize = dataPtr;    // actually size
+                } else {
+                    bufferOffset = Number(bufferOffsetLo);
+                    data = dataPtr;
+                    dataSize = size;
+                }
+                const src = new Uint8Array(self.memory.buffer, data, dataSize);
+                q.writeBuffer(buf, bufferOffset, src);
+            },
+
+            // void wgpuQueueWriteTexture(WGPUQueue queue, const WGPUTexelCopyTextureInfo* destination, const void* data, size_t dataSize, const WGPUTexelCopyBufferLayout* dataLayout, const WGPUExtent3D* writeSize)
+            queue_write_texture(queue, destPtr, dataPtr, dataSize, layoutPtr, sizePtr) {
+                self._refreshViews();
+                const q = gpuH(queue);
+                if (!q) return;
+                // WGPUTexelCopyTextureInfo:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: texture (4)
+                //   Offset 8: mipLevel (4)
+                //   Offset 12: origin WGPUOrigin3D (12: x,y,z)
+                //   Offset 24: aspect (4)
+                const tex = gpuH(self._readU32(destPtr + 4));
+                const destination = {
+                    texture: tex,
+                    mipLevel: self._readU32(destPtr + 8),
+                    origin: {
+                        x: self._readU32(destPtr + 12),
+                        y: self._readU32(destPtr + 16),
+                        z: self._readU32(destPtr + 20),
+                    },
+                    aspect: WGPU_TEXTURE_ASPECT[self._readU32(destPtr + 24)] || "all",
+                };
+                // WGPUTexelCopyBufferLayout:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: offset (8, u64)
+                //   Offset 12: bytesPerRow (4)
+                //   Offset 16: rowsPerImage (4)
+                const dataLayout = {
+                    offset: Number(self._dv.getBigUint64(layoutPtr + 4, true)),
+                    bytesPerRow: self._readU32(layoutPtr + 12),
+                    rowsPerImage: self._readU32(layoutPtr + 16),
+                };
+                // WGPUExtent3D
+                const writeSize = {
+                    width: self._readU32(sizePtr),
+                    height: self._readU32(sizePtr + 4),
+                    depthOrArrayLayers: self._readU32(sizePtr + 8),
+                };
+                const src = new Uint8Array(self.memory.buffer, dataPtr, dataSize);
+                q.writeTexture(destination, src, dataLayout, writeSize);
+            },
+
+            // --- Command Encoder functions ---
+
+            // WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder encoder, const WGPURenderPassDescriptor* descriptor)
+            command_encoder_begin_render_pass(encoder, descPtr) {
+                self._refreshViews();
+                const enc = gpuH(encoder);
+                if (!enc) return 0;
+
+                // WGPURenderPassDescriptor (32 bytes):
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: label (8)
+                //   Offset 12: colorAttachmentCount (4)
+                //   Offset 16: colorAttachments ptr (4)
+                //   Offset 20: depthStencilAttachment ptr (4)
+                //   Offset 24: occlusionQuerySet (4)
+                //   Offset 28: timestampWrites ptr (4)
+                const label = self._readWGPUStringView(descPtr + 4);
+                const colorCount = self._readU32(descPtr + 12);
+                const colorPtr = self._readU32(descPtr + 16);
+                const dsAttachPtr = self._readU32(descPtr + 20);
+
+                const colorAttachments = [];
+                for (let i = 0; i < colorCount; i++) {
+                    // WGPURenderPassColorAttachment (56 bytes, align 8):
+                    //   Offset 0: nextInChain (4), Offset 4: view (4),
+                    //   Offset 8: depthSlice (4), Offset 12: resolveTarget (4),
+                    //   Offset 16: loadOp (4), Offset 20: storeOp (4),
+                    //   Offset 24: clearValue.r/g/b/a (4x double = 32 bytes)
+                    const ap = colorPtr + i * 56;
+                    const viewH = self._readU32(ap + 4);
+                    const depthSlice = self._readU32(ap + 8);
+                    const resolveH = self._readU32(ap + 12);
+                    const loadOp = WGPU_LOAD_OP[self._readU32(ap + 16)] || "clear";
+                    const storeOp = WGPU_STORE_OP[self._readU32(ap + 20)] || "store";
+                    const clearR = self._dv.getFloat64(ap + 24, true);
+                    const clearG = self._dv.getFloat64(ap + 32, true);
+                    const clearB = self._dv.getFloat64(ap + 40, true);
+                    const clearA = self._dv.getFloat64(ap + 48, true);
+
+                    const attach = {
+                        view: gpuH(viewH),
+                        loadOp,
+                        storeOp,
+                        clearValue: { r: clearR, g: clearG, b: clearB, a: clearA },
+                    };
+                    if (resolveH) attach.resolveTarget = gpuH(resolveH);
+                    colorAttachments.push(attach);
+                }
+
+                const rpDesc = { colorAttachments };
+                if (label) rpDesc.label = label;
+
+                if (dsAttachPtr) {
+                    // WGPURenderPassDepthStencilAttachment:
+                    //   Offset 0: view (4)
+                    //   Offset 4: depthLoadOp (4)
+                    //   Offset 8: depthStoreOp (4)
+                    //   Offset 12: depthClearValue (f32)
+                    //   Offset 16: depthReadOnly (4)
+                    //   Offset 20: stencilLoadOp (4)
+                    //   Offset 24: stencilStoreOp (4)
+                    //   Offset 28: stencilClearValue (4)
+                    //   Offset 32: stencilReadOnly (4)
+                    rpDesc.depthStencilAttachment = {
+                        view: gpuH(self._readU32(dsAttachPtr)),
+                        depthLoadOp: WGPU_LOAD_OP[self._readU32(dsAttachPtr + 4)] || "clear",
+                        depthStoreOp: WGPU_STORE_OP[self._readU32(dsAttachPtr + 8)] || "store",
+                        depthClearValue: self._dv.getFloat32(dsAttachPtr + 12, true),
+                        depthReadOnly: self._readU32(dsAttachPtr + 16) !== 0,
+                        stencilLoadOp: WGPU_LOAD_OP[self._readU32(dsAttachPtr + 20)] || "clear",
+                        stencilStoreOp: WGPU_STORE_OP[self._readU32(dsAttachPtr + 24)] || "store",
+                        stencilClearValue: self._readU32(dsAttachPtr + 28),
+                        stencilReadOnly: self._readU32(dsAttachPtr + 32) !== 0,
+                    };
+                }
+
+                const pass = enc.beginRenderPass(rpDesc);
+                return gpuInsert("gpu_render_pass_encoder", pass);
+            },
+
+            // WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(WGPUCommandEncoder encoder, const WGPUComputePassDescriptor* descriptor)
+            command_encoder_begin_compute_pass(encoder, descPtr) {
+                self._refreshViews();
+                const enc = gpuH(encoder);
+                if (!enc) return 0;
+                const desc = {};
+                if (descPtr) {
+                    const label = self._readWGPUStringView(descPtr + 4);
+                    if (label) desc.label = label;
+                }
+                const pass = enc.beginComputePass(desc);
+                return gpuInsert("gpu_compute_pass_encoder", pass);
+            },
+
+            // void wgpuCommandEncoderCopyBufferToBuffer(...)
+            command_encoder_copy_buffer_to_buffer(encoder, source, sourceOffsetLo, sourceOffsetHi, destination, destinationOffsetLo, destinationOffsetHi, sizeLo, sizeHi) {
+                const enc = gpuH(encoder);
+                if (!enc) return;
+                const src = gpuH(source);
+                const dst = gpuH(destination);
+                enc.copyBufferToBuffer(src, Number(sourceOffsetLo), dst, Number(destinationOffsetLo), Number(sizeLo));
+            },
+
+            // void wgpuCommandEncoderCopyBufferToTexture(encoder, source, destination, copySize)
+            command_encoder_copy_buffer_to_texture(encoder, sourcePtr, destPtr, copySizePtr) {
+                self._refreshViews();
+                const enc = gpuH(encoder);
+                if (!enc) return;
+                // WGPUTexelCopyBufferInfo:
+                //   Offset 0: nextInChain (4)
+                //   Offset 4: layout.nextInChain (4)
+                //   Offset 8: layout.offset (8)
+                //   Offset 16: layout.bytesPerRow (4)
+                //   Offset 20: layout.rowsPerImage (4)
+                //   Offset 24: buffer (4)
+                const source = {
+                    buffer: gpuH(self._readU32(sourcePtr + 24)),
+                    offset: Number(self._dv.getBigUint64(sourcePtr + 8, true)),
+                    bytesPerRow: self._readU32(sourcePtr + 16),
+                    rowsPerImage: self._readU32(sourcePtr + 20),
+                };
+                const tex = gpuH(self._readU32(destPtr + 4));
+                const destination = {
+                    texture: tex,
+                    mipLevel: self._readU32(destPtr + 8),
+                    origin: {
+                        x: self._readU32(destPtr + 12),
+                        y: self._readU32(destPtr + 16),
+                        z: self._readU32(destPtr + 20),
+                    },
+                };
+                const copySize = {
+                    width: self._readU32(copySizePtr),
+                    height: self._readU32(copySizePtr + 4),
+                    depthOrArrayLayers: self._readU32(copySizePtr + 8),
+                };
+                enc.copyBufferToTexture(source, destination, copySize);
+            },
+
+            // void wgpuCommandEncoderCopyTextureToBuffer(encoder, source, destination, copySize)
+            command_encoder_copy_texture_to_buffer(encoder, sourcePtr, destPtr, copySizePtr) {
+                self._refreshViews();
+                const enc = gpuH(encoder);
+                if (!enc) return;
+                const tex = gpuH(self._readU32(sourcePtr + 4));
+                const source = {
+                    texture: tex,
+                    mipLevel: self._readU32(sourcePtr + 8),
+                    origin: {
+                        x: self._readU32(sourcePtr + 12),
+                        y: self._readU32(sourcePtr + 16),
+                        z: self._readU32(sourcePtr + 20),
+                    },
+                };
+                const destination = {
+                    buffer: gpuH(self._readU32(destPtr + 24)),
+                    offset: Number(self._dv.getBigUint64(destPtr + 8, true)),
+                    bytesPerRow: self._readU32(destPtr + 16),
+                    rowsPerImage: self._readU32(destPtr + 20),
+                };
+                const copySize = {
+                    width: self._readU32(copySizePtr),
+                    height: self._readU32(copySizePtr + 4),
+                    depthOrArrayLayers: self._readU32(copySizePtr + 8),
+                };
+                enc.copyTextureToBuffer(source, destination, copySize);
+            },
+
+            // void wgpuCommandEncoderCopyTextureToTexture(encoder, source, destination, copySize)
+            command_encoder_copy_texture_to_texture(encoder, sourcePtr, destPtr, copySizePtr) {
+                self._refreshViews();
+                const enc = gpuH(encoder);
+                if (!enc) return;
+                const srcTex = gpuH(self._readU32(sourcePtr + 4));
+                const source = {
+                    texture: srcTex,
+                    mipLevel: self._readU32(sourcePtr + 8),
+                    origin: {
+                        x: self._readU32(sourcePtr + 12),
+                        y: self._readU32(sourcePtr + 16),
+                        z: self._readU32(sourcePtr + 20),
+                    },
+                };
+                const dstTex = gpuH(self._readU32(destPtr + 4));
+                const destination = {
+                    texture: dstTex,
+                    mipLevel: self._readU32(destPtr + 8),
+                    origin: {
+                        x: self._readU32(destPtr + 12),
+                        y: self._readU32(destPtr + 16),
+                        z: self._readU32(destPtr + 20),
+                    },
+                };
+                const copySize = {
+                    width: self._readU32(copySizePtr),
+                    height: self._readU32(copySizePtr + 4),
+                    depthOrArrayLayers: self._readU32(copySizePtr + 8),
+                };
+                enc.copyTextureToTexture(source, destination, copySize);
+            },
+
+            // WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder encoder, const WGPUCommandBufferDescriptor* descriptor)
+            command_encoder_finish(encoder, descPtr) {
+                self._refreshViews();
+                const enc = gpuH(encoder);
+                if (!enc) return 0;
+                const desc = {};
+                if (descPtr) {
+                    const label = self._readWGPUStringView(descPtr + 4);
+                    if (label) desc.label = label;
+                }
+                const cmdBuf = enc.finish(desc);
+                return gpuInsert("gpu_command_buffer", cmdBuf);
+            },
+
+            // --- Render Pass Encoder functions ---
+
+            // void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder encoder, WGPURenderPipeline pipeline)
+            render_pass_set_pipeline(encoder, pipeline) {
+                const pass = gpuH(encoder);
+                if (pass) pass.setPipeline(gpuH(pipeline));
+            },
+
+            // void wgpuRenderPassEncoderSetBindGroup(encoder, groupIndex, group, dynamicOffsetCount, dynamicOffsets)
+            render_pass_set_bind_group(encoder, groupIndex, group, dynamicOffsetCount, dynamicOffsetsPtr) {
+                self._refreshViews();
+                const pass = gpuH(encoder);
+                if (!pass) return;
+                const bg = gpuH(group);
+                const offsets = [];
+                for (let i = 0; i < dynamicOffsetCount; i++) {
+                    offsets.push(self._readU32(dynamicOffsetsPtr + i * 4));
+                }
+                pass.setBindGroup(groupIndex, bg, offsets);
+            },
+
+            // void wgpuRenderPassEncoderSetVertexBuffer(encoder, slot, buffer, offset, size)
+            render_pass_set_vertex_buffer(encoder, slot, buffer, offsetLo, offsetHi, sizeLo, sizeHi) {
+                const pass = gpuH(encoder);
+                if (!pass) return;
+                const buf = gpuH(buffer);
+                // wasm32 passes uint64_t as two i32 args
+                const offset = Number(offsetLo);
+                const size = Number(sizeLo);
+                pass.setVertexBuffer(slot, buf, offset, size === 0 ? undefined : size);
+            },
+
+            // void wgpuRenderPassEncoderSetIndexBuffer(encoder, buffer, format, offset, size)
+            render_pass_set_index_buffer(encoder, buffer, format, offsetLo, offsetHi, sizeLo, sizeHi) {
+                const pass = gpuH(encoder);
+                if (!pass) return;
+                const buf = gpuH(buffer);
+                const fmt = WGPU_INDEX_FORMAT[format] || "uint16";
+                const offset = Number(offsetLo);
+                const size = Number(sizeLo);
+                pass.setIndexBuffer(buf, fmt, offset, size === 0 ? undefined : size);
+            },
+
+            // void wgpuRenderPassEncoderSetViewport(encoder, x, y, width, height, minDepth, maxDepth)
+            render_pass_set_viewport(encoder, x, y, width, height, minDepth, maxDepth) {
+                const pass = gpuH(encoder);
+                if (pass) pass.setViewport(x, y, width, height, minDepth, maxDepth);
+            },
+
+            // void wgpuRenderPassEncoderSetScissorRect(encoder, x, y, width, height)
+            render_pass_set_scissor_rect(encoder, x, y, width, height) {
+                const pass = gpuH(encoder);
+                if (pass) pass.setScissorRect(x, y, width, height);
+            },
+
+            // void wgpuRenderPassEncoderDraw(encoder, vertexCount, instanceCount, firstVertex, firstInstance)
+            render_pass_draw(encoder, vertexCount, instanceCount, firstVertex, firstInstance) {
+                const pass = gpuH(encoder);
+                if (pass) pass.draw(vertexCount, instanceCount, firstVertex, firstInstance);
+            },
+
+            // void wgpuRenderPassEncoderDrawIndexed(encoder, indexCount, instanceCount, firstIndex, baseVertex, firstInstance)
+            render_pass_draw_indexed(encoder, indexCount, instanceCount, firstIndex, baseVertex, firstInstance) {
+                const pass = gpuH(encoder);
+                if (pass) pass.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+            },
+
+            // void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder encoder)
+            render_pass_end(encoder) {
+                const pass = gpuH(encoder);
+                if (pass) pass.end();
+            },
+
+            // --- Compute Pass Encoder functions ---
+
+            compute_pass_set_pipeline(encoder, pipeline) {
+                const pass = gpuH(encoder);
+                if (pass) pass.setPipeline(gpuH(pipeline));
+            },
+
+            compute_pass_set_bind_group(encoder, groupIndex, group, dynamicOffsetCount, dynamicOffsetsPtr) {
+                self._refreshViews();
+                const pass = gpuH(encoder);
+                if (!pass) return;
+                const bg = gpuH(group);
+                const offsets = [];
+                for (let i = 0; i < dynamicOffsetCount; i++) {
+                    offsets.push(self._readU32(dynamicOffsetsPtr + i * 4));
+                }
+                pass.setBindGroup(groupIndex, bg, offsets);
+            },
+
+            compute_pass_dispatch_workgroups(encoder, x, y, z) {
+                const pass = gpuH(encoder);
+                if (pass) pass.dispatchWorkgroups(x, y, z);
+            },
+
+            compute_pass_end(encoder) {
+                const pass = gpuH(encoder);
+                if (pass) pass.end();
+            },
+
+            // --- Buffer functions ---
+
+            buffer_get_mapped_range(buffer, offsetLo, offsetHi, sizeLo, sizeHi) {
+                // Returns a pointer into wasm linear memory where the mapped data is
+                // This is complex in browser WebGPU - the mapped range is a JS ArrayBuffer,
+                // not wasm memory. We'd need to copy. Return 0 for now.
+                // TODO: proper buffer mapping with staging
+                return 0;
+            },
+
+            buffer_unmap(buffer) {
+                const buf = gpuH(buffer);
+                if (buf) buf.unmap();
+            },
+
+            // --- Texture functions ---
+
+            // WGPUTextureView wgpuTextureCreateView(WGPUTexture texture, const WGPUTextureViewDescriptor* descriptor)
+            texture_create_view(texture, descPtr) {
+                self._refreshViews();
+                const tex = gpuH(texture);
+                if (!tex) return 0;
+                const desc = {};
+                if (descPtr) {
+                    // WGPUTextureViewDescriptor:
+                    //   Offset 0: nextInChain (4)
+                    //   Offset 4: label (8)
+                    //   Offset 12: format (4)
+                    //   Offset 16: dimension (4)
+                    //   Offset 20: baseMipLevel (4)
+                    //   Offset 24: mipLevelCount (4)
+                    //   Offset 28: baseArrayLayer (4)
+                    //   Offset 32: arrayLayerCount (4)
+                    //   Offset 36: aspect (4)
+                    const label = self._readWGPUStringView(descPtr + 4);
+                    if (label) desc.label = label;
+                    const fmt = self._readU32(descPtr + 12);
+                    if (fmt) desc.format = WGPU_TEXTURE_FORMAT_MAP[fmt];
+                    const dim = self._readU32(descPtr + 16);
+                    if (dim) desc.dimension = WGPU_TEXTURE_VIEW_DIMENSION[dim];
+                    desc.baseMipLevel = self._readU32(descPtr + 20);
+                    desc.mipLevelCount = self._readU32(descPtr + 24);
+                    desc.baseArrayLayer = self._readU32(descPtr + 28);
+                    desc.arrayLayerCount = self._readU32(descPtr + 32);
+                    const aspect = self._readU32(descPtr + 36);
+                    if (aspect) desc.aspect = WGPU_TEXTURE_ASPECT[aspect];
+                }
+                const view = tex.createView(desc);
+                return gpuInsert("gpu_texture_view", view);
+            },
+
+            // --- Release functions ---
+            buffer_release(h) { self.handles.remove(h); },
+            texture_release(h) { self.handles.remove(h); },
+            texture_view_release(h) { self.handles.remove(h); },
+            sampler_release(h) { self.handles.remove(h); },
+            bind_group_release(h) { self.handles.remove(h); },
+            bind_group_layout_release(h) { self.handles.remove(h); },
+            pipeline_layout_release(h) { self.handles.remove(h); },
+            shader_module_release(h) { self.handles.remove(h); },
+            render_pipeline_release(h) { self.handles.remove(h); },
+            compute_pipeline_release(h) { self.handles.remove(h); },
+            command_buffer_release(h) { self.handles.remove(h); },
+            command_encoder_release(h) { self.handles.remove(h); },
+            render_pass_release(h) { self.handles.remove(h); },
+            compute_pass_release(h) { self.handles.remove(h); },
+            query_set_release(h) { self.handles.remove(h); },
+        };
+
+        // -------------------------------------------------------------------
         // wapi_surface (windowing - canvas)
         // -------------------------------------------------------------------
         const wapi_surface = {
             create(descPtr, surfaceOutPtr) {
                 self._refreshViews();
-                // Read wapi_surface_desc_t (24 bytes)
-                const nextInChain = self._readU32(descPtr + 0);
-                const titlePtr = self._readU32(descPtr + 4);
-                const titleLen = self._readU32(descPtr + 8);
-                const width    = self._readI32(descPtr + 12);
-                const height   = self._readI32(descPtr + 16);
-                const flags    = self._readU32(descPtr + 20);
+                // Read wapi_surface_desc_t (unified ABI layout):
+                //   Offset  0: uint64_t nextInChain (8 bytes)
+                //   Offset  8: int32_t  width       (4 bytes)
+                //   Offset 12: int32_t  height      (4 bytes)
+                //   Offset 16: uint64_t flags       (8 bytes)
+                //   Offset 24: uint32_t _pad        (4 bytes)
+                const nextInChainPtr = Number(self._readU64(descPtr + 0));
+                const width    = self._readI32(descPtr + 8);
+                const height   = self._readI32(descPtr + 12);
+                const flags    = Number(self._readU64(descPtr + 16));
 
-                const title = titlePtr ? self._readString(titlePtr, titleLen) : "WAPI Application";
+                // Follow nextInChain to find wapi_window_config_t
+                let title = "WAPI Application";
+                if (nextInChainPtr) {
+                    // wapi_chained_struct_t header (16 bytes):
+                    //   Offset  0: uint64_t next  (8 bytes)
+                    //   Offset  8: uint32_t sType  (4 bytes)
+                    //   Offset 12: uint32_t _pad   (4 bytes)
+                    const sType = self._readU32(nextInChainPtr + 8);
+                    if (sType === 0x0001) { // WAPI_STYPE_WINDOW_CONFIG
+                        // wapi_window_config_t:
+                        //   Offset  0: chain (16 bytes)
+                        //   Offset 16: wapi_string_view_t title (16 bytes)
+                        //   Offset 32: uint32_t window_flags (4 bytes)
+                        //   Offset 36: uint32_t _pad (4 bytes)
+                        const t = self._readStringView(nextInChainPtr + 16);
+                        if (t) title = t;
+                    }
+                }
 
                 const canvas = document.createElement("canvas");
                 const dpr = (flags & WAPI_SURFACE_FLAG_HIGH_DPI) ? window.devicePixelRatio : 1;
@@ -1792,9 +3209,11 @@ class ThinPlatform {
                 return WAPI_OK;
             },
 
-            set_title(surfaceHandle, titlePtr, titleLen) {
-                const title = self._readString(titlePtr, titleLen);
-                document.title = title;
+            // (i32 surface, i32 sv_ptr) -> i32
+            // title is wapi_string_view_t passed indirectly
+            set_title(surfaceHandle, svPtr) {
+                const title = self._readStringView(svPtr);
+                if (title) document.title = title;
                 return WAPI_OK;
             },
 
@@ -2821,8 +4240,8 @@ class ThinPlatform {
             get_drop_data(index, bufPtr, bufLen, bytesWrittenPtr) { return WAPI_ERR_NOTSUP; },
         };
 
-        return { wapi, wapi_env, wapi_memory, wapi_io, wapi_clock, wapi_fs, wapi_net,
-                 wapi_gpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_text,
+        return { wapi, wapi_env, wapi_memory, wapi_clock, wapi_filesystem, wapi_net,
+                 wapi_gpu, wapi_wgpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_text,
                  wapi_clipboard, wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
                  wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
                  wapi_share, wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr,
@@ -2875,11 +4294,19 @@ class ThinPlatform {
         switch (ev.type) {
             case WAPI_EVENT_KEY_DOWN:
             case WAPI_EVENT_KEY_UP:
-                this._dv.setUint32(ptr + 16, ev.scancode || 0, true);
-                this._dv.setUint32(ptr + 20, ev.keycode || 0, true);
-                this._dv.setUint16(ptr + 24, ev.mod || 0, true);
-                this._u8[ptr + 26] = ev.down ? 1 : 0;
-                this._u8[ptr + 27] = ev.repeat ? 1 : 0;
+                // wapi_keyboard_event_t layout after common header (16 bytes):
+                //   Offset 16: uint32_t keyboard_handle
+                //   Offset 20: uint32_t scancode
+                //   Offset 24: uint32_t keycode
+                //   Offset 28: uint16_t mod
+                //   Offset 30: uint8_t  down
+                //   Offset 31: uint8_t  repeat
+                this._dv.setUint32(ptr + 16, ev.keyboard_handle || 0, true);
+                this._dv.setUint32(ptr + 20, ev.scancode || 0, true);
+                this._dv.setUint32(ptr + 24, ev.keycode || 0, true);
+                this._dv.setUint16(ptr + 28, ev.mod || 0, true);
+                this._u8[ptr + 30] = ev.down ? 1 : 0;
+                this._u8[ptr + 31] = ev.repeat ? 1 : 0;
                 break;
 
             case WAPI_EVENT_TEXT_INPUT:
@@ -3500,10 +4927,12 @@ class ThinPlatform {
 // Export for ES modules, CommonJS, or global
 // ---------------------------------------------------------------------------
 
+export { WAPI };
+
 if (typeof module !== "undefined" && module.exports) {
-    module.exports = { ThinPlatform };
+    module.exports = { WAPI };
 } else if (typeof globalThis !== "undefined") {
-    globalThis.ThinPlatform = ThinPlatform;
+    globalThis.WAPI = WAPI;
 }
 
 // ---------------------------------------------------------------------------
@@ -3528,7 +4957,7 @@ if (typeof module !== "undefined" && module.exports) {
     <script src="wapi_shim.js"></script>
     <script>
         (async function() {
-            const wapi = new ThinPlatform();
+            const wapi = new WAPI();
 
             // Get the wasm URL from ?wasm= query parameter, or use a default
             const params = new URLSearchParams(location.search);

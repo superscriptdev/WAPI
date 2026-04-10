@@ -39,8 +39,7 @@ extern "C" {
  *   Offset  0: uint64_t     nextInChain  (address of chained struct, or 0)
  *   Offset  8: int32_t      width        Requested width (0 = host default)
  *   Offset 12: int32_t      height       Requested height (0 = host default)
- *   Offset 16: wapi_flags_t flags        WAPI_SURFACE_FLAG_*
- *   Offset 20: uint32_t     _pad
+ *   Offset 16: uint64_t     flags        WAPI_SURFACE_FLAG_* (wapi_flags_t)
  */
 
 typedef struct wapi_surface_desc_t {
@@ -48,7 +47,6 @@ typedef struct wapi_surface_desc_t {
     int32_t                 width;
     int32_t                 height;
     wapi_flags_t            flags;
-    uint32_t                _pad;
 } wapi_surface_desc_t;
 
 /* ============================================================

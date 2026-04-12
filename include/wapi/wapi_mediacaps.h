@@ -43,6 +43,8 @@ typedef struct wapi_media_caps_query_t {
 
 _Static_assert(sizeof(wapi_media_caps_query_t) == 28,
                "wapi_media_caps_query_t must be 28 bytes");
+_Static_assert(_Alignof(wapi_media_caps_query_t) == 4,
+               "wapi_media_caps_query_t must be 4-byte aligned");
 
 /* ============================================================
  * Media Capabilities Result
@@ -62,6 +64,8 @@ typedef struct wapi_media_caps_result_t {
 
 _Static_assert(sizeof(wapi_media_caps_result_t) == 12,
                "wapi_media_caps_result_t must be 12 bytes");
+_Static_assert(_Alignof(wapi_media_caps_result_t) == 4,
+               "wapi_media_caps_result_t must be 4-byte aligned");
 
 /* ============================================================
  * Query Functions

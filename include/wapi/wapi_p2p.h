@@ -63,6 +63,8 @@ _Static_assert(offsetof(wapi_p2p_ice_server_t, username)    == 16, "");
 _Static_assert(offsetof(wapi_p2p_ice_server_t, credential)  == 32, "");
 _Static_assert(sizeof(wapi_p2p_ice_server_t) == 48,
                "wapi_p2p_ice_server_t must be 48 bytes");
+_Static_assert(_Alignof(wapi_p2p_ice_server_t) == 8,
+               "wapi_p2p_ice_server_t must be 8-byte aligned");
 
 /* ============================================================
  * P2P Connection Configuration
@@ -83,6 +85,8 @@ _Static_assert(offsetof(wapi_p2p_config_t, servers)      == 0, "");
 _Static_assert(offsetof(wapi_p2p_config_t, server_count) == 8, "");
 _Static_assert(sizeof(wapi_p2p_config_t) == 16,
                "wapi_p2p_config_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_p2p_config_t) == 8,
+               "wapi_p2p_config_t must be 8-byte aligned");
 
 /* ============================================================
  * I/O Operations

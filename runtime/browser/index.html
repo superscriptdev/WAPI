@@ -11,7 +11,7 @@
             width: 100vw;
             height: 100vh;
             display: block;
-            touch-action: none; /* Prevent default touch handling */
+            touch-action: none;
         }
         #loading {
             position: fixed;
@@ -22,33 +22,309 @@
             font-size: 14px;
         }
         #loading.hidden { display: none; }
+
+        /* ---------- Debug overlay ---------- */
+        #debug {
+            position: fixed;
+            top: 0; right: 0;
+            width: 460px;
+            max-height: 100vh;
+            color: #ddd;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.35;
+            background: rgba(0,0,0,0.78);
+            border-left: 1px solid #333;
+            border-bottom: 1px solid #333;
+            pointer-events: none;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+        }
+        #debug.hidden { display: none; }
+        #debug-stats {
+            padding: 6px 8px;
+            border-bottom: 1px solid #222;
+            white-space: pre;
+            color: #9fe;
+        }
+        #debug-stats .k { color: #888; }
+        #debug-stats .v { color: #9fe; }
+        #debug-stats .bad { color: #f66; }
+        #debug-stats .warn { color: #fc6; }
+        #debug-log {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px 8px;
+            pointer-events: auto;
+        }
+        #debug-log .line { white-space: pre-wrap; word-break: break-word; }
+        #debug-log .log { color: #bbb; }
+        #debug-log .info { color: #8cf; }
+        #debug-log .warn { color: #fc6; }
+        #debug-log .error { color: #f66; }
+        #debug-log .gpu { color: #f8a; }
+        #debug-log .ts { color: #555; }
+        #debug-toggle {
+            position: fixed;
+            top: 4px; left: 4px;
+            color: #0f0;
+            font-family: monospace;
+            font-size: 11px;
+            background: rgba(0,0,0,0.6);
+            padding: 2px 6px;
+            z-index: 10000;
+            cursor: pointer;
+            user-select: none;
+        }
     </style>
 </head>
 <body>
     <div id="loading">Loading...</div>
+    <div id="debug-toggle" title="Click to toggle debug panel">DBG</div>
+    <div id="debug">
+        <div id="debug-stats">booting…</div>
+        <div id="debug-log"></div>
+    </div>
     <script type="module">
         import { WAPI } from './wapi_shim.js';
 
+        // ---------- Debug overlay plumbing ----------
+        const statsEl = document.getElementById('debug-stats');
+        const logEl = document.getElementById('debug-log');
+        const debugEl = document.getElementById('debug');
+        document.getElementById('debug-toggle').addEventListener('click', () => {
+            debugEl.classList.toggle('hidden');
+        });
+
+        const MAX_LOG_LINES = 500;
+        let logLineCount = 0;
+        function appendLog(kind, args) {
+            const line = document.createElement('div');
+            line.className = 'line ' + kind;
+            const ts = ((performance.now() / 1000)).toFixed(2).padStart(7);
+            const text = args.map(a => {
+                if (a instanceof Error) return (a.stack || a.message || String(a));
+                if (typeof a === 'object') {
+                    try { return JSON.stringify(a); } catch { return String(a); }
+                }
+                return String(a);
+            }).join(' ');
+            line.innerHTML = `<span class="ts">${ts}</span> ${escapeHtml(text)}`;
+            logEl.appendChild(line);
+            logLineCount++;
+            if (logLineCount > MAX_LOG_LINES) {
+                logEl.removeChild(logEl.firstChild);
+                logLineCount--;
+            }
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Patch console to mirror into overlay (keep native behavior too)
+        for (const kind of ['log', 'info', 'warn', 'error']) {
+            const orig = console[kind].bind(console);
+            console[kind] = (...args) => { try { appendLog(kind, args); } catch {} orig(...args); };
+        }
+        window.addEventListener('error', ev => {
+            appendLog('error', ['[window.error]', ev.message, ev.filename + ':' + ev.lineno, ev.error && ev.error.stack]);
+        });
+        window.addEventListener('unhandledrejection', ev => {
+            appendLog('error', ['[unhandledrejection]', ev.reason && (ev.reason.stack || ev.reason.message || ev.reason)]);
+        });
+
+        // ---------- Boot ----------
         async function main() {
+            // performance.now() is ms since navigation start — use it directly
+            // as our "time since page load" metric.
+            const tBoot = performance.now();
+            let loadMs = 0;      // wapi.load() resolved at this offset
+            let firstFrameMs = 0; // first wapi_frame returned at this offset
+
             const params = new URLSearchParams(window.location.search);
-            const wasmUrl = params.get('app') || 'app.wasm';
+            const wasmUrlBase = params.get('app') || 'app.wasm';
+            // Cache-bust: browsers aggressively cache .wasm, which hid fresh
+            // builds during debugging. The server sends no-cache headers too.
+            const wasmUrl = wasmUrlBase + (wasmUrlBase.includes('?') ? '&' : '?') + '_cb=' + Date.now();
+            console.log('[boot] wasm =', wasmUrl);
 
             const wapi = new WAPI();
+            window.wapi = wapi;
+
+            // Hook GPU uncaptured errors as soon as device exists.
+            // wapi_shim initializes _gpuDevice before load() resolves.
+            let gpuErrorCount = 0;
+            let lastGpuError = '';
+            function installGpuErrorHook() {
+                const dev = wapi._gpuDevice;
+                if (!dev || dev.__wapi_hooked) return;
+                dev.__wapi_hooked = true;
+                dev.addEventListener && dev.addEventListener('uncapturederror', ev => {
+                    gpuErrorCount++;
+                    lastGpuError = ev.error && ev.error.message || String(ev);
+                    appendLog('gpu', ['[gpu.uncaptured]', lastGpuError]);
+                });
+                // Some browsers still use onuncapturederror callback
+                dev.onuncapturederror = ev => {
+                    gpuErrorCount++;
+                    lastGpuError = ev.error && ev.error.message || String(ev);
+                    appendLog('gpu', ['[gpu.uncaptured]', lastGpuError]);
+                };
+                // Log device loss
+                dev.lost && dev.lost.then(info => {
+                    appendLog('gpu', ['[gpu.lost]', info && (info.reason + ': ' + info.message)]);
+                });
+                console.log('[boot] GPU error hooks installed');
+            }
 
             try {
                 await wapi.load(wasmUrl, {
                     preopens: { '/': {}, '/tmp': {} },
                     args: [wasmUrl, ...params.getAll('arg')],
-                    env: {},
+                    env: { DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1' },
                 });
+                loadMs = performance.now();
+                console.log(`[boot] wasm loaded in ${loadMs.toFixed(0)}ms`);
                 document.getElementById('loading').classList.add('hidden');
+                installGpuErrorHook();
+
+                // ---------- Frame loop with rich instrumentation ----------
+                const origWapiFrame = wapi.instance.exports.wapi_frame;
+
+                // Stop the shim's own loop, we drive it here.
+                wapi._running = false;
+                if (wapi._frameHandle) cancelAnimationFrame(wapi._frameHandle);
+                wapi._running = true;
+
+                let frameCount = 0;
+                let frameCountTotal = 0;
+                let lastStatTime = performance.now();
+                let lastFrameMs = 0;
+                let maxFrameMs = 0;
+                let hungAt = 0; // performance.now() when last wapi_frame call started and hasn't returned
+                let lastResult = 0;
+                let lastErr = '';
+                let stopped = false;
+                let stopReason = '';
+
+                // Watchdog: if a frame takes >2s, flag it.
+                setInterval(() => {
+                    if (hungAt > 0) {
+                        const waited = (performance.now() - hungAt).toFixed(0);
+                        if (waited > 2000) {
+                            appendLog('error', [`[watchdog] wapi_frame stuck for ${waited}ms — likely infinite loop in C# side`]);
+                            hungAt = -1; // only warn once
+                        }
+                    }
+                }, 1000);
+
+                let traceNext = false;
+                window.traceNextFrame = () => { traceNext = true; };
+                let lastDraws = 0, lastVerts = 0;
+                function frame(ts) {
+                    if (!wapi._running) return;
+                    const t0 = performance.now();
+                    hungAt = t0;
+                    wapi._drawStats.draws = 0;
+                    wapi._drawStats.totalVerts = 0;
+                    wapi._drawStats.submits = 0;
+                    wapi._drawStats.writes = 0;
+                    if (traceNext) { wapi._drawTrace = []; traceNext = false; }
+                    const ns = BigInt(Math.round(ts * 1_000_000));
+                    try {
+                        lastResult = origWapiFrame(ns);
+                        if (lastResult === -27) {
+                            wapi._running = false;
+                            stopped = true;
+                            stopReason = 'module returned -27 (WAPI_ERR_CANCELED)';
+                            appendLog('warn', ['[frame] ' + stopReason]);
+                            return;
+                        }
+                    } catch (e) {
+                        hungAt = 0;
+                        if (e.message && e.message.startsWith("wapi_exit")) {
+                            stopped = true;
+                            stopReason = 'wapi_exit: ' + e.message;
+                            appendLog('warn', ['[frame] ' + stopReason]);
+                            return;
+                        }
+                        lastErr = (e.stack || e.message || String(e));
+                        stopped = true;
+                        stopReason = 'exception: ' + (e.message || e);
+                        appendLog('error', ['[frame] threw:', lastErr]);
+                        wapi._running = false;
+                        return;
+                    }
+                    hungAt = 0;
+                    const dt = performance.now() - t0;
+                    lastFrameMs = dt;
+                    if (dt > maxFrameMs) maxFrameMs = dt;
+                    frameCount++;
+                    frameCountTotal++;
+                    if (frameCountTotal === 1) {
+                        firstFrameMs = performance.now();
+                        console.log(`[boot] first frame at ${firstFrameMs.toFixed(0)}ms (load ${loadMs.toFixed(0)}ms + init ${(firstFrameMs - loadMs).toFixed(0)}ms)`);
+                    }
+                    lastDraws = wapi._drawStats.draws;
+                    lastVerts = wapi._drawStats.totalVerts;
+                    window.__lastSubmits = wapi._drawStats.submits;
+                    window.__lastWrites = wapi._drawStats.writes;
+                    if (wapi._drawTrace) {
+                        const trace = wapi._drawTrace;
+                        wapi._drawTrace = null;
+                        appendLog('info', [`[trace] frame#${frameCountTotal} draws=${lastDraws} verts=${lastVerts}`]);
+                        for (let i = 0; i < trace.length; i++) {
+                            appendLog('info', ['  ' + trace[i]]);
+                        }
+                    }
+                    wapi._frameHandle = requestAnimationFrame(frame);
+                }
+                wapi._frameHandle = requestAnimationFrame(frame);
+
+                // Stats updater
+                function fmt(n, w = 6) { return String(n).padStart(w); }
+                function updateStats() {
+                    const now = performance.now();
+                    const dt = now - lastStatTime;
+                    const fps = (frameCount / (dt / 1000));
+                    const avgMs = frameCount > 0 ? dt / frameCount : 0;
+                    frameCount = 0;
+                    lastStatTime = now;
+
+                    const mem = wapi.memory ? (wapi.memory.buffer.byteLength / 1048576).toFixed(1) + ' MB' : '-';
+                    const surfaces = wapi._surfaces ? wapi._surfaces.size : 0;
+                    const handles = wapi.handles && wapi.handles.map ? wapi.handles.map.size : '-';
+                    const evq = wapi._eventQueue ? wapi._eventQueue.length : '-';
+                    const running = wapi._running;
+                    const gpuCfg = wapi._gpuSurfaceConfigs ? wapi._gpuSurfaceConfigs.size : 0;
+
+                    const hang = hungAt > 0 ? ` HUNG ${(now - hungAt).toFixed(0)}ms` : '';
+
+                    let s = '';
+                    const bootStr = firstFrameMs > 0
+                        ? `${(firstFrameMs / 1000).toFixed(2)}s (load ${(loadMs / 1000).toFixed(2)}s + init ${((firstFrameMs - loadMs) / 1000).toFixed(2)}s)`
+                        : (loadMs > 0 ? `load ${(loadMs / 1000).toFixed(2)}s, waiting for 1st frame…` : 'loading wasm…');
+                    s += `boot: ${bootStr}\n`;
+                    s += `fps: ${fps.toFixed(1).padStart(5)}   avg: ${avgMs.toFixed(1).padStart(5)}ms   last: ${lastFrameMs.toFixed(1).padStart(5)}ms   max: ${maxFrameMs.toFixed(1).padStart(5)}ms\n`;
+                    s += `frames: ${fmt(frameCountTotal)}   running: ${running}   lastResult: ${lastResult}${hang}\n`;
+                    s += `draws/f: ${fmt(lastDraws, 5)}   verts/f: ${fmt(lastVerts, 6)}   submits/f: ${fmt(window.__lastSubmits || 0, 3)}   writes/f: ${fmt(window.__lastWrites || 0, 4)}\n`;
+                    s += `surfaces: ${surfaces}   gpuCfgs: ${gpuCfg}   handles: ${handles}   evq: ${evq}   mem: ${mem}\n`;
+                    s += `gpuErrors: ${gpuErrorCount}`;
+                    if (lastGpuError) s += `  last: ${lastGpuError.slice(0, 120)}`;
+                    if (stopReason) s += `\nSTOPPED: ${stopReason}`;
+                    statsEl.textContent = s;
+                }
+                setInterval(updateStats, 250);
+                updateStats();
+
             } catch (e) {
                 document.getElementById('loading').textContent =
                     `Failed to load: ${e.message}`;
-                console.error(e);
+                console.error('[boot] load failed:', e);
             }
         }
-
         main();
     </script>
 </body>

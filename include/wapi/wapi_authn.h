@@ -62,6 +62,8 @@ typedef struct wapi_authn_credential_t {
 
 _Static_assert(sizeof(wapi_authn_credential_t) == 64,
                "wapi_authn_credential_t must be 64 bytes");
+_Static_assert(_Alignof(wapi_authn_credential_t) == 8,
+               "wapi_authn_credential_t must be 8-byte aligned");
 
 /* ============================================================
  * Authentication Functions

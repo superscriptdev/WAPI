@@ -53,6 +53,8 @@ typedef struct wapi_serial_config_t {
 
 _Static_assert(sizeof(wapi_serial_config_t) == 16,
                "wapi_serial_config_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_serial_config_t) == 8,
+               "wapi_serial_config_t must be 8-byte aligned");
 
 /* ============================================================
  * Serial Functions

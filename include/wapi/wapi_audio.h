@@ -52,6 +52,7 @@ typedef struct wapi_audio_spec_t {
 } wapi_audio_spec_t;
 
 _Static_assert(sizeof(wapi_audio_spec_t) == 12, "wapi_audio_spec_t must be 12 bytes");
+_Static_assert(_Alignof(wapi_audio_spec_t) == 4, "wapi_audio_spec_t must be 4-byte aligned");
 
 /* ============================================================
  * Default Device IDs

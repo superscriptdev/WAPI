@@ -271,7 +271,7 @@ Each field is aligned to its **natural alignment**:
 |-------------|---------|-----------|
 | `uint8_t`   | 1 byte  | 1 byte    |
 | `uint16_t`  | 2 bytes | 2 bytes   |
-| `int32_t` / `uint32_t` / `float` / pointer | 4 bytes | 4 bytes |
+| `int32_t` / `uint32_t` / `float` | 4 bytes | 4 bytes |
 | `int64_t` / `uint64_t` / `double` | 8 bytes | 8 bytes |
 
 Struct alignment equals the alignment of its most-aligned field.
@@ -334,6 +334,7 @@ All struct sizes AND field offsets are verified at compile time using `_Static_a
 Every ABI struct must have:
 1. An `offsetof` assertion for **every field** (including `_pad` / `_reserved` fields).
 2. A `sizeof` assertion for the total struct size.
+3. An `_Alignof` assertion for the struct's alignment.
 
 ```c
 /* Example: wapi_io_op_t (80 bytes, align 8) */
@@ -350,6 +351,7 @@ _Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
 _Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
 _Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
 _Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
+_Static_assert(_Alignof(wapi_io_op_t) == 8, "wapi_io_op_t must be 8-byte aligned");
 
 ```
 
@@ -479,6 +481,8 @@ static int32_t logging_submit(void* impl, const wapi_io_op_t* ops, wapi_size_t c
     return state->inner->submit(state->inner->impl, ops, count);
 }
 ```
+
+**Vtable scope and module boundaries.** Within a single Wasm module (build-time linked libraries), vtable function pointers are ordinary `call_indirect` targets — passing and wrapping `const wapi_io_t*` between functions works directly because all code shares the same linear memory and function table. Across runtime-linked module boundaries, vtable pointers cannot be passed directly: each module has its own isolated linear memory and function table, so a function pointer valid in one module is meaningless in another. The host mediates cross-module vtable passing via proxy vtables (see [Section 10.7](#107-io-for-runtime-modules)).
 
 ### 7.3 Operation Descriptor (`wapi_io_op_t`)
 
@@ -1088,15 +1092,42 @@ Every runtime module gets its own module-owned vtables from `wapi_io_get()` and 
 
 **Module-owned I/O is sandboxed.** A child module's `wapi_io_get()` returns a vtable that can only access the module's transient and persistent filesystems (see Section 7.8). It cannot access the real filesystem, network, or any permission-gated capability.
 
-**Per-call capabilities are explicit.** For capabilities beyond the sandbox, the caller passes its own `wapi_io_t` (or a wrapped version) as a function parameter:
+**Per-call capabilities are explicit.** For capabilities beyond the sandbox, the caller grants its own `wapi_io_t` (or a wrapped version) to the child. The conceptual pattern is the same in both build-time and runtime linking — dependency injection — but the mechanism differs because of address space isolation.
+
+In **build-time linking**, all code shares a single linear memory and function table. Passing `const wapi_io_t*` works directly — the pointer is valid and the function pointer fields are callable via `call_indirect`:
 
 ```c
-/* The child module's function signature — explicit in its requirements */
+/* Build-time: direct vtable passing within the same module */
 image_t* load_image(const wapi_io_t* io, const wapi_allocator_t* alloc,
                     const char* path, size_t path_len);
 ```
 
-The caller controls what the callee can do by choosing what to pass — the real host I/O, a restricted wrapper, a logging layer, or a mock. This is the same pattern in both build-time and runtime linking.
+In **runtime linking**, vtable pointers cannot cross module boundaries. Each module has its own linear memory and function table — a function pointer valid in the caller's function table is meaningless in the child's. Instead, the caller creates a **host-mediated proxy** in the child's address space using `wapi_module_io_proxy`:
+
+```c
+/* Create a proxy wapi_io_t in the child's linear memory.
+   The proxy's function pointers are host imports in the child's
+   function table that forward all calls back to the caller's io. */
+uint32_t child_io_ptr;
+wapi_module_io_proxy(module, io, &child_io_ptr);
+
+/* Pass the child-local pointer as a normal argument */
+wapi_val_t args[] = {
+    { .kind = WAPI_VAL_I32, .of.i32 = child_io_ptr },
+    { .kind = WAPI_VAL_I32, .of.i32 = path_off },
+    { .kind = WAPI_VAL_I32, .of.i32 = path_len },
+};
+wapi_module_call(module, func, args, 3, &result, 1);
+
+/* Destroy the proxy when the child no longer needs it */
+wapi_module_io_proxy_destroy(module, child_io_ptr);
+```
+
+From the child's perspective, the proxy is an ordinary `const wapi_io_t*`. The child calls `io->submit(...)`, `io->poll(...)`, etc. via `call_indirect` — exactly as it would with a vtable from `wapi_io_get()` or one passed by a build-time linked caller. The host transparently marshals data between the child's and caller's linear memories when forwarding calls.
+
+The same proxy mechanism applies to `wapi_allocator_t` via `wapi_module_allocator_proxy` / `wapi_module_allocator_proxy_destroy`.
+
+The caller controls what the callee can do by choosing what to proxy — the real host I/O, a restricted wrapper, a logging layer, or a mock.
 
 **Security properties:**
 

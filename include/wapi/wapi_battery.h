@@ -47,6 +47,8 @@ typedef struct wapi_battery_info_t {
 
 _Static_assert(sizeof(wapi_battery_info_t) == 16,
                "wapi_battery_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_battery_info_t) == 4,
+               "wapi_battery_info_t must be 4-byte aligned");
 
 /* ============================================================
  * Battery Functions

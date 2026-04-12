@@ -60,6 +60,8 @@ typedef struct wapi_media_metadata_t {
 
 _Static_assert(sizeof(wapi_media_metadata_t) == 64,
                "wapi_media_metadata_t must be 64 bytes");
+_Static_assert(_Alignof(wapi_media_metadata_t) == 8,
+               "wapi_media_metadata_t must be 8-byte aligned");
 
 /* ============================================================
  * Media Session Functions

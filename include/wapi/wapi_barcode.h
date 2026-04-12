@@ -63,6 +63,8 @@ typedef struct wapi_barcode_result_t {
 
 _Static_assert(sizeof(wapi_barcode_result_t) == 32,
                "wapi_barcode_result_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_barcode_result_t) == 8,
+               "wapi_barcode_result_t must be 8-byte aligned");
 
 /* ============================================================
  * Barcode Functions

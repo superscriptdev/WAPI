@@ -248,6 +248,11 @@ typedef struct wapi_runtime_t {
     float                   mouse_y;
     uint32_t                mouse_buttons;
 
+    /* Pointer state (unified — tracks most recent position from any source) */
+    float                   pointer_x;
+    float                   pointer_y;
+    uint32_t                pointer_buttons;
+
     /* Host memory allocator for wasm heap */
     wapi_mem_alloc_t        mem_allocs[WAPI_MEM_MAX_ALLOCS];
     int                     mem_alloc_count;

@@ -578,6 +578,14 @@ typedef enum wapi_event_type_t {
     WAPI_EVENT_PEN_BUTTON_DOWN     = 0x805,
     WAPI_EVENT_PEN_BUTTON_UP       = 0x806,
 
+    /* Pointer (unified) events (0x900-0x9FF) */
+    WAPI_EVENT_POINTER_DOWN        = 0x900,
+    WAPI_EVENT_POINTER_UP          = 0x901,
+    WAPI_EVENT_POINTER_MOTION      = 0x902,
+    WAPI_EVENT_POINTER_CANCEL      = 0x903,
+    WAPI_EVENT_POINTER_ENTER       = 0x904,
+    WAPI_EVENT_POINTER_LEAVE       = 0x905,
+
     /* Drop events (0x1000-0x10FF) */
     WAPI_EVENT_DROP_FILE        = 0x1000,
     WAPI_EVENT_DROP_TEXT        = 0x1001,
@@ -835,11 +843,11 @@ typedef struct wapi_touch_event_t {
     uint64_t    timestamp;
     int32_t     touch_handle; /* Touch device handle */
     int32_t     finger_index; /* 0-based finger index */
-    float       x;            /* Normalized 0..1 */
-    float       y;
-    float       dx;           /* Normalized -1..1 */
-    float       dy;
-    float       pressure;     /* Normalized 0..1 */
+    float       x;            /* Surface-pixel X */
+    float       y;            /* Surface-pixel Y */
+    float       dx;           /* Relative motion X (surface pixels) */
+    float       dy;           /* Relative motion Y (surface pixels) */
+    float       pressure;     /* 0.0 to 1.0 */
     uint32_t    _pad;
 } wapi_touch_event_t;
 
@@ -913,6 +921,30 @@ typedef struct wapi_pen_event_t {
     float       distance;   /* Distance from surface (0.0 to 1.0) */
     uint32_t    _pad2;
 } wapi_pen_event_t;
+
+/** Unified pointer event (synthesized from mouse, touch, pen) */
+typedef struct wapi_pointer_event_t {
+    uint32_t    type;           /* WAPI_EVENT_POINTER_* */
+    uint32_t    surface_id;     /* Target surface handle */
+    uint64_t    timestamp;      /* Nanoseconds (monotonic clock) */
+    int32_t     pointer_id;     /* 0=mouse, 1+=touch fingers, <0=pen */
+    uint8_t     pointer_type;   /* wapi_pointer_type_t */
+    uint8_t     button;         /* Button that changed (WAPI_MOUSE_BUTTON_*, 0=none) */
+    uint8_t     buttons;        /* Bitmask of currently pressed buttons */
+    uint8_t     _pad0;
+    float       x;              /* Surface-pixel X */
+    float       y;              /* Surface-pixel Y */
+    float       dx;             /* Relative motion X */
+    float       dy;             /* Relative motion Y */
+    float       pressure;       /* 0.0 to 1.0 */
+    float       tilt_x;         /* -90 to 90 degrees */
+    float       tilt_y;         /* -90 to 90 degrees */
+    float       twist;          /* 0 to 360 degrees */
+    float       width;          /* Contact width in CSS px (1.0 for mouse/pen) */
+    float       height;         /* Contact height in CSS px (1.0 for mouse/pen) */
+    uint32_t    _reserved;
+    uint32_t    _pad1;
+} wapi_pointer_event_t;
 
 /** Gamepad sensor event */
 typedef struct wapi_gamepad_sensor_event_t {
@@ -1055,6 +1087,7 @@ typedef union wapi_event_t {
     wapi_surface_event_t              surface;
     wapi_drop_event_t                 drop;
     wapi_pen_event_t                  pen;
+    wapi_pointer_event_t              pointer;
     wapi_gesture_event_t              gesture;
     wapi_display_event_t              display;
     wapi_hotkey_event_t               hotkey;
@@ -1400,9 +1433,11 @@ _Static_assert(offsetof(wapi_version_t, minor)    == 2, "");
 _Static_assert(offsetof(wapi_version_t, patch)    == 4, "");
 _Static_assert(offsetof(wapi_version_t, reserved) == 6, "");
 _Static_assert(sizeof(wapi_version_t) == 8, "wapi_version_t must be 8 bytes");
+_Static_assert(_Alignof(wapi_version_t) == 2, "wapi_version_t must be 2-byte aligned");
 
 /* --- Event Union (128 bytes) --- */
 _Static_assert(sizeof(wapi_event_t) == 128, "wapi_event_t must be 128 bytes");
+_Static_assert(_Alignof(wapi_event_t) == 8, "wapi_event_t must be 8-byte aligned");
 
 /* --- I/O Operation (64 bytes, align 8) --- */
 _Static_assert(offsetof(wapi_io_op_t, opcode)     ==  0, "");
@@ -1418,12 +1453,14 @@ _Static_assert(offsetof(wapi_io_op_t, user_data)  == 56, "");
 _Static_assert(offsetof(wapi_io_op_t, result_ptr) == 64, "");
 _Static_assert(offsetof(wapi_io_op_t, reserved)   == 72, "");
 _Static_assert(sizeof(wapi_io_op_t) == 80, "wapi_io_op_t must be 80 bytes");
+_Static_assert(_Alignof(wapi_io_op_t) == 8, "wapi_io_op_t must be 8-byte aligned");
 
 /* --- Event Common Header (16 bytes, align 8) --- */
 _Static_assert(offsetof(wapi_event_common_t, type)       == 0, "");
 _Static_assert(offsetof(wapi_event_common_t, surface_id) == 4, "");
 _Static_assert(offsetof(wapi_event_common_t, timestamp)  == 8, "");
 _Static_assert(sizeof(wapi_event_common_t) == 16, "wapi_event_common_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_event_common_t) == 8, "wapi_event_common_t must be 8-byte aligned");
 
 /* --- Keyboard Event (32 bytes) --- */
 _Static_assert(offsetof(wapi_keyboard_event_t, type)            ==  0, "");
@@ -1436,6 +1473,7 @@ _Static_assert(offsetof(wapi_keyboard_event_t, mod)             == 28, "");
 _Static_assert(offsetof(wapi_keyboard_event_t, down)            == 30, "");
 _Static_assert(offsetof(wapi_keyboard_event_t, repeat)          == 31, "");
 _Static_assert(sizeof(wapi_keyboard_event_t) == 32, "");
+_Static_assert(_Alignof(wapi_keyboard_event_t) == 8, "");
 
 /* --- Text Input Event (48 bytes) --- */
 _Static_assert(offsetof(wapi_text_input_event_t, type)       ==  0, "");
@@ -1443,6 +1481,7 @@ _Static_assert(offsetof(wapi_text_input_event_t, surface_id) ==  4, "");
 _Static_assert(offsetof(wapi_text_input_event_t, timestamp)  ==  8, "");
 _Static_assert(offsetof(wapi_text_input_event_t, text)       == 16, "");
 _Static_assert(sizeof(wapi_text_input_event_t) == 48, "");
+_Static_assert(_Alignof(wapi_text_input_event_t) == 8, "");
 
 /* --- Mouse Motion Event (40 bytes) --- */
 _Static_assert(offsetof(wapi_mouse_motion_event_t, type)         ==  0, "");
@@ -1455,6 +1494,7 @@ _Static_assert(offsetof(wapi_mouse_motion_event_t, y)            == 28, "");
 _Static_assert(offsetof(wapi_mouse_motion_event_t, xrel)         == 32, "");
 _Static_assert(offsetof(wapi_mouse_motion_event_t, yrel)         == 36, "");
 _Static_assert(sizeof(wapi_mouse_motion_event_t) == 40, "");
+_Static_assert(_Alignof(wapi_mouse_motion_event_t) == 8, "");
 
 /* --- Mouse Button Event (32 bytes) --- */
 _Static_assert(offsetof(wapi_mouse_button_event_t, type)       ==  0, "");
@@ -1468,6 +1508,7 @@ _Static_assert(offsetof(wapi_mouse_button_event_t, _pad)       == 23, "");
 _Static_assert(offsetof(wapi_mouse_button_event_t, x)          == 24, "");
 _Static_assert(offsetof(wapi_mouse_button_event_t, y)          == 28, "");
 _Static_assert(sizeof(wapi_mouse_button_event_t) == 32, "");
+_Static_assert(_Alignof(wapi_mouse_button_event_t) == 8, "");
 
 /* --- Mouse Wheel Event (32 bytes) --- */
 _Static_assert(offsetof(wapi_mouse_wheel_event_t, type)         ==  0, "");
@@ -1478,6 +1519,7 @@ _Static_assert(offsetof(wapi_mouse_wheel_event_t, _pad)         == 20, "");
 _Static_assert(offsetof(wapi_mouse_wheel_event_t, x)            == 24, "");
 _Static_assert(offsetof(wapi_mouse_wheel_event_t, y)            == 28, "");
 _Static_assert(sizeof(wapi_mouse_wheel_event_t) == 32, "");
+_Static_assert(_Alignof(wapi_mouse_wheel_event_t) == 8, "");
 
 /* --- Touch Event (48 bytes) --- */
 _Static_assert(offsetof(wapi_touch_event_t, type)         ==  0, "");
@@ -1491,6 +1533,7 @@ _Static_assert(offsetof(wapi_touch_event_t, dx)           == 32, "");
 _Static_assert(offsetof(wapi_touch_event_t, dy)           == 36, "");
 _Static_assert(offsetof(wapi_touch_event_t, pressure)     == 40, "");
 _Static_assert(sizeof(wapi_touch_event_t) == 48, "");
+_Static_assert(_Alignof(wapi_touch_event_t) == 8, "");
 
 /* --- Gamepad Axis Event (32 bytes) --- */
 _Static_assert(offsetof(wapi_gamepad_axis_event_t, type)           ==  0, "");
@@ -1502,6 +1545,7 @@ _Static_assert(offsetof(wapi_gamepad_axis_event_t, _pad)           == 21, "");
 _Static_assert(offsetof(wapi_gamepad_axis_event_t, value)          == 24, "");
 _Static_assert(offsetof(wapi_gamepad_axis_event_t, _pad2)          == 26, "");
 _Static_assert(sizeof(wapi_gamepad_axis_event_t) == 32, "");
+_Static_assert(_Alignof(wapi_gamepad_axis_event_t) == 8, "");
 
 /* --- Gamepad Button Event (24 bytes) --- */
 _Static_assert(offsetof(wapi_gamepad_button_event_t, type)           ==  0, "");
@@ -1512,6 +1556,7 @@ _Static_assert(offsetof(wapi_gamepad_button_event_t, button)         == 20, "");
 _Static_assert(offsetof(wapi_gamepad_button_event_t, down)           == 21, "");
 _Static_assert(offsetof(wapi_gamepad_button_event_t, _pad)           == 22, "");
 _Static_assert(sizeof(wapi_gamepad_button_event_t) == 24, "");
+_Static_assert(_Alignof(wapi_gamepad_button_event_t) == 8, "");
 
 /* --- Device Event (40 bytes) --- */
 _Static_assert(offsetof(wapi_device_event_t, type)          ==  0, "");
@@ -1521,6 +1566,7 @@ _Static_assert(offsetof(wapi_device_event_t, device_type)   == 16, "");
 _Static_assert(offsetof(wapi_device_event_t, device_handle) == 20, "");
 _Static_assert(offsetof(wapi_device_event_t, uid)           == 24, "");
 _Static_assert(sizeof(wapi_device_event_t) == 40, "");
+_Static_assert(_Alignof(wapi_device_event_t) == 8, "");
 
 /* --- Surface Event (24 bytes) --- */
 _Static_assert(offsetof(wapi_surface_event_t, type)       ==  0, "");
@@ -1529,6 +1575,7 @@ _Static_assert(offsetof(wapi_surface_event_t, timestamp)  ==  8, "");
 _Static_assert(offsetof(wapi_surface_event_t, data1)      == 16, "");
 _Static_assert(offsetof(wapi_surface_event_t, data2)      == 20, "");
 _Static_assert(sizeof(wapi_surface_event_t) == 24, "");
+_Static_assert(_Alignof(wapi_surface_event_t) == 8, "");
 
 /* --- Pen Event (56 bytes) --- */
 _Static_assert(offsetof(wapi_pen_event_t, type)       ==  0, "");
@@ -1546,6 +1593,28 @@ _Static_assert(offsetof(wapi_pen_event_t, tilt_y)     == 40, "");
 _Static_assert(offsetof(wapi_pen_event_t, twist)      == 44, "");
 _Static_assert(offsetof(wapi_pen_event_t, distance)   == 48, "");
 _Static_assert(sizeof(wapi_pen_event_t) == 56, "");
+_Static_assert(_Alignof(wapi_pen_event_t) == 8, "");
+
+/* --- Pointer Event (72 bytes) --- */
+_Static_assert(offsetof(wapi_pointer_event_t, type)         ==  0, "");
+_Static_assert(offsetof(wapi_pointer_event_t, surface_id)   ==  4, "");
+_Static_assert(offsetof(wapi_pointer_event_t, timestamp)    ==  8, "");
+_Static_assert(offsetof(wapi_pointer_event_t, pointer_id)   == 16, "");
+_Static_assert(offsetof(wapi_pointer_event_t, pointer_type) == 20, "");
+_Static_assert(offsetof(wapi_pointer_event_t, button)       == 21, "");
+_Static_assert(offsetof(wapi_pointer_event_t, buttons)      == 22, "");
+_Static_assert(offsetof(wapi_pointer_event_t, x)            == 24, "");
+_Static_assert(offsetof(wapi_pointer_event_t, y)            == 28, "");
+_Static_assert(offsetof(wapi_pointer_event_t, dx)           == 32, "");
+_Static_assert(offsetof(wapi_pointer_event_t, dy)           == 36, "");
+_Static_assert(offsetof(wapi_pointer_event_t, pressure)     == 40, "");
+_Static_assert(offsetof(wapi_pointer_event_t, tilt_x)       == 44, "");
+_Static_assert(offsetof(wapi_pointer_event_t, tilt_y)       == 48, "");
+_Static_assert(offsetof(wapi_pointer_event_t, twist)        == 52, "");
+_Static_assert(offsetof(wapi_pointer_event_t, width)        == 56, "");
+_Static_assert(offsetof(wapi_pointer_event_t, height)       == 60, "");
+_Static_assert(sizeof(wapi_pointer_event_t) == 72, "wapi_pointer_event_t must be 72 bytes");
+_Static_assert(_Alignof(wapi_pointer_event_t) == 8, "wapi_pointer_event_t must be 8-byte aligned");
 
 /* --- Gamepad Sensor Event (40 bytes) --- */
 _Static_assert(offsetof(wapi_gamepad_sensor_event_t, type)           ==  0, "");
@@ -1555,6 +1624,7 @@ _Static_assert(offsetof(wapi_gamepad_sensor_event_t, gamepad_handle) == 16, "");
 _Static_assert(offsetof(wapi_gamepad_sensor_event_t, sensor)         == 20, "");
 _Static_assert(offsetof(wapi_gamepad_sensor_event_t, data)           == 24, "");
 _Static_assert(sizeof(wapi_gamepad_sensor_event_t) == 40, "");
+_Static_assert(_Alignof(wapi_gamepad_sensor_event_t) == 8, "");
 
 /* --- Gamepad Touchpad Event (40 bytes) --- */
 _Static_assert(offsetof(wapi_gamepad_touchpad_event_t, type)           ==  0, "");
@@ -1568,6 +1638,7 @@ _Static_assert(offsetof(wapi_gamepad_touchpad_event_t, x)              == 24, ""
 _Static_assert(offsetof(wapi_gamepad_touchpad_event_t, y)              == 28, "");
 _Static_assert(offsetof(wapi_gamepad_touchpad_event_t, pressure)       == 32, "");
 _Static_assert(sizeof(wapi_gamepad_touchpad_event_t) == 40, "");
+_Static_assert(_Alignof(wapi_gamepad_touchpad_event_t) == 8, "");
 
 /* --- Gesture Event (40 bytes) --- */
 _Static_assert(offsetof(wapi_gesture_event_t, type)         ==  0, "");
@@ -1579,6 +1650,7 @@ _Static_assert(offsetof(wapi_gesture_event_t, magnitude)    == 24, "");
 _Static_assert(offsetof(wapi_gesture_event_t, x)            == 28, "");
 _Static_assert(offsetof(wapi_gesture_event_t, y)            == 32, "");
 _Static_assert(sizeof(wapi_gesture_event_t) == 40, "");
+_Static_assert(_Alignof(wapi_gesture_event_t) == 8, "");
 
 /* --- I/O Completion Event (32 bytes) --- */
 _Static_assert(offsetof(wapi_io_event_t, type)      ==  0, "");
@@ -1588,6 +1660,7 @@ _Static_assert(offsetof(wapi_io_event_t, result)    == 16, "");
 _Static_assert(offsetof(wapi_io_event_t, flags)     == 20, "");
 _Static_assert(offsetof(wapi_io_event_t, user_data) == 24, "");
 _Static_assert(sizeof(wapi_io_event_t) == 32, "wapi_io_event_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_io_event_t) == 8, "wapi_io_event_t must be 8-byte aligned");
 
 /* --- Address-containing structs (layout identical on all platforms) --- */
 
@@ -1595,12 +1668,14 @@ _Static_assert(sizeof(wapi_io_event_t) == 32, "wapi_io_event_t must be 32 bytes"
 _Static_assert(offsetof(wapi_string_view_t, data)   == 0, "");
 _Static_assert(offsetof(wapi_string_view_t, length) == 8, "");
 _Static_assert(sizeof(wapi_string_view_t) == 16, "wapi_string_view_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_string_view_t) == 8, "wapi_string_view_t must be 8-byte aligned");
 
 /* Chained Struct (16 bytes, align 8) */
 _Static_assert(offsetof(wapi_chained_struct_t, next)  == 0, "");
 _Static_assert(offsetof(wapi_chained_struct_t, sType) == 8, "");
 _Static_assert(offsetof(wapi_chained_struct_t, _pad)  == 12, "");
 _Static_assert(sizeof(wapi_chained_struct_t) == 16, "wapi_chained_struct_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_chained_struct_t) == 8, "wapi_chained_struct_t must be 8-byte aligned");
 
 /* --- Pointer-containing structs (wasm32 only, build-time vtables) --- */
 #ifdef __wasm__
@@ -1611,6 +1686,7 @@ _Static_assert(offsetof(wapi_allocator_t, alloc_fn)   ==  4, "");
 _Static_assert(offsetof(wapi_allocator_t, free_fn)    ==  8, "");
 _Static_assert(offsetof(wapi_allocator_t, realloc_fn) == 12, "");
 _Static_assert(sizeof(wapi_allocator_t) == 16, "wapi_allocator_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_allocator_t) == 4, "wapi_allocator_t must be 4-byte aligned");
 
 /* I/O Vtable (24 bytes, align 4) */
 _Static_assert(offsetof(wapi_io_t, impl)                 ==  0, "");
@@ -1623,11 +1699,13 @@ _Static_assert(offsetof(wapi_io_t, capability_supported) == 24, "");
 _Static_assert(offsetof(wapi_io_t, capability_version)   == 28, "");
 _Static_assert(offsetof(wapi_io_t, perm_query)           == 32, "");
 _Static_assert(sizeof(wapi_io_t) == 36, "wapi_io_t must be 36 bytes");
+_Static_assert(_Alignof(wapi_io_t) == 4, "wapi_io_t must be 4-byte aligned");
 
 /* Panic Handler (8 bytes, align 4) */
 _Static_assert(offsetof(wapi_panic_handler_t, impl) == 0, "");
 _Static_assert(offsetof(wapi_panic_handler_t, fn)   == 4, "");
 _Static_assert(sizeof(wapi_panic_handler_t) == 8, "wapi_panic_handler_t must be 8 bytes");
+_Static_assert(_Alignof(wapi_panic_handler_t) == 4, "wapi_panic_handler_t must be 4-byte aligned");
 
 /* Drop Event (32 bytes) */
 _Static_assert(offsetof(wapi_drop_event_t, type)       ==  0, "");
@@ -1636,6 +1714,7 @@ _Static_assert(offsetof(wapi_drop_event_t, timestamp)  ==  8, "");
 _Static_assert(offsetof(wapi_drop_event_t, data)       == 16, "");
 _Static_assert(offsetof(wapi_drop_event_t, data_len)   == 24, "");
 _Static_assert(sizeof(wapi_drop_event_t) == 32, "");
+_Static_assert(_Alignof(wapi_drop_event_t) == 8, "");
 
 #endif /* __wasm__ */
 

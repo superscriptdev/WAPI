@@ -168,6 +168,8 @@ typedef struct wapi_text_glyph_info_t {
 
 _Static_assert(sizeof(wapi_text_glyph_info_t) == 8,
     "wapi_text_glyph_info_t must be 8 bytes");
+_Static_assert(_Alignof(wapi_text_glyph_info_t) == 4,
+    "wapi_text_glyph_info_t must be 4-byte aligned");
 
 /**
  * Per-glyph positioning from shaping.
@@ -187,6 +189,8 @@ typedef struct wapi_text_glyph_position_t {
 
 _Static_assert(sizeof(wapi_text_glyph_position_t) == 16,
     "wapi_text_glyph_position_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_text_glyph_position_t) == 4,
+    "wapi_text_glyph_position_t must be 4-byte aligned");
 
 /**
  * Font metrics at a given size.
@@ -208,6 +212,8 @@ typedef struct wapi_text_font_metrics_t {
 
 _Static_assert(sizeof(wapi_text_font_metrics_t) == 36,
     "wapi_text_font_metrics_t must be 36 bytes");
+_Static_assert(_Alignof(wapi_text_font_metrics_t) == 4,
+    "wapi_text_font_metrics_t must be 4-byte aligned");
 
 /* ============================================================
  * Text Shaping Functions
@@ -310,6 +316,8 @@ typedef struct wapi_text_layout_constraints_t {
 
 _Static_assert(sizeof(wapi_text_layout_constraints_t) == 16,
     "wapi_text_layout_constraints_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_text_layout_constraints_t) == 4,
+    "wapi_text_layout_constraints_t must be 4-byte aligned");
 
 /**
  * Per-line layout information.
@@ -339,6 +347,8 @@ typedef struct wapi_text_line_info_t {
 
 _Static_assert(sizeof(wapi_text_line_info_t) == 36,
     "wapi_text_line_info_t must be 36 bytes");
+_Static_assert(_Alignof(wapi_text_line_info_t) == 4,
+    "wapi_text_line_info_t must be 4-byte aligned");
 
 /**
  * Hit test result.
@@ -360,6 +370,8 @@ typedef struct wapi_text_hit_test_result_t {
 
 _Static_assert(sizeof(wapi_text_hit_test_result_t) == 20,
     "wapi_text_hit_test_result_t must be 20 bytes");
+_Static_assert(_Alignof(wapi_text_hit_test_result_t) == 4,
+    "wapi_text_hit_test_result_t must be 4-byte aligned");
 
 /**
  * Caret position information.
@@ -379,6 +391,8 @@ typedef struct wapi_text_caret_info_t {
 
 _Static_assert(sizeof(wapi_text_caret_info_t) == 16,
     "wapi_text_caret_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_text_caret_info_t) == 4,
+    "wapi_text_caret_info_t must be 4-byte aligned");
 
 /* ============================================================
  * Text Layout Functions

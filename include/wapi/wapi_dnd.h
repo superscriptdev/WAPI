@@ -60,6 +60,8 @@ typedef struct wapi_dnd_item_t {
 
 _Static_assert(sizeof(wapi_dnd_item_t) == 24,
                "wapi_dnd_item_t must be 24 bytes");
+_Static_assert(_Alignof(wapi_dnd_item_t) == 8,
+               "wapi_dnd_item_t must be 8-byte aligned");
 
 /* ============================================================
  * Drag and Drop Functions

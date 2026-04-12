@@ -43,8 +43,22 @@ typedef enum wapi_device_type_t {
     WAPI_DEVICE_PEN      = 3,
     WAPI_DEVICE_GAMEPAD  = 4,
     WAPI_DEVICE_HID      = 5,
+    WAPI_DEVICE_POINTER  = 6,
     WAPI_DEVICE_FORCE32  = 0x7FFFFFFF
 } wapi_device_type_t;
+
+/* ============================================================
+ * Pointer Source Types
+ * ============================================================
+ * Identifies which class of input device originated a pointer event.
+ */
+
+typedef enum wapi_pointer_type_t {
+    WAPI_POINTER_MOUSE  = 0,
+    WAPI_POINTER_TOUCH  = 1,
+    WAPI_POINTER_PEN    = 2,
+    WAPI_POINTER_FORCE32 = 0x7FFFFFFF
+} wapi_pointer_type_t;
 
 /* ============================================================
  * Unified Device Lifecycle
@@ -52,9 +66,13 @@ typedef enum wapi_device_type_t {
  * These functions work on any device type. Handles from different
  * device types are interchangeable for these common operations.
  *
- * Mouse index 0 is always the system aggregate pointer (combined
+ * Mouse index 0 is always the system aggregate mouse (combined
  * state of all mice). It is always present and never generates
  * DEVICE_REMOVED events.
+ *
+ * Pointer index 0 is always the system aggregate pointer (combined
+ * state of all pointing devices: mouse, touch, pen). It is always
+ * present and never generates DEVICE_REMOVED events.
  */
 
 /**
@@ -178,6 +196,8 @@ typedef struct wapi_mouse_info_t {
 
 _Static_assert(sizeof(wapi_mouse_info_t) == 16,
                "wapi_mouse_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_mouse_info_t) == 4,
+               "wapi_mouse_info_t must be 4-byte aligned");
 
 /* ---- Mouse Functions ---- */
 
@@ -356,13 +376,19 @@ typedef struct wapi_touch_info_t {
 
 _Static_assert(sizeof(wapi_touch_info_t) == 16,
                "wapi_touch_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_touch_info_t) == 4,
+               "wapi_touch_info_t must be 4-byte aligned");
 
 /* ---- Finger State ----
  *
+ * Raw device query — no surface context, so coordinates are
+ * device-native normalized 0..1.  Touch *events* (which carry
+ * a surface_id) use surface-pixel coordinates.
+ *
  * Layout (16 bytes, align 4):
  *   Offset  0: int32_t finger_index
- *   Offset  4: float   x             Normalized 0..1
- *   Offset  8: float   y             Normalized 0..1
+ *   Offset  4: float   x             Normalized 0..1 (device-native)
+ *   Offset  8: float   y             Normalized 0..1 (device-native)
  *   Offset 12: float   pressure      Normalized 0..1
  */
 
@@ -375,6 +401,8 @@ typedef struct wapi_finger_state_t {
 
 _Static_assert(sizeof(wapi_finger_state_t) == 16,
                "wapi_finger_state_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_finger_state_t) == 4,
+               "wapi_finger_state_t must be 4-byte aligned");
 
 /* ---- Gesture Type ---- */
 
@@ -481,6 +509,8 @@ typedef struct wapi_pen_info_t {
 
 _Static_assert(sizeof(wapi_pen_info_t) == 16,
                "wapi_pen_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_pen_info_t) == 4,
+               "wapi_pen_info_t must be 4-byte aligned");
 
 /* ---- Pen Functions ---- */
 
@@ -605,6 +635,8 @@ typedef struct wapi_gamepad_info_t {
 
 _Static_assert(sizeof(wapi_gamepad_info_t) == 48,
                "wapi_gamepad_info_t must be 48 bytes");
+_Static_assert(_Alignof(wapi_gamepad_info_t) == 4,
+               "wapi_gamepad_info_t must be 4-byte aligned");
 
 /* ---- Touchpad Finger State ----
  *
@@ -626,6 +658,8 @@ typedef struct wapi_touchpad_finger_t {
 
 _Static_assert(sizeof(wapi_touchpad_finger_t) == 16,
                "wapi_touchpad_finger_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_touchpad_finger_t) == 4,
+               "wapi_touchpad_finger_t must be 4-byte aligned");
 
 /* ---- Gamepad Functions ---- */
 
@@ -769,6 +803,93 @@ int32_t wapi_gamepad_get_power_info(wapi_handle_t handle,
                                     uint8_t* percent_ptr);
 
 /* ============================================================
+ *  ██████╗  ██████╗ ██╗███╗   ██╗████████╗███████╗██████╗
+ *  ██╔══██╗██╔═══██╗██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
+ *  ██████╔╝██║   ██║██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
+ *  ██╔═══╝ ██║   ██║██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
+ *  ██║     ╚██████╔╝██║██║ ╚████║   ██║   ███████╗██║  ██║
+ *  ╚═╝      ╚═════╝ ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
+ * ============================================================
+ * Unified pointer abstraction. A physical mouse is simultaneously
+ * a Mouse device and a Pointer device; a touchscreen is both a
+ * Touch device and a Pointer device; a stylus is both a Pen
+ * device and a Pointer device.
+ *
+ * Pointer index 0 is the system aggregate pointer. It tracks
+ * the most recent position from any source. Multi-touch fingers
+ * and pen contacts are distinguished by pointer_id in events
+ * (same pattern as touch events carrying finger_index).
+ *
+ * Pointer events use surface-pixel coordinates for all sources.
+ */
+
+/* ---- Pointer Info ----
+ *
+ * Layout (16 bytes, align 4):
+ *   Offset  0: uint8_t  has_pressure
+ *   Offset  1: uint8_t  has_tilt
+ *   Offset  2: uint8_t  has_twist
+ *   Offset  3: uint8_t  has_width_height
+ *   Offset  4: uint8_t  _reserved[12]
+ */
+
+typedef struct wapi_pointer_info_t {
+    uint8_t     has_pressure;
+    uint8_t     has_tilt;
+    uint8_t     has_twist;
+    uint8_t     has_width_height;
+    uint8_t     _reserved[12];
+} wapi_pointer_info_t;
+
+_Static_assert(sizeof(wapi_pointer_info_t) == 16,
+               "wapi_pointer_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_pointer_info_t) == 1,
+               "wapi_pointer_info_t must be 1-byte aligned");
+
+/* ---- Pointer Functions ---- */
+
+/**
+ * Get pointer-specific info (capabilities).
+ *
+ * @param handle    Pointer device handle.
+ * @param info_ptr  [out] Pointer to wapi_pointer_info_t.
+ * @return WAPI_OK on success, WAPI_ERR_INVAL if not a pointer device.
+ *
+ * Wasm signature: (i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_input, pointer_get_info)
+wapi_result_t wapi_pointer_get_info(wapi_handle_t handle,
+                                    wapi_pointer_info_t* info_ptr);
+
+/**
+ * Get the current pointer position relative to a surface.
+ * Returns the most recent position from any source (mouse, touch, pen).
+ *
+ * @param handle   Pointer device handle.
+ * @param surface  Surface handle.
+ * @param x        [out] X coordinate in surface pixels.
+ * @param y        [out] Y coordinate in surface pixels.
+ * @return WAPI_OK on success.
+ *
+ * Wasm signature: (i32, i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_input, pointer_get_position)
+wapi_result_t wapi_pointer_get_position(wapi_handle_t handle,
+                                        wapi_handle_t surface,
+                                        float* x, float* y);
+
+/**
+ * Get the current pointer button state.
+ *
+ * @param handle  Pointer device handle.
+ * @return Button state mask (bit N = button N pressed).
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_input, pointer_get_buttons)
+uint32_t wapi_pointer_get_buttons(wapi_handle_t handle);
+
+/* ============================================================
  *  ██╗  ██╗██╗██████╗
  *  ██║  ██║██║██╔══██╗
  *  ███████║██║██║  ██║
@@ -802,6 +923,8 @@ typedef struct wapi_hid_info_t {
 
 _Static_assert(sizeof(wapi_hid_info_t) == 16,
                "wapi_hid_info_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_hid_info_t) == 2,
+               "wapi_hid_info_t must be 2-byte aligned");
 
 /* ---- HID Functions ---- */
 

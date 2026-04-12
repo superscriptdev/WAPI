@@ -207,6 +207,8 @@ typedef struct wapi_sysinfo_t {
 
 _Static_assert(sizeof(wapi_sysinfo_t) == 128,
                "wapi_sysinfo_t must be 128 bytes");
+_Static_assert(_Alignof(wapi_sysinfo_t) == 8,
+               "wapi_sysinfo_t must be 8-byte aligned");
 
 /* ============================================================
  * System Info Functions

@@ -48,6 +48,8 @@ typedef struct wapi_clipboard_item_t {
 
 _Static_assert(sizeof(wapi_clipboard_item_t) == 32,
                "wapi_clipboard_item_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_clipboard_item_t) == 8,
+               "wapi_clipboard_item_t must be 8-byte aligned");
 
 /* ============================================================
  * Enumerate Available Formats

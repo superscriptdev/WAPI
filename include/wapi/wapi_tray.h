@@ -57,6 +57,8 @@ typedef struct wapi_tray_menu_item_t {
 
 _Static_assert(sizeof(wapi_tray_menu_item_t) == 40,
                "wapi_tray_menu_item_t must be 40 bytes");
+_Static_assert(_Alignof(wapi_tray_menu_item_t) == 8,
+               "wapi_tray_menu_item_t must be 8-byte aligned");
 
 /* ============================================================
  * Tray Functions

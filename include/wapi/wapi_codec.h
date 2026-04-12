@@ -88,6 +88,8 @@ typedef struct wapi_video_codec_config_t {
 
 _Static_assert(sizeof(wapi_video_codec_config_t) == 32,
                "wapi_video_codec_config_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_video_codec_config_t) == 4,
+               "wapi_video_codec_config_t must be 4-byte aligned");
 
 /* ============================================================
  * Audio Codec Configuration
@@ -113,6 +115,8 @@ typedef struct wapi_audio_codec_config_t {
 
 _Static_assert(sizeof(wapi_audio_codec_config_t) == 24,
                "wapi_audio_codec_config_t must be 24 bytes");
+_Static_assert(_Alignof(wapi_audio_codec_config_t) == 4,
+               "wapi_audio_codec_config_t must be 4-byte aligned");
 
 /* ============================================================
  * Encoded Chunk Descriptor
@@ -140,6 +144,8 @@ typedef struct wapi_codec_chunk_t {
 
 _Static_assert(sizeof(wapi_codec_chunk_t) == 40,
                "wapi_codec_chunk_t must be 40 bytes");
+_Static_assert(_Alignof(wapi_codec_chunk_t) == 8,
+               "wapi_codec_chunk_t must be 8-byte aligned");
 
 /* Chunk flags */
 #define WAPI_CODEC_FLAG_KEYFRAME 0x1

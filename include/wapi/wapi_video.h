@@ -103,6 +103,7 @@ typedef struct wapi_video_info_t {
 } wapi_video_info_t;
 
 _Static_assert(sizeof(wapi_video_info_t) == 20, "wapi_video_info_t must be 20 bytes");
+_Static_assert(_Alignof(wapi_video_info_t) == 4, "wapi_video_info_t must be 4-byte aligned");
 
 /* ============================================================
  * Lifecycle

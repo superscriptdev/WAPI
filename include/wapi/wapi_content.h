@@ -121,6 +121,8 @@ typedef struct wapi_content_node_t {
 
 _Static_assert(sizeof(wapi_content_node_t) == 80,
                "wapi_content_node_t must be 80 bytes");
+_Static_assert(_Alignof(wapi_content_node_t) == 8,
+               "wapi_content_node_t must be 8-byte aligned");
 
 /* ============================================================
  * Content Tree Buffer

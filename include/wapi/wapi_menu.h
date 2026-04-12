@@ -57,6 +57,8 @@ typedef struct wapi_menu_item_t {
 
 _Static_assert(sizeof(wapi_menu_item_t) == 48,
                "wapi_menu_item_t must be 48 bytes");
+_Static_assert(_Alignof(wapi_menu_item_t) == 8,
+               "wapi_menu_item_t must be 8-byte aligned");
 
 /* ============================================================
  * Menu Functions

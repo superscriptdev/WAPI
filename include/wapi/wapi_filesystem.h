@@ -92,6 +92,7 @@ typedef struct wapi_filestat_t {
 } wapi_filestat_t;
 
 _Static_assert(sizeof(wapi_filestat_t) == 56, "wapi_filestat_t must be 56 bytes");
+_Static_assert(_Alignof(wapi_filestat_t) == 8, "wapi_filestat_t must be 8-byte aligned");
 
 /* ============================================================
  * Directory Entry
@@ -112,6 +113,7 @@ typedef struct wapi_dirent_t {
 } wapi_dirent_t;
 
 _Static_assert(sizeof(wapi_dirent_t) == 24, "wapi_dirent_t must be 24 bytes");
+_Static_assert(_Alignof(wapi_dirent_t) == 8, "wapi_dirent_t must be 8-byte aligned");
 
 /* ============================================================
  * Pre-opened Directory Discovery

@@ -56,6 +56,7 @@ typedef struct wapi_subpixel_t {
 } wapi_subpixel_t;
 
 _Static_assert(sizeof(wapi_subpixel_t) == 4, "wapi_subpixel_t must be 4 bytes");
+_Static_assert(_Alignof(wapi_subpixel_t) == 1, "wapi_subpixel_t must be 1-byte aligned");
 
 /* ============================================================
  * Display Info
@@ -99,6 +100,8 @@ typedef struct wapi_display_info_t {
 
 _Static_assert(sizeof(wapi_display_info_t) == 56,
                "wapi_display_info_t must be 56 bytes");
+_Static_assert(_Alignof(wapi_display_info_t) == 8,
+               "wapi_display_info_t must be 8-byte aligned");
 
 /* ============================================================
  * Display Functions

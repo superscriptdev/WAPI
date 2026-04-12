@@ -71,6 +71,8 @@ typedef struct wapi_filetype_desc_t {
 
 _Static_assert(sizeof(wapi_filetype_desc_t) == 64,
                "wapi_filetype_desc_t must be 64 bytes");
+_Static_assert(_Alignof(wapi_filetype_desc_t) == 8,
+               "wapi_filetype_desc_t must be 8-byte aligned");
 
 /* ============================================================
  * URL Scheme Registration

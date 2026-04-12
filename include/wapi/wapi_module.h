@@ -99,6 +99,8 @@ typedef struct wapi_module_hash_t {
 
 _Static_assert(sizeof(wapi_module_hash_t) == 32,
                "wapi_module_hash_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_module_hash_t) == 1,
+               "wapi_module_hash_t must be 1-byte aligned");
 
 /* ============================================================
  * Value Type (for cross-module call arguments)
@@ -129,6 +131,7 @@ typedef struct wapi_val_t {
 } wapi_val_t;
 
 _Static_assert(sizeof(wapi_val_t) == 16, "wapi_val_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_val_t) == 8, "wapi_val_t must be 8-byte aligned");
 _Static_assert(offsetof(wapi_val_t, kind) == 0, "");
 _Static_assert(offsetof(wapi_val_t, of)   == 8, "");
 

@@ -5833,36 +5833,66 @@ class WAPI {
         // Build import object
         const imports = this._buildImports();
 
-        // Fetch and compile the wasm module
+        // Fetch and compile the wasm module.
+        //
+        // We always materialize bytes (instead of instantiateStreaming)
+        // so we can sha256-hash them and report to the WAPI browser
+        // extension's module cache viewer. The streaming-vs-buffered
+        // delta is dominated by compile + _start, so this is in the
+        // noise for any non-trivial module.
         let wasmModule, wasmInstance;
+        let wasmBytes = null;
+        let wasmUrl = '';
 
         if (wasmSource instanceof WebAssembly.Module) {
             wasmModule = wasmSource;
-        } else if (wasmSource instanceof ArrayBuffer || ArrayBuffer.isView(wasmSource)) {
-            wasmModule = await WebAssembly.compile(wasmSource);
+        } else if (wasmSource instanceof ArrayBuffer) {
+            wasmBytes = wasmSource;
+            wasmModule = await WebAssembly.compile(wasmBytes);
+        } else if (ArrayBuffer.isView(wasmSource)) {
+            wasmBytes = wasmSource.buffer.slice(
+                wasmSource.byteOffset,
+                wasmSource.byteOffset + wasmSource.byteLength
+            );
+            wasmModule = await WebAssembly.compile(wasmBytes);
         } else {
-            // URL string or Response
+            wasmUrl = wasmSource instanceof Response
+                ? (wasmSource.url || "")
+                : String(wasmSource);
             const response = wasmSource instanceof Response
                 ? wasmSource
                 : await fetch(wasmSource);
-
-            if (WebAssembly.instantiateStreaming) {
-                const result = await WebAssembly.instantiateStreaming(
-                    response instanceof Response ? response : fetch(wasmSource),
-                    imports
-                );
-                wasmModule = result.module;
-                wasmInstance = result.instance;
-            } else {
-                const bytes = await (response instanceof Response
-                    ? response.arrayBuffer()
-                    : fetch(wasmSource).then(r => r.arrayBuffer()));
-                wasmModule = await WebAssembly.compile(bytes);
-            }
+            wasmBytes = await response.arrayBuffer();
+            wasmModule = await WebAssembly.compile(wasmBytes);
         }
 
         if (!wasmInstance) {
             wasmInstance = await WebAssembly.instantiate(wasmModule, imports);
+        }
+
+        // Tell the WAPI browser extension (if installed) that we just
+        // saw this module. The bridge content_script in the isolated
+        // world picks up window.postMessage and forwards to sw.js,
+        // which records hash → {hits, misses, size, url} in IDB. If
+        // no extension is present this is a silent no-op.
+        if (wasmBytes && typeof crypto !== "undefined" && crypto.subtle) {
+            try {
+                const digest = await crypto.subtle.digest("SHA-256", wasmBytes);
+                let hex = "";
+                const view = new Uint8Array(digest);
+                for (let i = 0; i < view.length; i++) {
+                    hex += view[i].toString(16).padStart(2, "0");
+                }
+                window.postMessage({
+                    source: "wapi",
+                    type: "modules.touch",
+                    hash: hex,
+                    url: wasmUrl,
+                    size: wasmBytes.byteLength,
+                }, "*");
+            } catch (e) {
+                // Hash/postMessage failure must never break the load.
+            }
         }
 
         this.module = wasmModule;
@@ -6006,16 +6036,19 @@ class WAPI {
 }
 
 // ---------------------------------------------------------------------------
-// Export for ES modules, CommonJS, or global
-// ---------------------------------------------------------------------------
-
-export { WAPI };
-
+// Register globally. This file is loaded as a classic script (both by
+// runtime/browser/index.html and by the WAPI browser extension's
+// content_scripts entry), so we cannot use ES `export` syntax — that
+// would be a parse error. Consumers grab the class off the global:
+//
+//     <script src="./wapi_shim.js"></script>
+//     <script>const wapi = new window.WAPI();</script>
+//
+// CommonJS branch is kept for the rare node-side test harness.
 if (typeof module !== "undefined" && module.exports) {
     module.exports = { WAPI };
-} else if (typeof globalThis !== "undefined") {
-    globalThis.WAPI = WAPI;
 }
+globalThis.WAPI = WAPI;
 
 // ---------------------------------------------------------------------------
 // HTML Loader Example (appended as a comment for reference, and also

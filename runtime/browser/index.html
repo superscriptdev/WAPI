@@ -86,8 +86,9 @@
         <div id="debug-stats">booting…</div>
         <div id="debug-log"></div>
     </div>
+    <script src="./wapi_shim.js"></script>
     <script type="module">
-        import { WAPI } from './wapi_shim.js';
+        const { WAPI } = window;
 
         // ---------- Debug overlay plumbing ----------
         const statsEl = document.getElementById('debug-stats');

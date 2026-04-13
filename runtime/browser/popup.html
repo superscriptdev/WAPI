@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WAPI Modules</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            color: #ddd;
+            font: 12px ui-monospace, Menlo, Consolas, monospace;
+            min-width: 540px;
+        }
+        .wrap { padding: 10px 12px; }
+        h1 {
+            font-size: 12px;
+            font-weight: normal;
+            margin: 0 0 8px;
+            color: #9fe;
+            letter-spacing: 0.5px;
+        }
+        .stats {
+            padding: 6px 8px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            margin-bottom: 8px;
+            white-space: pre;
+            color: #ccc;
+        }
+        .stats .k { color: #888; }
+        .stats .v { color: #9fe; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        th, td {
+            padding: 3px 6px;
+            text-align: left;
+            border-bottom: 1px solid #222;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        th {
+            background: #1a1a1a;
+            border-bottom: 1px solid #333;
+            color: #888;
+            font-weight: normal;
+        }
+        tr:hover td { background: #181818; }
+        .hash { color: #8cf; }
+        .hit  { color: #6c6; text-align: right; }
+        .miss { color: #f66; text-align: right; }
+        .num  { text-align: right; color: #ccc; }
+        .empty {
+            padding: 28px 16px;
+            text-align: center;
+            color: #666;
+            line-height: 1.5;
+        }
+        .empty code {
+            color: #9fe;
+            background: #1a1a1a;
+            padding: 1px 4px;
+        }
+        .actions {
+            margin-top: 10px;
+            display: flex;
+            gap: 6px;
+        }
+        button {
+            background: #222;
+            color: #ddd;
+            border: 1px solid #444;
+            padding: 4px 10px;
+            font: inherit;
+            cursor: pointer;
+        }
+        button:hover { background: #2a2a2a; }
+        button:active { background: #333; }
+        .err { color: #f66; padding: 8px; }
+        col.c-hash { width: 14ch; }
+        col.c-origin { width: auto; }
+        col.c-size { width: 9ch; }
+        col.c-hits { width: 6ch; }
+        col.c-miss { width: 6ch; }
+        col.c-rate { width: 6ch; }
+        col.c-used { width: 5ch; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>WAPI MODULE CACHE</h1>
+        <div class="stats" id="stats">loading…</div>
+        <div id="content">loading…</div>
+        <div class="actions">
+            <button id="refresh">Refresh</button>
+            <button id="clear">Clear cache</button>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

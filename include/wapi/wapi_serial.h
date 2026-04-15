@@ -42,19 +42,19 @@ typedef enum wapi_serial_parity_t {
  *   Offset  7: uint8_t  flow_control
  *   Offset  8: uint64_t _pad
  */
-typedef struct wapi_serial_config_t {
+typedef struct wapi_serial_desc_t {
     uint32_t baud_rate;
     uint8_t  data_bits;
     uint8_t  stop_bits;
     uint8_t  parity;          /* wapi_serial_parity_t */
     uint8_t  flow_control;
     uint64_t _pad;
-} wapi_serial_config_t;
+} wapi_serial_desc_t;
 
-_Static_assert(sizeof(wapi_serial_config_t) == 16,
-               "wapi_serial_config_t must be 16 bytes");
-_Static_assert(_Alignof(wapi_serial_config_t) == 8,
-               "wapi_serial_config_t must be 8-byte aligned");
+_Static_assert(sizeof(wapi_serial_desc_t) == 16,
+               "wapi_serial_desc_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_serial_desc_t) == 8,
+               "wapi_serial_desc_t must be 8-byte aligned");
 
 /* ============================================================
  * Serial Functions
@@ -63,7 +63,7 @@ _Static_assert(_Alignof(wapi_serial_config_t) == 8,
 /**
  * Request access to a serial port (shows permission prompt).
  *
- * @see WAPI_IO_OP_SERIAL_REQUEST_PORT
+ * @see WAPI_IO_OP_SERIAL_PORT_REQUEST
  * @param port  [out] Serial port handle.
  * @return WAPI_OK on success.
  *
@@ -73,18 +73,18 @@ WAPI_IMPORT(wapi_serial, request_port)
 wapi_result_t wapi_serial_request_port(wapi_handle_t* port);
 
 /**
- * Open a serial port with the given configuration.
+ * Open a serial port with the given descriptor.
  *
  * @see WAPI_IO_OP_SERIAL_OPEN
- * @param port    Serial port handle.
- * @param config  Port configuration (baud rate, data bits, etc.).
+ * @param port  Serial port handle.
+ * @param desc  Port descriptor (baud rate, data bits, etc.).
  * @return WAPI_OK on success.
  *
  * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_serial, open)
 wapi_result_t wapi_serial_open(wapi_handle_t port,
-                               const wapi_serial_config_t* config);
+                               const wapi_serial_desc_t* desc);
 
 /**
  * Close a serial port.

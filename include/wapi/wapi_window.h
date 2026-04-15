@@ -3,7 +3,7 @@
  * Version 1.0.0
  *
  * OS window operations for on-screen surfaces. Chain a
- * wapi_window_config_t onto a surface descriptor to create
+ * wapi_window_desc_t onto a surface descriptor to create
  * a windowed surface with title, decorations, and resize behavior.
  *
  * All functions take a surface handle and return WAPI_ERR_NOTSUP
@@ -29,7 +29,7 @@ extern "C" {
 #define WAPI_WINDOW_FLAG_BORDERLESS    0x0002  /* No window decorations */
 #define WAPI_WINDOW_FLAG_FULLSCREEN    0x0004  /* Start fullscreen */
 #define WAPI_WINDOW_FLAG_HIDDEN        0x0008  /* Start hidden */
-#define WAPI_WINDOW_FLAG_ALWAYS_ON_TOP 0x0010  /* Stay above other windows */
+#define WAPI_WINDOW_FLAG_ALWAYSONTOP 0x0010  /* Stay above other windows */
 
 /* ============================================================
  * Window Config (Chained Struct)
@@ -38,37 +38,21 @@ extern "C" {
  * windowed surface.  sType = WAPI_STYPE_WINDOW_CONFIG.
  *
  * Layout (40 bytes, align 8):
- *   Offset  0: wapi_chained_struct_t chain   (16 bytes)
- *   Offset 16: wapi_string_view_t    title   (16 bytes, UTF-8, 0 = untitled)
+ *   Offset  0: wapi_chain_t chain   (16 bytes)
+ *   Offset 16: wapi_stringview_t    title   (16 bytes, UTF-8, 0 = untitled)
  *   Offset 32: uint32_t              window_flags  WAPI_WINDOW_FLAG_*
  *   Offset 36: uint32_t              _pad
  */
 
-typedef struct wapi_window_config_t {
-    wapi_chained_struct_t   chain;
-    wapi_string_view_t      title;
+typedef struct wapi_window_desc_t {
+    wapi_chain_t   chain;
+    wapi_stringview_t      title;
     uint32_t                window_flags;
     uint32_t                _pad;
-} wapi_window_config_t;
+} wapi_window_desc_t;
 
-/* ============================================================
- * Window Events
- * ============================================================
- * Delivered via wapi_event.h's event queue on the surface handle.
- */
-
-typedef enum wapi_window_event_type_t {
-    WAPI_WINDOW_EVENT_CLOSE         = 0x0210,  /* Close requested */
-    WAPI_WINDOW_EVENT_FOCUS_GAINED  = 0x0211,  /* Window gained focus */
-    WAPI_WINDOW_EVENT_FOCUS_LOST    = 0x0212,  /* Window lost focus */
-    WAPI_WINDOW_EVENT_SHOWN         = 0x0213,  /* Window became visible */
-    WAPI_WINDOW_EVENT_HIDDEN        = 0x0214,  /* Window was hidden */
-    WAPI_WINDOW_EVENT_MINIMIZED     = 0x0215,  /* Window was minimized */
-    WAPI_WINDOW_EVENT_MAXIMIZED     = 0x0216,  /* Window was maximized */
-    WAPI_WINDOW_EVENT_RESTORED      = 0x0217,  /* Restored from min/max */
-    WAPI_WINDOW_EVENT_MOVED         = 0x0218,  /* Window position changed */
-    WAPI_WINDOW_EVENT_FORCE32       = 0x7FFFFFFF
-} wapi_window_event_type_t;
+/* Window events are defined in wapi.h as WAPI_EVENT_WINDOW_*
+ * and delivered via the event queue on the surface handle. */
 
 /* ============================================================
  * Window Functions
@@ -81,7 +65,7 @@ typedef enum wapi_window_event_type_t {
  */
 WAPI_IMPORT(wapi_window, set_title)
 wapi_result_t wapi_window_set_title(wapi_handle_t surface,
-                                    wapi_string_view_t title);
+                                    wapi_stringview_t title);
 
 /**
  * Get the surface size in device-independent (logical) units.

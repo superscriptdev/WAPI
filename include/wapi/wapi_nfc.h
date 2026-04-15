@@ -34,7 +34,7 @@ typedef enum wapi_nfc_record_type_t {
     WAPI_NFC_RECORD_TEXT         = 0,
     WAPI_NFC_RECORD_URL          = 1,
     WAPI_NFC_RECORD_MIME         = 2,
-    WAPI_NFC_RECORD_ABSOLUTE_URL = 3,
+    WAPI_NFC_RECORD_ABSOLUTEURL = 3,
     WAPI_NFC_RECORD_EMPTY        = 4,
     WAPI_NFC_RECORD_UNKNOWN      = 5,
     WAPI_NFC_RECORD_FORCE32      = 0x7FFFFFFF

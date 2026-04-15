@@ -36,10 +36,10 @@ typedef enum wapi_hash_algo_t {
 } wapi_hash_algo_t;
 
 typedef enum wapi_cipher_algo_t {
-    WAPI_CIPHER_AES_128_GCM = 0,
-    WAPI_CIPHER_AES_256_GCM = 1,
-    WAPI_CIPHER_AES_128_CBC = 2,
-    WAPI_CIPHER_AES_256_CBC = 3,
+    WAPI_CIPHER_AES128_GCM = 0,
+    WAPI_CIPHER_AES256_GCM = 1,
+    WAPI_CIPHER_AES128_CBC = 2,
+    WAPI_CIPHER_AES256_CBC = 3,
     WAPI_CIPHER_CHACHA20_POLY1305 = 4,
     WAPI_CIPHER_FORCE32     = 0x7FFFFFFF
 } wapi_cipher_algo_t;

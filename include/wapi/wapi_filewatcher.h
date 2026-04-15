@@ -51,7 +51,7 @@ typedef enum wapi_fwatch_change_t {
  * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_fwatch, fwatch_add)
-wapi_result_t wapi_fwatch_add(wapi_string_view_t path_ptr,
+wapi_result_t wapi_fwatch_add(wapi_stringview_t path_ptr,
                               wapi_bool_t recursive,
                               wapi_handle_t* out_handle);
 

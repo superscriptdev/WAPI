@@ -71,7 +71,7 @@ _Static_assert(_Alignof(wapi_subpixel_t) == 1, "wapi_subpixel_t must be 1-byte a
  *   Offset 20: float    refresh_rate_hz    Refresh rate in Hz
  *   Offset 24: float    scale_factor       DPI scale (e.g. 2.0 for Retina)
  *   Offset 28: uint32_t _pad0              (alignment padding)
- *   Offset 32: wapi_string_view_t name      Display name (UTF-8, 16 bytes)
+ *   Offset 32: wapi_stringview_t name      Display name (UTF-8, 16 bytes)
  *   Offset 48: uint8_t  is_primary         1 if primary display
  *   Offset 49: uint8_t  orientation        0=land, 1=port, 2=land-flip, 3=port-flip
  *   Offset 50: uint8_t  subpixel_count     Number of sub-pixels per pixel (0=unknown)
@@ -89,7 +89,7 @@ typedef struct wapi_display_info_t {
     float       refresh_rate_hz;
     float       scale_factor;
     uint32_t    _pad0;
-    wapi_string_view_t name;
+    wapi_stringview_t name;
     uint8_t     is_primary;
     uint8_t     orientation;
     uint8_t     subpixel_count;  /* 0=unknown, typically 3-4 */

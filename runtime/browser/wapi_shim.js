@@ -7,7 +7,7 @@
  *   await wapi.load("module.wasm", { args: ["--flag"], preopens: { "/data": filesMap } });
  *
  * This file implements every import module defined by the WAPI ABI headers:
- *   wapi, wapi_env, wapi_memory, wapi_io, wapi_clock, wapi_fs, wapi_net,
+ *   wapi, wapi_env, wapi_memory, wapi_io, wapi_clock, wapi_fs,
  *   wapi_gpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_clipboard,
  *   wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
  *   wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
@@ -91,6 +91,13 @@ const WAPI_IO_OP_SEND        = 12;
 const WAPI_IO_OP_RECV        = 13;
 const WAPI_IO_OP_TIMEOUT     = 20;
 const WAPI_IO_OP_TIMEOUT_ABS = 21;
+const WAPI_IO_OP_HTTP_FETCH               = 0x060;
+const WAPI_IO_OP_COMPRESS_PROCESS         = 0x140;
+const WAPI_IO_OP_FONT_GET_BYTES           = 0x150;
+const WAPI_IO_OP_NETWORK_LISTEN           = 0x040;
+const WAPI_IO_OP_NETWORK_CHANNEL_OPEN     = 0x043;
+const WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT   = 0x044;
+const WAPI_IO_OP_NETWORK_RESOLVE          = 0x045;
 
 // Log levels (used with WAPI_IO_OP_LOG)
 const WAPI_LOG_DEBUG = 0;
@@ -98,10 +105,16 @@ const WAPI_LOG_INFO  = 1;
 const WAPI_LOG_WARN  = 2;
 const WAPI_LOG_ERROR = 3;
 
-// Net transport
-const WAPI_NET_TRANSPORT_QUIC      = 0;
-const WAPI_NET_TRANSPORT_TCP       = 1;
-const WAPI_NET_TRANSPORT_WEBSOCKET = 2;
+// Network qualities — passed in op.flags for CONNECT / LISTEN / CHANNEL_OPEN.
+// The platform picks any transport that satisfies the requested bits, or
+// rejects the op with WAPI_ERR_NOTSUP. See wapi_network.h for the spec.
+const WAPI_NET_RELIABLE        = 1 << 0;
+const WAPI_NET_ORDERED         = 1 << 1;
+const WAPI_NET_MESSAGE_FRAMED  = 1 << 2;
+const WAPI_NET_ENCRYPTED       = 1 << 3;
+const WAPI_NET_MULTIPLEXED     = 1 << 4;
+const WAPI_NET_LOW_LATENCY     = 1 << 5;
+const WAPI_NET_BROADCAST       = 1 << 6;
 
 // Event types
 const WAPI_EVENT_NONE                  = 0;
@@ -129,6 +142,7 @@ const WAPI_EVENT_POINTER_MOTION        = 0x902;
 const WAPI_EVENT_POINTER_CANCEL        = 0x903;
 const WAPI_EVENT_POINTER_ENTER         = 0x904;
 const WAPI_EVENT_POINTER_LEAVE         = 0x905;
+const WAPI_EVENT_IO_COMPLETION         = 0x2000;
 
 // Cursor types
 const WAPI_CURSOR_NAMES = [
@@ -462,6 +476,164 @@ function tpFormatToGPU(fmt) {
 
 function gpuFormatToTP(fmt) {
     return WGPU_TEXTURE_FORMAT_REV[fmt] || WAPI_GPU_FORMAT_BGRA8_UNORM;
+}
+
+// ---------------------------------------------------------------------------
+// WAPI browser-extension bridge
+// ---------------------------------------------------------------------------
+// Round-trip messaging to the WAPI extension service worker, which holds
+// the cross-origin content-addressed wasm module cache. The page shim runs
+// in the MAIN world and has no chrome.runtime access, so it talks to the
+// isolated-world bridge via window.postMessage, which forwards to sw.js.
+//
+// Protocol:
+//   page → bridge:  { source: 'wapi',       type, reqId?, ...payload }
+//   bridge → page:  { source: 'wapi-reply', reqId, result | error }
+//
+// Fire-and-forget: omit reqId. Round-trip: supply unique reqId and wait
+// for the matching reply. A 5s timeout treats silence as "no extension
+// installed" and resolves null so the shim falls back to the network.
+
+const _wapiExtReqs = new Map();
+let _wapiExtNextReqId = 1;
+let _wapiExtListenerAttached = false;
+
+function _wapiExtEnsureListener() {
+    if (_wapiExtListenerAttached || typeof window === "undefined") return;
+    _wapiExtListenerAttached = true;
+    window.addEventListener("message", (ev) => {
+        if (ev.source !== window) return;
+        const m = ev.data;
+        if (!m || m.source !== "wapi-reply") return;
+        const pending = _wapiExtReqs.get(m.reqId);
+        if (!pending) return;
+        _wapiExtReqs.delete(m.reqId);
+        clearTimeout(pending.timer);
+        if (m.error) pending.reject(new Error(m.error));
+        else pending.resolve(m.result);
+    });
+}
+
+// Round-trip to the extension. Resolves with the SW's result (may be null
+// on a cache miss) or null if no extension answers within timeoutMs.
+function _wapiExtSend(type, payload, timeoutMs = 5000) {
+    if (typeof window === "undefined") return Promise.resolve(null);
+    _wapiExtEnsureListener();
+    const reqId = _wapiExtNextReqId++;
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            _wapiExtReqs.delete(reqId);
+            resolve(null);
+        }, timeoutMs);
+        _wapiExtReqs.set(reqId, { resolve, reject, timer });
+        window.postMessage({ source: "wapi", type, reqId, ...payload }, "*");
+    });
+}
+
+// Fire-and-forget: used by modules.store where the shim doesn't care
+// whether the extension is present or when the write lands.
+function _wapiExtPost(type, payload) {
+    if (typeof window === "undefined") return;
+    window.postMessage({ source: "wapi", type, ...payload }, "*");
+}
+
+// Base64 helpers — chrome.runtime.sendMessage uses JSON, so bytes cross
+// the extension boundary as base64. window.postMessage supports structured
+// clone, but the bridge re-serializes on its way to sw.js, so we match
+// the SW's encoding here.
+function _wapiBytesToB64(u8) {
+    let s = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < u8.length; i += CHUNK) {
+        s += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+    }
+    return btoa(s);
+}
+
+function _wapiB64ToBytes(b64) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+}
+
+function _wapiHexHash(u8) {
+    let s = "";
+    for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, "0");
+    return s;
+}
+
+// Content-addressed wasm-module cache driven by wapi_module.prefetch.
+// Shared across all WAPI instances on the page — WebAssembly.Module
+// objects are position-independent and safe to hand to instantiate()
+// from any instance. Entries:
+//   pending  — { state: "pending",  promise: Promise<void> }
+//   ready    — { state: "ready",    module: WebAssembly.Module, hash: string }
+//   failed   — { state: "failed",   error: string }
+// Keyed by lowercase hex hash.
+const _wapiModuleCache = new Map();
+
+// Page-local state for wapi_module.join (service mode). Services are
+// hosted inside the extension service worker; join is fundamentally an
+// async round-trip (postMessage → bridge → SW) but wasm imports are sync.
+// We resolve this with a poll loop: the first call kicks off the SW
+// services.join request and returns WAPI_ERR_AGAIN; subsequent calls
+// return the same AGAIN until the SW replies, at which point the entry
+// flips to "ready" and join writes the handle and returns WAPI_OK.
+//
+// Keyed by "<hashHex>:<name>". Entries:
+//   pending — { state: "pending",  promise: Promise<void> }
+//   ready   — { state: "ready",    handle: i32 }  (handle is SW-side service handle)
+//   failed  — { state: "failed",   error: string }
+const _wapiServiceJoins = new Map();
+
+// Fetch bytes by hash through the extension cache, then network as a
+// fallback. Verifies the SHA-256 matches the requested hash before
+// compiling. Used by wapi_module.prefetch. Returns a WebAssembly.Module.
+async function _wapiFetchAndCompile(hashHex, url) {
+    let bytes = null;
+    let gotFromCache = false;
+
+    const resp = await _wapiExtSend("modules.fetch", { hash: hashHex });
+    if (resp && resp.bytesB64) {
+        bytes = _wapiB64ToBytes(resp.bytesB64);
+        gotFromCache = true;
+    }
+
+    if (!bytes) {
+        if (!url) throw new Error("module not cached and no url provided");
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`fetch ${url} failed: ${response.status}`);
+        }
+        const ab = await response.arrayBuffer();
+        bytes = new Uint8Array(ab);
+    }
+
+    if (typeof crypto !== "undefined" && crypto.subtle) {
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        const got = _wapiHexHash(new Uint8Array(digest));
+        if (got !== hashHex) {
+            throw new Error(`hash mismatch: expected ${hashHex}, got ${got}`);
+        }
+    }
+
+    if (!gotFromCache) {
+        _wapiExtPost("modules.store", {
+            hash: hashHex,
+            url: url || "",
+            bytesB64: _wapiBytesToB64(bytes),
+        });
+    }
+
+    return WebAssembly.compile(bytes);
+}
+
+// Read a 32-byte wapi_module_hash_t at `ptr` from the given Uint8Array
+// view and return the lowercase hex string. Returns null if ptr is 0.
+function _wapiReadModuleHash(u8, ptr) {
+    if (ptr === 0) return null;
+    return _wapiHexHash(u8.subarray(ptr, ptr + 32));
 }
 
 // ---------------------------------------------------------------------------
@@ -810,6 +982,12 @@ class WAPI {
         if (typeof WebSocket !== "undefined" || typeof fetch !== "undefined") {
             caps.push("wapi.network");
         }
+        if (typeof fetch !== "undefined") {
+            caps.push("wapi.http");
+        }
+        if (typeof DecompressionStream !== "undefined" || typeof CompressionStream !== "undefined") {
+            caps.push("wapi.compression");
+        }
 
         // KV storage and font queries always available in browser
         caps.push("wapi.kv_storage");
@@ -848,10 +1026,8 @@ class WAPI {
             caps.push("wapi.network_info");
         }
 
-        // Battery
-        if (typeof navigator !== "undefined" && navigator.getBattery) {
-            caps.push("wapi.battery");
-        }
+        // Power management (battery, wake lock, idle, saver, thermal)
+        caps.push("wapi.power");
 
         // Haptics / vibration
         if (typeof navigator !== "undefined" && navigator.vibrate) {
@@ -861,11 +1037,6 @@ class WAPI {
         // Screen orientation
         if (typeof screen !== "undefined" && screen.orientation) {
             caps.push("wapi.orientation");
-        }
-
-        // Wake lock
-        if (typeof navigator !== "undefined" && navigator.wakeLock) {
-            caps.push("wapi.wake_lock");
         }
 
         // WebAuthn
@@ -898,20 +1069,10 @@ class WAPI {
             caps.push("wapi.contacts");
         }
 
-        // Idle detection
-        if (typeof IdleDetector !== "undefined") {
-            caps.push("wapi.idle");
-        }
-
         // Screen capture (getDisplayMedia)
         if (typeof navigator !== "undefined" && navigator.mediaDevices &&
             navigator.mediaDevices.getDisplayMedia) {
             caps.push("wapi.screen_capture");
-        }
-
-        // P2P (WebRTC)
-        if (typeof RTCPeerConnection !== "undefined") {
-            caps.push("wapi.p2p");
         }
 
         // Media session
@@ -1269,7 +1430,6 @@ class WAPI {
         // All events (I/O completions, input, lifecycle) come through poll/wait.
         // Accessed by modules via: const wapi_io_t* io = wapi_io_get();
         // -------------------------------------------------------------------
-        const WAPI_EVENT_IO_COMPLETION = 0x2000;
         const _ioPending = new Map();
         let _ioNextToken = 1;
 
@@ -1287,18 +1447,23 @@ class WAPI {
                 self._refreshViews();
                 let submitted = 0;
                 for (let i = 0; i < count; i++) {
-                    const base = opsPtr + i * 64;
+                    // wapi_io_op_t: 80 bytes, 8-byte aligned
+                    //   0:opcode u32  4:flags u32  8:fd i32  12:flags2 u32
+                    //  16:offset u64 24:addr u64  32:len u64
+                    //  40:addr2 u64  48:len2 u64  56:user_data u64
+                    //  64:result_ptr u64  72:reserved u64
+                    const base = opsPtr + i * 80;
                     const opcode    = self._dv.getUint32(base + 0, true);
                     const flags     = self._dv.getUint32(base + 4, true);
                     const fd        = self._dv.getInt32(base + 8, true);
+                    const flags2    = self._dv.getUint32(base + 12, true);
                     const offset    = self._dv.getBigUint64(base + 16, true);
-                    const addr      = self._dv.getUint32(base + 24, true);
-                    const len       = self._dv.getUint32(base + 28, true);
-                    const addr2     = self._dv.getUint32(base + 32, true);
-                    const len2      = self._dv.getUint32(base + 36, true);
-                    const userData  = self._dv.getBigUint64(base + 40, true);
-                    const resultPtr = self._dv.getUint32(base + 48, true);
-                    const flags2    = self._dv.getUint32(base + 52, true);
+                    const addr      = Number(self._dv.getBigUint64(base + 24, true));
+                    const len       = Number(self._dv.getBigUint64(base + 32, true));
+                    const addr2     = Number(self._dv.getBigUint64(base + 40, true));
+                    const len2      = Number(self._dv.getBigUint64(base + 48, true));
+                    const userData  = self._dv.getBigUint64(base + 56, true);
+                    const resultPtr = Number(self._dv.getBigUint64(base + 64, true));
 
                     const token = _ioNextToken++;
 
@@ -1383,40 +1548,146 @@ class WAPI {
                         }
 
                         case WAPI_IO_OP_CONNECT: {
-                            const url = self._readString(addr2, len2);
-                            const transport = flags2;
-                            if (transport === WAPI_NET_TRANSPORT_WEBSOCKET) {
-                                try {
-                                    const ws = new WebSocket(url);
-                                    ws._recvQueue = [];
-                                    ws.binaryType = "arraybuffer";
-                                    ws.onmessage = (ev) => {
-                                        const data = ev.data instanceof ArrayBuffer
-                                            ? new Uint8Array(ev.data)
-                                            : new TextEncoder().encode(ev.data);
-                                        ws._recvQueue.push(data);
-                                    };
-                                    ws.onopen = () => {
-                                        const h = self.handles.insert({ type: "websocket", ws });
-                                        if (resultPtr) self._writeI32(resultPtr, h);
-                                        _pushIoCompletion(userData, h, 0);
-                                        _ioPending.delete(token);
-                                    };
-                                    ws.onerror = () => {
-                                        _pushIoCompletion(userData, WAPI_ERR_CONNREFUSED, 0);
-                                        _ioPending.delete(token);
-                                    };
-                                    _ioPending.set(token, { userData });
-                                } catch (e) {
+                            // flags = WAPI_NET_* qualities. The shim picks any
+                            // browser-available transport that satisfies them,
+                            // or completes with WAPI_ERR_NOTSUP. Capability gate
+                            // is enforced first so a host that didn't grant
+                            // wapi_network can never open a socket.
+                            if (!supportedCaps.includes("wapi.network")) {
+                                _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                                break;
+                            }
+                            const address = self._readString(addr, len);
+                            const qualities = flags;
+                            // Browsers can satisfy reliable+ordered+framed+encrypted
+                            // via WebSocket(wss). Anything else (raw datagrams,
+                            // listen, broadcast, multiplexed streams, plaintext)
+                            // is not reachable from this host.
+                            const wsRequired =
+                                WAPI_NET_RELIABLE | WAPI_NET_ORDERED |
+                                WAPI_NET_MESSAGE_FRAMED | WAPI_NET_ENCRYPTED;
+                            const wsForbidden =
+                                WAPI_NET_BROADCAST | WAPI_NET_MULTIPLEXED;
+                            const wsCompatible =
+                                ((qualities & wsRequired) === wsRequired) &&
+                                ((qualities & wsForbidden) === 0);
+                            if (!wsCompatible) {
+                                _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                                break;
+                            }
+                            try {
+                                const ws = new WebSocket(address);
+                                ws._recvQueue = [];
+                                ws.binaryType = "arraybuffer";
+                                ws.onmessage = (ev) => {
+                                    const data = ev.data instanceof ArrayBuffer
+                                        ? new Uint8Array(ev.data)
+                                        : new TextEncoder().encode(ev.data);
+                                    ws._recvQueue.push(data);
+                                };
+                                ws.onopen = () => {
+                                    const h = self.handles.insert({ type: "websocket", ws });
+                                    if (resultPtr) self._writeI32(resultPtr, h);
+                                    _pushIoCompletion(userData, h, 0);
+                                    _ioPending.delete(token);
+                                };
+                                ws.onerror = () => {
                                     _pushIoCompletion(userData, WAPI_ERR_CONNREFUSED, 0);
-                                }
-                            } else {
-                                const h = self.handles.insert({ type: "fetch", url, buffer: null });
-                                if (resultPtr) self._writeI32(resultPtr, h);
-                                _pushIoCompletion(userData, h, 0);
+                                    _ioPending.delete(token);
+                                };
+                                _ioPending.set(token, { userData });
+                            } catch (e) {
+                                _pushIoCompletion(userData, WAPI_ERR_CONNREFUSED, 0);
                             }
                             break;
                         }
+
+                        case WAPI_IO_OP_NETWORK_LISTEN:
+                        case WAPI_IO_OP_ACCEPT:
+                        case WAPI_IO_OP_NETWORK_CHANNEL_OPEN:
+                        case WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT:
+                        case WAPI_IO_OP_NETWORK_RESOLVE:
+                            // Browsers can't listen for inbound connections,
+                            // can't open multiplexed channels (no WebTransport
+                            // in the shim yet), and have no DNS API. The host
+                            // capability check still runs first so non-network
+                            // sandboxes return the same NOTSUP they would for
+                            // CONNECT instead of leaking an "unsupported here"
+                            // signal that callers might confuse with denial.
+                            if (!supportedCaps.includes("wapi.network")) {
+                                _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                                break;
+                            }
+                            _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                            break;
+
+                        case WAPI_IO_OP_SEND: {
+                            const obj = self.handles.get(fd);
+                            if (!obj) { _pushIoCompletion(userData, WAPI_ERR_BADF, 0); break; }
+                            if (obj.type === "websocket" && obj.ws) {
+                                if (obj.ws.readyState !== WebSocket.OPEN) {
+                                    _pushIoCompletion(userData, WAPI_ERR_PIPE, 0);
+                                    break;
+                                }
+                                self._refreshViews();
+                                obj.ws.send(self._u8.slice(addr, addr + len));
+                                if (resultPtr) self._writeU32(resultPtr, len);
+                                _pushIoCompletion(userData, len, 0);
+                                break;
+                            }
+                            _pushIoCompletion(userData, WAPI_ERR_BADF, 0);
+                            break;
+                        }
+
+                        case WAPI_IO_OP_RECV: {
+                            const obj = self.handles.get(fd);
+                            if (!obj) { _pushIoCompletion(userData, WAPI_ERR_BADF, 0); break; }
+                            if (obj.type === "websocket" && obj.ws) {
+                                if (obj.ws._recvQueue.length === 0) {
+                                    _pushIoCompletion(userData, WAPI_ERR_AGAIN, 0);
+                                    break;
+                                }
+                                const chunk = obj.ws._recvQueue.shift();
+                                const copyLen = Math.min(chunk.length, len);
+                                self._refreshViews();
+                                self._u8.set(chunk.subarray(0, copyLen), addr);
+                                if (copyLen < chunk.length) {
+                                    obj.ws._recvQueue.unshift(chunk.subarray(copyLen));
+                                }
+                                if (resultPtr) self._writeU32(resultPtr, copyLen);
+                                _pushIoCompletion(userData, copyLen, 0);
+                                break;
+                            }
+                            _pushIoCompletion(userData, WAPI_ERR_BADF, 0);
+                            break;
+                        }
+
+                        case WAPI_IO_OP_HTTP_FETCH:
+                            // Gate on the wapi.http capability — if the host
+                            // didn't advertise support (see _detectCapabilities),
+                            // the op is rejected rather than silently forwarded.
+                            if (!supportedCaps.includes("wapi.http")) {
+                                _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                                break;
+                            }
+                            wapi_http.dispatch_fetch(addr, len, addr2, len2, flags, userData);
+                            break;
+
+                        case WAPI_IO_OP_COMPRESS_PROCESS:
+                            if (!supportedCaps.includes("wapi.compression")) {
+                                _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                                break;
+                            }
+                            wapi_compression.dispatch_process(addr, len, addr2, len2, flags, flags2, userData);
+                            break;
+
+                        case WAPI_IO_OP_FONT_GET_BYTES:
+                            if (!supportedCaps.includes("wapi.font")) {
+                                _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                                break;
+                            }
+                            wapi_font_bytes.dispatch(addr, len, addr2, len2, flags, flags2, userData);
+                            break;
 
                         default:
                             _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
@@ -1833,141 +2104,147 @@ class WAPI {
         };
 
         // -------------------------------------------------------------------
-        // wapi_net (networking)
+        // wapi_network has no separate import module. All network operations
+        // (CONNECT, LISTEN, ACCEPT, CHANNEL_OPEN, CHANNEL_ACCEPT, RESOLVE,
+        // SEND, RECV, CLOSE) flow through wapi_io.submit by opcode. The
+        // dispatch lives inline in wapi_io.submit above and is gated by the
+        // "wapi_network" capability — see wapi_network.h for the spec.
         // -------------------------------------------------------------------
-        const wapi_net = {
-            connect(descPtr, connOutPtr) {
-                self._refreshViews();
-                const urlPtr = self._readU32(descPtr + 0);
-                const urlLen = self._readU32(descPtr + 4);
-                const transport = self._readU32(descPtr + 8);
-                const url = self._readString(urlPtr, urlLen);
 
-                if (transport === WAPI_NET_TRANSPORT_WEBSOCKET) {
+        // -------------------------------------------------------------------
+        // wapi_http (one-shot HTTP requests)
+        //
+        // Backs WAPI_IO_OP_HTTP_FETCH. wapi_io.submit forwards op fields to
+        // wapi_http.dispatch_fetch which kicks the async fetch and pushes
+        // a WAPI_EVENT_IO_COMPLETION record onto the shared _eventQueue
+        // when the response settles.
+        // -------------------------------------------------------------------
+        const _httpMethods = ["GET", "POST", "PUT", "DELETE", "HEAD"];
+
+        const wapi_http = {
+            dispatch_fetch(addr, len, addr2, len2, method, userData) {
+                const url = self._readString(addr, len);
+                const verb = _httpMethods[method] || "GET";
+
+                fetch(url, { method: verb, mode: "cors" })
+                    .then(async (r) => {
+                        const buf = new Uint8Array(await r.arrayBuffer());
+                        self._refreshViews();
+                        const n = Math.min(len2, buf.byteLength);
+                        if (n > 0) self._u8.set(buf.subarray(0, n), addr2);
+                        _pushIoCompletion(userData, r.ok ? n : -1, r.status);
+                    })
+                    .catch((err) => {
+                        console.warn("[wapi_http]", url, err && (err.message || err));
+                        _pushIoCompletion(userData, -1, 0);
+                    });
+            },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_compression (gzip / deflate / deflate-raw via Compression Streams)
+        //
+        // Backs WAPI_IO_OP_COMPRESS_PROCESS. wapi_io.submit forwards op
+        // fields to wapi_compression.dispatch_process which streams the
+        // input through CompressionStream / DecompressionStream and pushes
+        // a WAPI_EVENT_IO_COMPLETION record when the result is ready.
+        // -------------------------------------------------------------------
+        const _compressFormats = ["gzip", "deflate", "deflate-raw"];
+
+        // -------------------------------------------------------------------
+        // wapi_font_bytes (raw container fetch)
+        //
+        // Backs WAPI_IO_OP_FONT_GET_BYTES. Uses the Font Access API
+        // (navigator.queryLocalFonts) to pull raw ttf/otf/woff bytes for
+        // a system font face. The bytes are returned opaque — the caller
+        // parses them with its own shaper/rasterizer. Weight + style are
+        // best-effort filters; exact match is not guaranteed.
+        // -------------------------------------------------------------------
+        const wapi_font_bytes = {
+            dispatch(addr, len, addr2, len2, weight, styleFlags, userData) {
+                if (typeof navigator === "undefined" || !navigator.queryLocalFonts) {
+                    _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                    return;
+                }
+                const family = self._readString(addr, len);
+
+                (async () => {
                     try {
-                        const ws = new WebSocket(url);
-                        ws._recvQueue = [];
-                        ws.binaryType = "arraybuffer";
-                        ws.onmessage = (ev) => {
-                            const data = ev.data instanceof ArrayBuffer
-                                ? new Uint8Array(ev.data)
-                                : new TextEncoder().encode(ev.data);
-                            ws._recvQueue.push(data);
-                        };
-                        const h = self.handles.insert({ type: "websocket", ws, url });
-                        self._writeI32(connOutPtr, h);
-                        return WAPI_OK;
-                    } catch (e) {
-                        self._lastError = e.message;
-                        return WAPI_ERR_CONNREFUSED;
+                        const fonts = await navigator.queryLocalFonts();
+                        // Linear scan. Font counts are in the hundreds
+                        // at most, and this op runs once per face load —
+                        // a hash lookup would be more code than it saves.
+                        let match = null;
+                        let fallback = null;
+                        const wantItalic = (styleFlags & 0x0002) !== 0;
+                        for (let i = 0; i < fonts.length; i++) {
+                            const f = fonts[i];
+                            if (f.family !== family) continue;
+                            if (fallback === null) fallback = f;
+                            // Style/subfamily strings vary per platform;
+                            // match loosely on italic + weight substrings.
+                            const style = (f.style || "").toLowerCase();
+                            const italicOk = wantItalic
+                                ? style.includes("italic") || style.includes("oblique")
+                                : !(style.includes("italic") || style.includes("oblique"));
+                            if (!italicOk) continue;
+                            if (weight === 0) { match = f; break; }
+                            if (style.includes(String(weight))) { match = f; break; }
+                        }
+                        const picked = match || fallback;
+                        if (!picked) {
+                            _pushIoCompletion(userData, WAPI_ERR_NOENT, 0);
+                            return;
+                        }
+                        const blob = await picked.blob();
+                        const buf = new Uint8Array(await blob.arrayBuffer());
+                        self._refreshViews();
+                        if (buf.byteLength > len2) {
+                            // Probe or undersized buffer — report required size
+                            // as the absolute value of the negative result so
+                            // callers can reallocate and retry.
+                            _pushIoCompletion(userData, -buf.byteLength, 0);
+                            return;
+                        }
+                        if (buf.byteLength > 0) self._u8.set(buf, addr2);
+                        _pushIoCompletion(userData, buf.byteLength, 0);
+                    } catch (err) {
+                        console.warn("[wapi_font_bytes]", family, err && (err.message || err));
+                        _pushIoCompletion(userData, WAPI_ERR_ACCES, 0);
                     }
-                }
-
-                // HTTP / generic: store a fetch handle
-                const h = self.handles.insert({ type: "fetch_conn", url });
-                self._writeI32(connOutPtr, h);
-                return WAPI_OK;
+                })();
             },
+        };
 
-            listen(descPtr, listenerOutPtr) {
-                // Browsers cannot listen for incoming connections
-                return WAPI_ERR_NOTSUP;
-            },
+        const wapi_compression = {
+            dispatch_process(addr, len, addr2, len2, algo, mode, userData) {
+                const format = _compressFormats[algo];
+                if (!format) { _pushIoCompletion(userData, -1, 0); return; }
 
-            accept(listener, connOutPtr) {
-                return WAPI_ERR_NOTSUP;
-            },
+                const decompress = mode === 1;
+                const Stream = decompress
+                    ? (typeof DecompressionStream !== "undefined" ? DecompressionStream : null)
+                    : (typeof CompressionStream   !== "undefined" ? CompressionStream   : null);
+                if (!Stream) { _pushIoCompletion(userData, -1, 0); return; }
 
-            close(handle) {
-                const obj = self.handles.remove(handle);
-                if (!obj) return WAPI_ERR_BADF;
-                if (obj.ws) {
-                    try { obj.ws.close(); } catch (_) {}
-                }
-                if (obj.wt) {
-                    try { obj.wt.close(); } catch (_) {}
-                }
-                return WAPI_OK;
-            },
-
-            stream_open(conn, type, streamOutPtr) {
-                const obj = self.handles.get(conn);
-                if (!obj) return WAPI_ERR_BADF;
-                if (obj.wt && obj.wt.createBidirectionalStream) {
-                    // WebTransport streams - would need async handling
-                    return WAPI_ERR_NOTSUP;
-                }
-                // For WebSocket, the connection itself is the stream
-                self._writeI32(streamOutPtr, conn);
-                return WAPI_OK;
-            },
-
-            stream_accept(conn, streamOutPtr) {
-                return WAPI_ERR_AGAIN;
-            },
-
-            send(handle, bufPtr, len, bytesSentPtr) {
-                const obj = self.handles.get(handle);
-                if (!obj) return WAPI_ERR_BADF;
+                // Snapshot input bytes now — linear memory may grow during await.
                 self._refreshViews();
-                const data = self._u8.slice(bufPtr, bufPtr + len);
+                const input = self._u8.slice(addr, addr + len);
 
-                if (obj.type === "websocket" && obj.ws) {
-                    if (obj.ws.readyState !== WebSocket.OPEN) return WAPI_ERR_PIPE;
-                    obj.ws.send(data);
-                    self._writeU32(bytesSentPtr, len);
-                    return WAPI_OK;
-                }
+                (async () => {
+                    try {
+                        const stream = new Blob([input]).stream().pipeThrough(new Stream(format));
+                        const out = new Uint8Array(await new Response(stream).arrayBuffer());
 
-                if (obj.type === "fetch_conn") {
-                    // Use fetch POST for sending
-                    fetch(obj.url, {
-                        method: "POST",
-                        body: data,
-                    }).catch(() => {});
-                    self._writeU32(bytesSentPtr, len);
-                    return WAPI_OK;
-                }
-
-                return WAPI_ERR_BADF;
-            },
-
-            recv(handle, bufPtr, len, bytesRecvPtr) {
-                const obj = self.handles.get(handle);
-                if (!obj) return WAPI_ERR_BADF;
-
-                if (obj.type === "websocket" && obj.ws) {
-                    if (obj.ws._recvQueue.length === 0) {
-                        self._writeU32(bytesRecvPtr, 0);
-                        return WAPI_ERR_AGAIN;
+                        self._refreshViews();
+                        const n = Math.min(len2, out.byteLength);
+                        if (n > 0) self._u8.set(out.subarray(0, n), addr2);
+                        _pushIoCompletion(userData, out.byteLength > len2 ? -2 : n, 0);
+                    } catch (err) {
+                        console.warn("[wapi_compression]", err && (err.message || err));
+                        _pushIoCompletion(userData, -1, 0);
                     }
-                    const chunk = obj.ws._recvQueue.shift();
-                    const copyLen = Math.min(chunk.length, len);
-                    self._refreshViews();
-                    self._u8.set(chunk.subarray(0, copyLen), bufPtr);
-                    if (copyLen < chunk.length) {
-                        // Push remainder back
-                        obj.ws._recvQueue.unshift(chunk.subarray(copyLen));
-                    }
-                    self._writeU32(bytesRecvPtr, copyLen);
-                    return WAPI_OK;
-                }
-
-                return WAPI_ERR_AGAIN;
-            },
-
-            send_datagram(conn, bufPtr, len) {
-                return WAPI_ERR_NOTSUP;
-            },
-
-            recv_datagram(conn, bufPtr, len, recvLenPtr) {
-                return WAPI_ERR_NOTSUP;
-            },
-
-            resolve(hostPtr, hostLen, addrsBufPtr, bufLen, countPtr) {
-                // DNS resolution not available from browser JS
-                self._writeU32(countPtr, 0);
-                return WAPI_ERR_NOTSUP;
+                })();
             },
         };
 
@@ -3923,7 +4200,7 @@ class WAPI {
                 if (index < 0 || index >= fonts.length) return WAPI_ERR_OVERFLOW;
                 // Write wapi_font_info_t (24 bytes):
                 //   ptr family(0), u32 family_len(4), u32 weight_min(8),
-                //   u32 weight_max(12), u32 style_flags(16), i32 is_variable(20)
+                //   u32 weight_max(12), u32 supported_styles(16), i32 is_variable(20)
                 // We can't write the family name pointer directly (it's in wasm memory)
                 // For now, write zeros for the pointer fields and fill weight info
                 self._refreshViews();
@@ -3931,7 +4208,7 @@ class WAPI {
                 self._writeU32(infoPtr + 4, 0);      // family_len
                 self._writeU32(infoPtr + 8, 100);    // weight_min
                 self._writeU32(infoPtr + 12, 900);   // weight_max
-                self._writeU32(infoPtr + 16, 0x0007); // HAS_NORMAL | HAS_ITALIC | HAS_OBLIQUE
+                self._writeU32(infoPtr + 16, 0x0007); // NORMAL_BIT | ITALIC_BIT | OBLIQUE_BIT
                 self._writeI32(infoPtr + 20, 0);     // is_variable
                 return WAPI_OK;
             },
@@ -3999,13 +4276,131 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_module (runtime module linking - stub)
         // -------------------------------------------------------------------
+        // Content-addressed module cache. prefetch() populates it in
+        // the background; is_cached() polls; load() instantiates a
+        // ready entry synchronously. Calls and shared-memory paths
+        // remain NOTSUP — scope is bootstrap cache, not full runtime
+        // linking.
         const wapi_module = {
-            // Module lifecycle
-            load(hashPtr, urlPtr, urlLen, modulePtr) { return WAPI_ERR_NOTSUP; },
-            get_func(mod, namePtr, nameLen, funcPtr) { return WAPI_ERR_NOTSUP; },
+            // (i32 hash_ptr, i32 url_sv_ptr, i32 module_out_ptr) -> i32
+            //
+            // wapi_string_view_t is passed by hidden byval pointer in
+            // the wasm32 ABI, so url_sv_ptr is a single pointer to the
+            // 16-byte struct, not a (data, len) pair.
+            load(hashPtr, urlSvPtr, modulePtr) {
+                self._refreshViews();
+                const hashHex = _wapiReadModuleHash(self._u8, hashPtr);
+                if (!hashHex) return WAPI_ERR_INVAL;
+
+                const entry = _wapiModuleCache.get(hashHex);
+                if (!entry || entry.state !== "ready") {
+                    return WAPI_ERR_NOENT;
+                }
+
+                try {
+                    const imports = self._buildImports();
+                    // WebAssembly.instantiate is async when given a
+                    // Module, but instantiate() with a compiled Module
+                    // has a sync form: `new WebAssembly.Instance(...)`.
+                    const inst = new WebAssembly.Instance(entry.module, imports);
+                    const handle = self.handles.insert({
+                        type: "module",
+                        instance: inst,
+                        module: entry.module,
+                        hash: hashHex,
+                    });
+                    self._writeI32(modulePtr, handle);
+                    return WAPI_OK;
+                } catch (e) {
+                    console.error("[WAPI] wapi_module.load instantiate failed:", e);
+                    return WAPI_ERR_IO;
+                }
+            },
+            get_func(mod, nameSvPtr, funcPtr) { return WAPI_ERR_NOTSUP; },
             get_desc(mod, descPtr) { return WAPI_ERR_NOTSUP; },
-            get_hash(mod, hashPtr) { return WAPI_ERR_NOTSUP; },
-            release(mod) { return WAPI_OK; },
+            get_hash(mod, hashPtr) {
+                self._refreshViews();
+                const entry = self.handles.get(mod);
+                if (!entry || entry.type !== "module") return WAPI_ERR_INVAL;
+                const hex = entry.hash;
+                for (let i = 0; i < 32; i++) {
+                    self._u8[hashPtr + i] = parseInt(hex.substr(i * 2, 2), 16);
+                }
+                return WAPI_OK;
+            },
+            release(mod) {
+                const entry = self.handles.get(mod);
+                if (!entry) return WAPI_OK;
+                if (entry.type === "module") {
+                    self.handles.remove(mod);
+                } else if (entry.type === "service") {
+                    // Notify SW to decrement refcount; drop local handle
+                    // regardless of reply (fire-and-forget).
+                    _wapiExtPost("services.release", { handle: entry.swHandle });
+                    self.handles.remove(mod);
+                }
+                return WAPI_OK;
+            },
+
+            // (i32 hash_ptr, i32 url_sv_ptr, i32 name_sv_ptr, i32 module_out_ptr) -> i32
+            //
+            // Service-mode join. First call kicks off an async SW round
+            // trip and returns WAPI_ERR_AGAIN. Caller polls by re-calling
+            // with the same args until WAPI_OK is returned and *module_out_ptr
+            // is populated with a service handle. See _wapiServiceJoins for
+            // the state machine.
+            join(hashPtr, urlSvPtr, nameSvPtr, modulePtr) {
+                self._refreshViews();
+                const hashHex = _wapiReadModuleHash(self._u8, hashPtr);
+                if (!hashHex) return WAPI_ERR_INVAL;
+                const url = urlSvPtr ? self._readStringView(urlSvPtr) : null;
+                const name = nameSvPtr ? self._readStringView(nameSvPtr) : "";
+                const key = hashHex + ":" + (name || "");
+
+                const entry = _wapiServiceJoins.get(key);
+                if (entry) {
+                    if (entry.state === "pending") return WAPI_ERR_AGAIN;
+                    if (entry.state === "failed") {
+                        _wapiServiceJoins.delete(key);
+                        return WAPI_ERR_IO;
+                    }
+                    // ready
+                    const handle = self.handles.insert({
+                        type: "service",
+                        swHandle: entry.handle,
+                        hash: hashHex,
+                        name,
+                    });
+                    self._writeI32(modulePtr, handle);
+                    _wapiServiceJoins.delete(key);
+                    return WAPI_OK;
+                }
+
+                // Kick off SW round trip.
+                _wapiServiceJoins.set(key, { state: "pending" });
+                _wapiExtSend("services.join", { hashHex, name, url }).then(
+                    (resp) => {
+                        if (resp && typeof resp.handle === "number") {
+                            _wapiServiceJoins.set(key, {
+                                state: "ready",
+                                handle: resp.handle,
+                            });
+                        } else {
+                            _wapiServiceJoins.set(key, {
+                                state: "failed",
+                                error: (resp && resp.error) || "no response",
+                            });
+                        }
+                    },
+                    (err) => {
+                        _wapiServiceJoins.set(key, {
+                            state: "failed",
+                            error: String(err && err.message || err),
+                        });
+                    },
+                );
+                return WAPI_ERR_AGAIN;
+            },
             call(mod, func, argsPtr, nargs, resultsPtr, nresults) { return WAPI_ERR_NOTSUP; },
             // Shared memory
             shared_alloc(size, align) { return 0; },
@@ -4019,10 +4414,54 @@ class WAPI {
             reclaim(borrow) { return WAPI_ERR_NOTSUP; },
             // Explicit copy
             copy_in(mod, srcPtr, len, childPtrOut) { return WAPI_ERR_NOTSUP; },
-            // I/O policy & cache
+            // I/O policy
             set_io_policy(mod, policyFlags) { return WAPI_ERR_NOTSUP; },
-            is_cached(hashPtr) { return 0; },
-            prefetch(hashPtr, urlPtr, urlLen) { return WAPI_ERR_NOTSUP; },
+
+            // (i32 hash_ptr) -> i32
+            is_cached(hashPtr) {
+                self._refreshViews();
+                const hashHex = _wapiReadModuleHash(self._u8, hashPtr);
+                if (!hashHex) return 0;
+                const entry = _wapiModuleCache.get(hashHex);
+                return entry && entry.state === "ready" ? 1 : 0;
+            },
+
+            // (i32 hash_ptr, i32 url_sv_ptr) -> i32
+            //
+            // Non-blocking: kicks off the fetch+verify+compile in the
+            // background and returns WAPI_OK immediately. Caller polls
+            // is_cached(), then calls load() once ready. Re-entering
+            // prefetch for a hash already pending or ready is a no-op.
+            prefetch(hashPtr, urlSvPtr) {
+                self._refreshViews();
+                const hashHex = _wapiReadModuleHash(self._u8, hashPtr);
+                if (!hashHex) return WAPI_ERR_INVAL;
+
+                const existing = _wapiModuleCache.get(hashHex);
+                if (existing && (existing.state === "ready" || existing.state === "pending")) {
+                    return WAPI_OK;
+                }
+
+                const url = urlSvPtr ? self._readStringView(urlSvPtr) : null;
+                const promise = _wapiFetchAndCompile(hashHex, url).then(
+                    (mod) => {
+                        _wapiModuleCache.set(hashHex, {
+                            state: "ready",
+                            module: mod,
+                            hash: hashHex,
+                        });
+                    },
+                    (err) => {
+                        console.error(`[WAPI] prefetch ${hashHex} failed:`, err);
+                        _wapiModuleCache.set(hashHex, {
+                            state: "failed",
+                            error: String(err && err.message || err),
+                        });
+                    },
+                );
+                _wapiModuleCache.set(hashHex, { state: "pending", promise });
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -4210,14 +4649,6 @@ class WAPI {
         };
 
         // -------------------------------------------------------------------
-        // wapi_wake (wake lock)
-        // -------------------------------------------------------------------
-        const wapi_wake = {
-            acquire(type, lockPtr) { return WAPI_ERR_NOTSUP; },
-            release(lock) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
         // wapi_orient (screen orientation)
         // -------------------------------------------------------------------
         const wapi_orient = {
@@ -4242,18 +4673,6 @@ class WAPI {
             encode(codec, dataPtr, dataLen, timestampLo, timestampHi) { return WAPI_ERR_NOTSUP; },
             get_output(codec, bufPtr, bufLen, outLenPtr, tsPtr) { return WAPI_ERR_NOTSUP; },
             flush(codec) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
-        // wapi_compress (compression - stub)
-        // -------------------------------------------------------------------
-        const wapi_compress = {
-            create(algo, mode, level, streamPtr) { return WAPI_ERR_NOTSUP; },
-            destroy(stream) { return WAPI_ERR_NOTSUP; },
-            write(stream, dataPtr, len) { return WAPI_ERR_NOTSUP; },
-            read(stream, bufPtr, bufLen, bytesReadPtr) { return WAPI_ERR_NOTSUP; },
-            finish(stream) { return WAPI_ERR_NOTSUP; },
-            oneshot(algo, mode, inPtr, inLen, outPtr, outLen, outWrittenPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -4307,19 +4726,17 @@ class WAPI {
         };
 
         // -------------------------------------------------------------------
-        // wapi_battery (battery status - stub)
+        // wapi_power (battery, wake lock, idle, saver, thermal - stubs)
         // -------------------------------------------------------------------
-        const wapi_battery = {
+        const wapi_power = {
             get_info(infoPtr) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
-        // wapi_idle (idle detection - stub)
-        // -------------------------------------------------------------------
-        const wapi_idle = {
-            start(thresholdMs) { return WAPI_ERR_NOTSUP; },
-            stop() { return WAPI_ERR_NOTSUP; },
-            get_state(statePtr) { return WAPI_ERR_NOTSUP; },
+            wake_acquire(type, lockPtr) { return WAPI_ERR_NOTSUP; },
+            wake_release(lock) { return WAPI_ERR_NOTSUP; },
+            idle_start(thresholdMs) { return WAPI_ERR_NOTSUP; },
+            idle_stop() { return WAPI_ERR_NOTSUP; },
+            idle_get(statePtr) { return WAPI_ERR_NOTSUP; },
+            saver_get(statePtr) { return WAPI_ERR_NOTSUP; },
+            thermal_get(statePtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -4343,19 +4760,6 @@ class WAPI {
                 return WAPI_ERR_NOTSUP;
             },
             gamepad_vibrate(gamepadIndex, strongPtr, weakPtr, durationMs) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
-        // wapi_p2p (peer-to-peer - stub)
-        // -------------------------------------------------------------------
-        const wapi_p2p = {
-            create(configPtr, connPtr) { return WAPI_ERR_NOTSUP; },
-            create_offer(conn, sdpBufPtr) { return WAPI_ERR_NOTSUP; },
-            create_answer(conn, sdpBufPtr) { return WAPI_ERR_NOTSUP; },
-            set_remote_desc(conn, sdpPtr, sdpLen) { return WAPI_ERR_NOTSUP; },
-            add_ice_candidate(conn, candidatePtr, candidateLen) { return WAPI_ERR_NOTSUP; },
-            send(conn, dataPtr, dataLen) { return WAPI_ERR_NOTSUP; },
-            close(conn) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -5200,14 +5604,22 @@ class WAPI {
             sock_shutdown(fd, how) { return WASI_ENOSYS; },
         };
 
-        return { wapi, wapi_env, wapi_memory, wapi_clock, wapi_filesystem, wapi_net,
+        // wapi_http, wapi_compression, and wapi_network are NOT returned as
+        // separate import modules. All three flow through wapi_io.submit via
+        // their respective opcodes, matching the header spec. The wasm module
+        // never imports them by name; the shim's only network surface is
+        // wapi_io. Exposing them here would invite duplicate, out-of-spec
+        // surface area and break the capability-gating contract: a host that
+        // didn't grant wapi_network would still be reachable via the legacy
+        // module import.
+        return { wapi, wapi_env, wapi_memory, wapi_clock, wapi_filesystem,
                  wapi_gpu, wapi_wgpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_text,
                  wapi_clipboard, wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
                  wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
                  wapi_share, wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr,
-                 wapi_register, wapi_taskbar, wapi_perm, wapi_wake, wapi_orient,
-                 wapi_codec, wapi_compress, wapi_media, wapi_mediacaps, wapi_encode,
-                 wapi_authn, wapi_netinfo, wapi_battery, wapi_idle, wapi_haptic,
+                 wapi_register, wapi_taskbar, wapi_perm, wapi_power, wapi_orient,
+                 wapi_codec, wapi_media, wapi_mediacaps, wapi_encode,
+                 wapi_authn, wapi_netinfo, wapi_haptic,
                  wapi_p2p, wapi_hid, wapi_serial, wapi_capture, wapi_contacts,
                  wapi_barcode, wapi_nfc, wapi_dnd,
                  wasi_snapshot_preview1 };
@@ -5357,6 +5769,16 @@ class WAPI {
             case 0x020A: // DPI_CHANGED
                 this._dv.setInt32(ptr + 16, ev.data1 || 0, true);
                 this._dv.setInt32(ptr + 20, ev.data2 || 0, true);
+                break;
+
+            case WAPI_EVENT_IO_COMPLETION:
+                // wapi_io_event_t after 16-byte common header:
+                //   16: int32_t   result
+                //   20: uint32_t  flags
+                //   24: uint64_t  user_data
+                this._dv.setInt32(ptr + 16, ev.result | 0, true);
+                this._dv.setUint32(ptr + 20, ev.flags >>> 0, true);
+                this._dv.setBigUint64(ptr + 24, BigInt(ev.userData || 0n), true);
                 break;
 
             default:
@@ -5836,13 +6258,22 @@ class WAPI {
         // Fetch and compile the wasm module.
         //
         // We always materialize bytes (instead of instantiateStreaming)
-        // so we can sha256-hash them and report to the WAPI browser
-        // extension's module cache viewer. The streaming-vs-buffered
-        // delta is dominated by compile + _start, so this is in the
-        // noise for any non-trivial module.
+        // so we can sha256-hash them and round-trip through the WAPI
+        // browser extension's content-addressed cache. The streaming-
+        // vs-buffered delta is dominated by compile + _start, so it's
+        // in the noise for any non-trivial module.
+        //
+        // SRI mode: when config.hash is supplied, the site has committed
+        // to a specific wasm binary. We try the extension cache first
+        // (skipping the network on hit), then fall back to the URL,
+        // verifying that the fetched bytes hash matches before compile.
         let wasmModule, wasmInstance;
         let wasmBytes = null;
-        let wasmUrl = '';
+        let wasmUrl = "";
+        let gotFromCache = false;
+        const expectedHash = typeof config.hash === "string"
+            ? config.hash.toLowerCase()
+            : null;
 
         if (wasmSource instanceof WebAssembly.Module) {
             wasmModule = wasmSource;
@@ -5859,10 +6290,21 @@ class WAPI {
             wasmUrl = wasmSource instanceof Response
                 ? (wasmSource.url || "")
                 : String(wasmSource);
-            const response = wasmSource instanceof Response
-                ? wasmSource
-                : await fetch(wasmSource);
-            wasmBytes = await response.arrayBuffer();
+
+            if (expectedHash) {
+                const resp = await _wapiExtSend("modules.fetch", { hash: expectedHash });
+                if (resp && resp.bytesB64) {
+                    wasmBytes = _wapiB64ToBytes(resp.bytesB64).buffer;
+                    gotFromCache = true;
+                }
+            }
+
+            if (!gotFromCache) {
+                const response = wasmSource instanceof Response
+                    ? wasmSource
+                    : await fetch(wasmSource);
+                wasmBytes = await response.arrayBuffer();
+            }
             wasmModule = await WebAssembly.compile(wasmBytes);
         }
 
@@ -5870,28 +6312,35 @@ class WAPI {
             wasmInstance = await WebAssembly.instantiate(wasmModule, imports);
         }
 
-        // Tell the WAPI browser extension (if installed) that we just
-        // saw this module. The bridge content_script in the isolated
-        // world picks up window.postMessage and forwards to sw.js,
-        // which records hash → {hits, misses, size, url} in IDB. If
-        // no extension is present this is a silent no-op.
+        // Hash the bytes (for SRI verification and cache insert).
+        // Failure must never break the load — unless we had an
+        // expectedHash that mismatched, which is a hard error.
         if (wasmBytes && typeof crypto !== "undefined" && crypto.subtle) {
+            let hex = null;
             try {
                 const digest = await crypto.subtle.digest("SHA-256", wasmBytes);
-                let hex = "";
-                const view = new Uint8Array(digest);
-                for (let i = 0; i < view.length; i++) {
-                    hex += view[i].toString(16).padStart(2, "0");
-                }
-                window.postMessage({
-                    source: "wapi",
-                    type: "modules.touch",
-                    hash: hex,
-                    url: wasmUrl,
-                    size: wasmBytes.byteLength,
-                }, "*");
+                hex = _wapiHexHash(new Uint8Array(digest));
             } catch (e) {
-                // Hash/postMessage failure must never break the load.
+                // Crypto unavailable — skip verification and caching.
+            }
+
+            if (hex) {
+                if (expectedHash && hex !== expectedHash) {
+                    throw new Error(
+                        `[WAPI] module hash mismatch: expected ${expectedHash}, got ${hex}`
+                    );
+                }
+                // Store into the extension cache on miss. On hit the
+                // SW already has the bytes; re-storing would double-
+                // count the miss counter. Fire-and-forget — the shim
+                // doesn't need confirmation.
+                if (!gotFromCache) {
+                    _wapiExtPost("modules.store", {
+                        hash: hex,
+                        url: wasmUrl,
+                        bytesB64: _wapiBytesToB64(new Uint8Array(wasmBytes)),
+                    });
+                }
             }
         }
 

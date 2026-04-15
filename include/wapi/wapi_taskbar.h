@@ -103,7 +103,7 @@ wapi_result_t wapi_taskbar_request_attention(wapi_handle_t surface,
 WAPI_IMPORT(wapi_taskbar, set_overlay_icon)
 wapi_result_t wapi_taskbar_set_overlay_icon(wapi_handle_t surface,
                                          const void* icon_data, wapi_size_t icon_len,
-                                         wapi_string_view_t description);
+                                         wapi_stringview_t description);
 
 /**
  * Clear overlay icon from taskbar icon.

@@ -77,7 +77,7 @@ _Static_assert(_Alignof(wapi_tray_menu_item_t) == 8,
  */
 WAPI_IMPORT(wapi_tray, tray_create)
 wapi_result_t wapi_tray_create(const void* icon_data, wapi_size_t icon_len,
-                               wapi_string_view_t tooltip,
+                               wapi_stringview_t tooltip,
                                wapi_handle_t* out_handle);
 
 /**
@@ -117,7 +117,7 @@ wapi_result_t wapi_tray_set_icon(wapi_handle_t handle,
  */
 WAPI_IMPORT(wapi_tray, tray_set_tooltip)
 wapi_result_t wapi_tray_set_tooltip(wapi_handle_t handle,
-                                    wapi_string_view_t text);
+                                    wapi_stringview_t text);
 
 /**
  * Set the context menu for the tray icon.

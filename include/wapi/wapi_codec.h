@@ -8,7 +8,7 @@
  *   1. Create:    wapi_codec_create_video / wapi_codec_create_audio
  *   2. Feed:      submit WAPI_IO_OP_CODEC_DECODE or WAPI_IO_OP_CODEC_ENCODE
  *   3. Receive:   WAPI_EVENT_IO_COMPLETION arrives when output is ready
- *   4. Retrieve:  submit WAPI_IO_OP_CODEC_GET_OUTPUT to copy the data
+ *   4. Retrieve:  submit WAPI_IO_OP_CODEC_OUTPUT_GET to copy the data
  *   5. Drain:     submit WAPI_IO_OP_CODEC_FLUSH; keep retrieving until done
  *   6. Destroy:   wapi_codec_destroy
  *
@@ -17,7 +17,7 @@
  * WAPI_EVENT_IO_COMPLETION events with the submitted user_data.
  *
  * @see WAPI_IO_OP_CODEC_DECODE, WAPI_IO_OP_CODEC_ENCODE,
- *      WAPI_IO_OP_CODEC_GET_OUTPUT, WAPI_IO_OP_CODEC_FLUSH
+ *      WAPI_IO_OP_CODEC_OUTPUT_GET, WAPI_IO_OP_CODEC_FLUSH
  *
  * Platform mapping:
  *   Web:     WebCodecs (VideoEncoder/Decoder, AudioEncoder/Decoder)
@@ -75,7 +75,7 @@ typedef enum wapi_codec_mode_t {
  *   Offset 28: uint32_t _reserved
  */
 
-typedef struct wapi_video_codec_config_t {
+typedef struct wapi_video_codec_desc_t {
     uint32_t codec;          /* wapi_codec_type_t */
     uint32_t mode;           /* wapi_codec_mode_t */
     int32_t  width;
@@ -84,12 +84,12 @@ typedef struct wapi_video_codec_config_t {
     float    framerate;      /* fps (encode only) */
     uint32_t profile;        /* codec-specific profile */
     uint32_t _reserved;
-} wapi_video_codec_config_t;
+} wapi_video_codec_desc_t;
 
-_Static_assert(sizeof(wapi_video_codec_config_t) == 32,
-               "wapi_video_codec_config_t must be 32 bytes");
-_Static_assert(_Alignof(wapi_video_codec_config_t) == 4,
-               "wapi_video_codec_config_t must be 4-byte aligned");
+_Static_assert(sizeof(wapi_video_codec_desc_t) == 32,
+               "wapi_video_codec_desc_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_video_codec_desc_t) == 4,
+               "wapi_video_codec_desc_t must be 4-byte aligned");
 
 /* ============================================================
  * Audio Codec Configuration
@@ -104,19 +104,19 @@ _Static_assert(_Alignof(wapi_video_codec_config_t) == 4,
  *   Offset 20: uint32_t _reserved
  */
 
-typedef struct wapi_audio_codec_config_t {
+typedef struct wapi_audio_codec_desc_t {
     uint32_t codec;          /* wapi_codec_type_t */
     uint32_t mode;           /* wapi_codec_mode_t */
     uint32_t sample_rate;
     uint32_t channels;
     uint32_t bitrate;
     uint32_t _reserved;
-} wapi_audio_codec_config_t;
+} wapi_audio_codec_desc_t;
 
-_Static_assert(sizeof(wapi_audio_codec_config_t) == 24,
-               "wapi_audio_codec_config_t must be 24 bytes");
-_Static_assert(_Alignof(wapi_audio_codec_config_t) == 4,
-               "wapi_audio_codec_config_t must be 4-byte aligned");
+_Static_assert(sizeof(wapi_audio_codec_desc_t) == 24,
+               "wapi_audio_codec_desc_t must be 24 bytes");
+_Static_assert(_Alignof(wapi_audio_codec_desc_t) == 4,
+               "wapi_audio_codec_desc_t must be 4-byte aligned");
 
 /* ============================================================
  * Encoded Chunk Descriptor
@@ -157,27 +157,27 @@ _Static_assert(_Alignof(wapi_codec_chunk_t) == 8,
 /**
  * Create a video encoder or decoder.
  *
- * @param config  Video codec configuration.
- * @param codec   [out] Codec handle.
+ * @param desc   Video codec descriptor.
+ * @param codec  [out] Codec handle.
  * @return WAPI_OK on success.
  *
  * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_codec, create_video)
-wapi_result_t wapi_codec_create_video(const wapi_video_codec_config_t* config,
+wapi_result_t wapi_codec_create_video(const wapi_video_codec_desc_t* desc,
                                       wapi_handle_t* codec);
 
 /**
  * Create an audio encoder or decoder.
  *
- * @param config  Audio codec configuration.
- * @param codec   [out] Codec handle.
+ * @param desc   Audio codec descriptor.
+ * @param codec  [out] Codec handle.
  * @return WAPI_OK on success.
  *
  * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_codec, create_audio)
-wapi_result_t wapi_codec_create_audio(const wapi_audio_codec_config_t* config,
+wapi_result_t wapi_codec_create_audio(const wapi_audio_codec_desc_t* desc,
                                       wapi_handle_t* codec);
 
 /**

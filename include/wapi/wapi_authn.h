@@ -72,7 +72,7 @@ _Static_assert(_Alignof(wapi_authn_credential_t) == 8,
 /**
  * Create a new credential (register a passkey).
  *
- * @see WAPI_IO_OP_AUTHN_CREATE_CREDENTIAL
+ * @see WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE
  *
  * @param rp_id          Relying party identifier (UTF-8, e.g., "example.com").
  * @param user_ptr       Pointer to user entity data (opaque to host).
@@ -84,7 +84,7 @@ _Static_assert(_Alignof(wapi_authn_credential_t) == 8,
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_authn, create_credential)
-wapi_result_t wapi_authn_create_credential(wapi_string_view_t rp_id,
+wapi_result_t wapi_authn_create_credential(wapi_stringview_t rp_id,
                                            const void* user_ptr,
                                            const void* challenge_ptr,
                                            wapi_size_t challenge_len);
@@ -101,7 +101,7 @@ wapi_result_t wapi_authn_create_credential(wapi_string_view_t rp_id,
  * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_authn, get_assertion)
-wapi_result_t wapi_authn_get_assertion(wapi_string_view_t rp_id,
+wapi_result_t wapi_authn_get_assertion(wapi_stringview_t rp_id,
                                        const void* challenge_ptr,
                                        wapi_size_t challenge_len);
 

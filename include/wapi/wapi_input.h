@@ -172,7 +172,7 @@ typedef enum wapi_cursor_type_t {
     WAPI_CURSOR_RESIZE_EW   = 6,
     WAPI_CURSOR_RESIZE_NWSE = 7,
     WAPI_CURSOR_RESIZE_NESW = 8,
-    WAPI_CURSOR_NOT_ALLOWED = 9,
+    WAPI_CURSOR_NOTALLOWED  = 9,
     WAPI_CURSOR_WAIT        = 10,
     WAPI_CURSOR_GRAB        = 11,
     WAPI_CURSOR_GRABBING    = 12,
@@ -317,8 +317,8 @@ wapi_bool_t wapi_keyboard_key_pressed(wapi_handle_t handle,
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_input, keyboard_get_mod_state)
-uint16_t wapi_keyboard_get_mod_state(wapi_handle_t handle);
+WAPI_IMPORT(wapi_input, keyboard_get_modstate)
+uint16_t wapi_keyboard_get_modstate(wapi_handle_t handle);
 
 /* ---- Text Input ----
  * Text input is surface-scoped (not keyboard-scoped) because
@@ -328,20 +328,20 @@ uint16_t wapi_keyboard_get_mod_state(wapi_handle_t handle);
 
 /**
  * Start text input mode. Enables IME and generates
- * WAPI_EVENT_TEXT_INPUT events.
+ * WAPI_EVENT_TEXTINPUT events.
  *
  * Wasm signature: (i32) -> void
  */
-WAPI_IMPORT(wapi_input, start_text_input)
-void wapi_input_start_text_input(wapi_handle_t surface);
+WAPI_IMPORT(wapi_input, start_textinput)
+void wapi_input_start_textinput(wapi_handle_t surface);
 
 /**
  * Stop text input mode.
  *
  * Wasm signature: (i32) -> void
  */
-WAPI_IMPORT(wapi_input, stop_text_input)
-void wapi_input_stop_text_input(wapi_handle_t surface);
+WAPI_IMPORT(wapi_input, stop_textinput)
+void wapi_input_stop_textinput(wapi_handle_t surface);
 
 /* ============================================================
  *  ████████╗ ██████╗ ██╗   ██╗ ██████╗██╗  ██╗
@@ -413,9 +413,9 @@ typedef enum wapi_gesture_type_t {
     WAPI_GESTURE_SWIPE_RIGHT = 3,
     WAPI_GESTURE_SWIPE_UP    = 4,
     WAPI_GESTURE_SWIPE_DOWN  = 5,
-    WAPI_GESTURE_LONG_PRESS  = 6,
+    WAPI_GESTURE_LONGPRESS   = 6,
     WAPI_GESTURE_TAP         = 7,
-    WAPI_GESTURE_DOUBLE_TAP  = 8,
+    WAPI_GESTURE_DOUBLETAP   = 8,
     WAPI_GESTURE_FORCE32     = 0x7FFFFFFF
 } wapi_gesture_type_t;
 
@@ -484,12 +484,12 @@ typedef enum wapi_pen_tool_t {
 
 typedef enum wapi_pen_axis_t {
     WAPI_PEN_AXIS_PRESSURE              = 0,
-    WAPI_PEN_AXIS_XTILT                 = 1,
-    WAPI_PEN_AXIS_YTILT                 = 2,
+    WAPI_PEN_AXIS_TILT_X                = 1,
+    WAPI_PEN_AXIS_TILT_Y                = 2,
     WAPI_PEN_AXIS_ROTATION              = 3,
     WAPI_PEN_AXIS_DISTANCE              = 4,
     WAPI_PEN_AXIS_SLIDER                = 5,
-    WAPI_PEN_AXIS_TANGENTIAL_PRESSURE   = 6,
+    WAPI_PEN_AXIS_TANGENTIALPRESSURE    = 6,
     WAPI_PEN_AXIS_FORCE32               = 0x7FFFFFFF
 } wapi_pen_axis_t;
 
@@ -570,28 +570,28 @@ wapi_result_t wapi_pen_get_position(wapi_handle_t handle,
 typedef enum wapi_gamepad_type_t {
     WAPI_GAMEPAD_TYPE_UNKNOWN             = 0,
     WAPI_GAMEPAD_TYPE_STANDARD            = 1,
-    WAPI_GAMEPAD_TYPE_XBOX_360            = 2,
-    WAPI_GAMEPAD_TYPE_XBOX_ONE            = 3,
+    WAPI_GAMEPAD_TYPE_XBOX360            = 2,
+    WAPI_GAMEPAD_TYPE_XBOXONE            = 3,
     WAPI_GAMEPAD_TYPE_PS3                 = 4,
     WAPI_GAMEPAD_TYPE_PS4                 = 5,
     WAPI_GAMEPAD_TYPE_PS5                 = 6,
-    WAPI_GAMEPAD_TYPE_SWITCH_PRO          = 7,
-    WAPI_GAMEPAD_TYPE_SWITCH_JOYCON_LEFT  = 8,
-    WAPI_GAMEPAD_TYPE_SWITCH_JOYCON_RIGHT = 9,
-    WAPI_GAMEPAD_TYPE_SWITCH_JOYCON_PAIR  = 10,
+    WAPI_GAMEPAD_TYPE_SWITCHPRO          = 7,
+    WAPI_GAMEPAD_TYPE_SWITCHJOYCON_LEFT  = 8,
+    WAPI_GAMEPAD_TYPE_SWITCHJOYCON_RIGHT = 9,
+    WAPI_GAMEPAD_TYPE_SWITCHJOYCON_PAIR  = 10,
     WAPI_GAMEPAD_TYPE_FORCE32             = 0x7FFFFFFF
 } wapi_gamepad_type_t;
 
-/* ---- Power State ---- */
+/* ---- Gamepad Battery State ---- */
 
-typedef enum wapi_power_state_t {
-    WAPI_POWER_STATE_UNKNOWN    = 0,
-    WAPI_POWER_STATE_ON_BATTERY = 1,
-    WAPI_POWER_STATE_CHARGING   = 2,
-    WAPI_POWER_STATE_CHARGED    = 3,
-    WAPI_POWER_STATE_WIRED      = 4,
-    WAPI_POWER_STATE_FORCE32    = 0x7FFFFFFF
-} wapi_power_state_t;
+typedef enum wapi_gamepad_battery_t {
+    WAPI_GAMEPAD_BATTERY_UNKNOWN     = 0,
+    WAPI_GAMEPAD_BATTERY_DISCHARGING = 1,  /* Running on internal battery */
+    WAPI_GAMEPAD_BATTERY_CHARGING    = 2,
+    WAPI_GAMEPAD_BATTERY_CHARGED     = 3,
+    WAPI_GAMEPAD_BATTERY_WIRED       = 4,  /* No battery, wired power only */
+    WAPI_GAMEPAD_BATTERY_FORCE32     = 0x7FFFFFFF
+} wapi_gamepad_battery_t;
 
 /* ---- Gamepad Sensor Type ---- */
 
@@ -613,7 +613,7 @@ typedef enum wapi_gamepad_sensor_t {
  *   Offset 11: uint8_t  has_sensors
  *   Offset 12: uint8_t  has_touchpad
  *   Offset 13: uint8_t  battery_percent   0-100
- *   Offset 14: uint8_t  power_state       wapi_power_state_t
+ *   Offset 14: uint8_t  battery           wapi_gamepad_battery_t
  *   Offset 15: uint8_t  _pad[1]
  *   Offset 16: uint8_t  _reserved[32]
  */
@@ -628,7 +628,7 @@ typedef struct wapi_gamepad_info_t {
     uint8_t     has_sensors;
     uint8_t     has_touchpad;
     uint8_t     battery_percent;
-    uint8_t     power_state;
+    uint8_t     battery;
     uint8_t     _pad[1];
     uint8_t     _reserved[32];
 } wapi_gamepad_info_t;
@@ -790,17 +790,17 @@ wapi_result_t wapi_gamepad_get_touchpad_finger(wapi_handle_t handle,
                                                wapi_touchpad_finger_t* state_ptr);
 
 /**
- * Get the power/battery info for a gamepad.
+ * Get the battery state for a gamepad.
  *
  * @param handle       Gamepad device handle.
  * @param percent_ptr  [out] Battery percentage (0-100).
- * @return Power state (wapi_power_state_t) on success, negative on error.
+ * @return Battery state (wapi_gamepad_battery_t) on success, negative on error.
  *
  * Wasm signature: (i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_input, gamepad_get_power_info)
-int32_t wapi_gamepad_get_power_info(wapi_handle_t handle,
-                                    uint8_t* percent_ptr);
+WAPI_IMPORT(wapi_input, gamepad_get_battery)
+int32_t wapi_gamepad_get_battery(wapi_handle_t handle,
+                                 uint8_t* percent_ptr);
 
 /* ============================================================
  *  ██████╗  ██████╗ ██╗███╗   ██╗████████╗███████╗██████╗
@@ -1001,6 +1001,276 @@ WAPI_IMPORT(wapi_input, hid_receive_report)
 wapi_result_t wapi_hid_receive_report(wapi_handle_t handle, void* buf,
                                       wapi_size_t buf_len,
                                       wapi_size_t* bytes_read);
+
+/* ============================================================
+ * IME / Text Input
+ * ============================================================
+ * Keyboard events carry physical key transitions; text is produced
+ * separately by the platform IME (AltGr, compose, dead keys, CJK
+ * composition, autocorrect, voice dictation, on-screen keyboards).
+ *
+ * Event flow:
+ *
+ *   1. The module calls wapi_input_ime_enable(surface, hint) on a
+ *      text-editing surface. The host tells the platform IME which
+ *      surface is the text target and what kind of content is
+ *      expected (the hint tunes layouts, autocorrect, candidate
+ *      filtering, password masking, etc.).
+ *
+ *   2. When the user starts composing the host emits
+ *      WAPI_EVENT_IME_START, then WAPI_EVENT_IME_UPDATE any time
+ *      the preedit text / caret / segment attributes change, and
+ *      WAPI_EVENT_IME_COMMIT when the composition finalizes.
+ *      WAPI_EVENT_IME_CANCEL fires if composition is abandoned.
+ *
+ *   3. Each event carries a host-assigned `sequence` id (see
+ *      wapi_ime_event_t in wapi.h). The module reads the variable-
+ *      length payload (UTF-8 text and attribute segments) by
+ *      passing that sequence to the accessors below.
+ *
+ *   4. The sequence is valid from the time the event is delivered
+ *      until the module's next wapi_io_poll call returns. Modules
+ *      MUST drain what they care about inside the event handler;
+ *      the host is permitted to recycle the payload storage as
+ *      soon as poll re-enters.
+ *
+ *   5. When the editor loses focus or no longer wants text the
+ *      module calls wapi_input_ime_disable(surface). Any active
+ *      composition on that surface is finalized (commit) or
+ *      dropped (cancel) by the platform, per its own conventions.
+ *
+ * Modules that only care about committed characters can ignore
+ * START / UPDATE / CANCEL and just drain WAPI_EVENT_IME_COMMIT.
+ *
+ * Physical shortcuts (Ctrl+C, Cmd+S, etc.) belong on the keyboard
+ * event stream. The IME stream is exclusively "text the user
+ * intends to insert into a document". */
+
+typedef enum wapi_ime_hint_t {
+    WAPI_IME_HINT_DEFAULT   = 0,   /* Free-form text */
+    WAPI_IME_HINT_TEXT      = 1,   /* Explicit plain text */
+    WAPI_IME_HINT_PASSWORD  = 2,   /* Hide candidates + mask display */
+    WAPI_IME_HINT_EMAIL     = 3,   /* Email address layout */
+    WAPI_IME_HINT_URL       = 4,   /* URL layout */
+    WAPI_IME_HINT_NUMBER    = 5,   /* Numeric keypad, digits only */
+    WAPI_IME_HINT_SEARCH    = 6,   /* Search box (single line, no autocorrect) */
+    WAPI_IME_HINT_FORCE32   = 0x7FFFFFFF
+} wapi_ime_hint_t;
+
+/* Segment attribute flags (bitmask) */
+#define WAPI_IME_SEG_RAW        0x01  /* Raw unconverted input */
+#define WAPI_IME_SEG_CONVERTED  0x02  /* Converted (committed-in-preedit) */
+#define WAPI_IME_SEG_SELECTED   0x04  /* Currently selected for editing */
+#define WAPI_IME_SEG_TARGET     0x08  /* Active target clause (IME focus) */
+
+/** Preedit attribute segment (12 bytes, align 4).
+ *
+ * Layout:
+ *   0:  start    u32   Byte offset into preedit text
+ *   4:  length   u32   Byte length of this segment
+ *   8:  flags    u32   WAPI_IME_SEG_* bitmask
+ */
+typedef struct wapi_ime_segment_t {
+    uint32_t    start;
+    uint32_t    length;
+    uint32_t    flags;
+} wapi_ime_segment_t;
+
+/**
+ * Enable IME for a surface with an input-type hint.
+ *
+ * @param surface_id  Surface handle that owns the text caret.
+ * @param hint        Input-type hint for the platform IME.
+ * @return WAPI_OK on success, WAPI_ERR_NOTSUP if no IME is available.
+ */
+WAPI_IMPORT(wapi_input, ime_enable)
+wapi_result_t wapi_input_ime_enable(uint32_t surface_id, wapi_ime_hint_t hint);
+
+/**
+ * Disable IME for a surface. Any active composition on the surface
+ * is finalized or discarded per the platform's conventions.
+ */
+WAPI_IMPORT(wapi_input, ime_disable)
+wapi_result_t wapi_input_ime_disable(uint32_t surface_id);
+
+/**
+ * Tell the platform where to anchor the candidate window.
+ *
+ * Rect is in the same coordinate space as the surface. The host
+ * translates into platform-native screen coordinates. No-op when
+ * the surface has no active composition or the platform ignores
+ * the hint.
+ */
+WAPI_IMPORT(wapi_input, ime_set_candidate_rect)
+wapi_result_t wapi_input_ime_set_candidate_rect(uint32_t surface_id,
+                                                float x, float y,
+                                                float w, float h);
+
+/**
+ * Force-commit any active composition on the surface. The host
+ * emits a WAPI_EVENT_IME_COMMIT carrying whatever preedit text
+ * was outstanding.
+ */
+WAPI_IMPORT(wapi_input, ime_commit)
+wapi_result_t wapi_input_ime_commit(uint32_t surface_id);
+
+/**
+ * Cancel any active composition on the surface, dropping preedit
+ * text. The host emits a WAPI_EVENT_IME_CANCEL.
+ */
+WAPI_IMPORT(wapi_input, ime_cancel)
+wapi_result_t wapi_input_ime_cancel(uint32_t surface_id);
+
+/**
+ * Read the UTF-8 text payload for an IME event.
+ *
+ * For IME_START / IME_UPDATE the text is the current preedit.
+ * For IME_COMMIT the text is the finalized bytes to insert.
+ * For IME_CANCEL the text length is zero.
+ *
+ * @param sequence    Sequence id from wapi_ime_event_t.sequence.
+ * @param buf         Caller-owned buffer.
+ * @param buf_len     Size of buf in bytes.
+ * @param out_len     [out] Actual byte length, even if it exceeds
+ *                    buf_len. Callers can size buf from
+ *                    wapi_ime_event_t.text_len to avoid truncation.
+ * @return WAPI_OK on success,
+ *         WAPI_ERR_NOENT if the sequence is no longer valid,
+ *         WAPI_ERR_RANGE if buf_len is smaller than the payload
+ *                        (bytes up to buf_len are still written).
+ */
+WAPI_IMPORT(wapi_input, ime_read_text)
+wapi_result_t wapi_input_ime_read_text(uint64_t sequence,
+                                       char* buf, uint32_t buf_len,
+                                       uint32_t* out_len);
+
+/**
+ * Read a single attribute segment from an IME event payload.
+ *
+ * Segments are indexed 0..wapi_ime_event_t.segment_count-1 and
+ * describe non-overlapping ranges of the preedit text.
+ *
+ * @param sequence    Sequence id from wapi_ime_event_t.sequence.
+ * @param index       Segment index.
+ * @param out         [out] Segment descriptor.
+ * @return WAPI_OK on success,
+ *         WAPI_ERR_NOENT if the sequence is no longer valid,
+ *         WAPI_ERR_RANGE if index is out of bounds.
+ */
+WAPI_IMPORT(wapi_input, ime_read_segment)
+wapi_result_t wapi_input_ime_read_segment(uint64_t sequence, uint32_t index,
+                                          wapi_ime_segment_t* out);
+
+/* --- wapi_ime_segment_t (12 bytes, align 4) --- */
+_Static_assert(offsetof(wapi_ime_segment_t, start)  == 0, "");
+_Static_assert(offsetof(wapi_ime_segment_t, length) == 4, "");
+_Static_assert(offsetof(wapi_ime_segment_t, flags)  == 8, "");
+_Static_assert(sizeof(wapi_ime_segment_t) == 12, "wapi_ime_segment_t must be 12 bytes");
+_Static_assert(_Alignof(wapi_ime_segment_t) == 4, "wapi_ime_segment_t must be 4-byte aligned");
+
+/* ============================================================
+ * Global Hotkeys
+ * ============================================================
+ * Global input bindings that fire even when the window is not
+ * focused. Device-agnostic: a binding can trigger off a keyboard
+ * chord, a gamepad button, or an arbitrary HID usage. Because
+ * hotkeys build on the same device taxonomy as the rest of this
+ * module, they live here rather than in a separate capability.
+ *
+ * Hotkeys are registered with a binding descriptor. On trigger,
+ * the host emits WAPI_EVENT_HOTKEY carrying the id returned by
+ * register. Modules look up what the id means from their own
+ * state — the event intentionally carries no input payload so the
+ * same handler works for any source.
+ *
+ * Platform backing:
+ *   Keyboard: RegisterHotKey (Windows), CGEventTap (macOS),
+ *             XGrabKey (Linux/X11).
+ *   Gamepad:  Polled while the device is visible to the app
+ *             (typically works across focus boundaries).
+ *   HID:      Monitor reports on a granted HID device.
+ *
+ * Not every device type supports focus-independent binding on
+ * every platform. Register returns WAPI_ERR_NOTSUP in that case.
+ */
+
+/* ============================================================
+ * Hotkey Binding Descriptor (16 bytes, align 4)
+ * ============================================================
+ * Wire-format, no embedded pointers. Fields are source-tagged:
+ * only the ones relevant to `device_type` are read by the host.
+ *
+ * Layout:
+ *   0:  device_type u32   wapi_device_type_t. Only KEYBOARD,
+ *                         GAMEPAD, and HID are valid for hotkeys;
+ *                         other values return WAPI_ERR_NOTSUP.
+ *   4:  device_id   u32   Device handle from wapi_device_open; 0
+ *                         = any device of this type. Keyboard
+ *                         bindings on most platforms collapse to
+ *                         "any keyboard" regardless of this field
+ *                         because RegisterHotKey / XGrabKey do not
+ *                         disambiguate attached keyboards.
+ *   8:  modifiers   u32   Keyboard: WAPI_KMOD_* bitmask.
+ *                         Other device types: 0.
+ *  12:  code        u32   Device-specific trigger code:
+ *                           Keyboard: wapi_scancode_t
+ *                           Gamepad:  wapi_gamepad_button_t
+ *                           HID:      (usage_page << 16) | usage
+ *                                     (both 16-bit per HID spec)
+ */
+typedef struct wapi_hotkey_binding_t {
+    uint32_t    device_type;
+    uint32_t    device_id;
+    uint32_t    modifiers;
+    uint32_t    code;
+} wapi_hotkey_binding_t;
+
+/* Convenience: pack a HID (usage_page, usage) pair into the code field */
+#define WAPI_HOTKEY_HID_CODE(usage_page, usage) \
+    (((uint32_t)(usage_page) << 16) | (uint32_t)(usage))
+
+/**
+ * Register a global input binding.
+ *
+ * When the binding fires the host emits WAPI_EVENT_HOTKEY with
+ * the id returned in out_id. Modules map id back to meaning from
+ * their own tables.
+ *
+ * @param binding  Binding descriptor. Must outlive the call only.
+ * @param out_id   [out] Registration id.
+ * @return WAPI_OK on success,
+ *         WAPI_ERR_NOTSUP if the platform does not support a
+ *                         focus-independent binding for this
+ *                         device type,
+ *         WAPI_ERR_BUSY   if an equivalent binding is already
+ *                         registered on this platform,
+ *         WAPI_ERR_BADF   if device_id is non-zero and refers to
+ *                         a closed or unknown device.
+ *
+ * Wasm signature: (i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_input, hotkey_register)
+wapi_result_t wapi_input_hotkey_register(const wapi_hotkey_binding_t* binding,
+                                         uint32_t* out_id);
+
+/**
+ * Unregister a previously registered binding.
+ *
+ * @param id  Registration id returned by wapi_input_hotkey_register.
+ * @return WAPI_OK on success, WAPI_ERR_BADF if invalid id.
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_input, hotkey_unregister)
+wapi_result_t wapi_input_hotkey_unregister(uint32_t id);
+
+/* --- wapi_hotkey_binding_t (16 bytes, align 4) --- */
+_Static_assert(offsetof(wapi_hotkey_binding_t, device_type) == 0,  "");
+_Static_assert(offsetof(wapi_hotkey_binding_t, device_id)   == 4,  "");
+_Static_assert(offsetof(wapi_hotkey_binding_t, modifiers)   == 8,  "");
+_Static_assert(offsetof(wapi_hotkey_binding_t, code)        == 12, "");
+_Static_assert(sizeof(wapi_hotkey_binding_t) == 16, "wapi_hotkey_binding_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_hotkey_binding_t) == 4, "wapi_hotkey_binding_t must be 4-byte aligned");
 
 #ifdef __cplusplus
 }

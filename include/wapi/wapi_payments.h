@@ -23,27 +23,27 @@ extern "C" {
  * Payment item (line item in the order).
  *
  * Layout (48 bytes, align 8):
- *   Offset  0: wapi_string_view_t label
- *   Offset 16: wapi_string_view_t amount    e.g., "9.99"
- *   Offset 32: wapi_string_view_t currency  ISO 4217 (e.g., "USD")
+ *   Offset  0: wapi_stringview_t label
+ *   Offset 16: wapi_stringview_t amount    e.g., "9.99"
+ *   Offset 32: wapi_stringview_t currency  ISO 4217 (e.g., "USD")
  */
 typedef struct wapi_pay_item_t {
-    wapi_string_view_t label;
-    wapi_string_view_t amount;
-    wapi_string_view_t currency;
+    wapi_stringview_t label;
+    wapi_stringview_t amount;
+    wapi_stringview_t currency;
 } wapi_pay_item_t;
 
 /**
  * Payment request descriptor.
  *
  * Layout (32 bytes, align 8):
- *   Offset  0: wapi_string_view_t merchant_id
+ *   Offset  0: wapi_stringview_t merchant_id
  *   Offset 16: ptr          items          Array of wapi_pay_item_t
  *   Offset 20: uint32_t     item_count
  *   Offset 24: wapi_flags_t flags
  */
 typedef struct wapi_pay_request_t {
-    wapi_string_view_t      merchant_id;
+    wapi_stringview_t      merchant_id;
     const wapi_pay_item_t*  items;
     uint32_t              item_count;
     wapi_flags_t          flags;

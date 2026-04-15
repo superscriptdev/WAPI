@@ -100,7 +100,7 @@ wapi_result_t wapi_menu_add_item(wapi_handle_t menu,
  */
 WAPI_IMPORT(wapi_menu, menu_add_submenu)
 wapi_result_t wapi_menu_add_submenu(wapi_handle_t menu,
-                                    wapi_string_view_t label_ptr,
+                                    wapi_stringview_t label_ptr,
                                     wapi_handle_t submenu);
 
 /**

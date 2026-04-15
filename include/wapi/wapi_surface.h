@@ -4,7 +4,7 @@
  *
  * A surface is a rectangular render target. What backs it depends
  * on the descriptor's chain:
- *   - With wapi_window_config_t chained: OS window (desktop),
+ *   - With wapi_window_desc_t chained: OS window (desktop),
  *     canvas (browser), or display surface (mobile)
  *   - Without: offscreen buffer for texture generation, thumbnails,
  *     screenshot tests, or headless rendering
@@ -43,7 +43,7 @@ extern "C" {
  */
 
 typedef struct wapi_surface_desc_t {
-    uint64_t                nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
+    uint64_t                nextInChain;  /* Address of wapi_chain_t, or 0 */
     int32_t                 width;
     int32_t                 height;
     wapi_flags_t            flags;
@@ -70,7 +70,7 @@ typedef enum wapi_surface_event_type_t {
 /**
  * Create a new surface.
  *
- * For a windowed surface, chain a wapi_window_config_t onto
+ * For a windowed surface, chain a wapi_window_desc_t onto
  * desc->nextInChain.  Without it, the surface is an offscreen
  * render target.
  *

@@ -36,7 +36,7 @@ typedef enum wapi_xr_session_type_t {
 
 typedef enum wapi_xr_ref_space_t {
     WAPI_XR_SPACE_LOCAL      = 0,  /* Seated / stationary */
-    WAPI_XR_SPACE_LOCAL_FLOOR = 1, /* Standing */
+    WAPI_XR_SPACE_LOCALFLOOR = 1, /* Standing */
     WAPI_XR_SPACE_BOUNDED    = 2,  /* Room-scale with boundary */
     WAPI_XR_SPACE_UNBOUNDED  = 3,  /* World-scale (AR) */
     WAPI_XR_SPACE_VIEWER     = 4,  /* Head-locked */
@@ -110,7 +110,7 @@ wapi_bool_t wapi_xr_is_supported(wapi_xr_session_type_t type);
 /**
  * Request and start an XR session.
  *
- * @see WAPI_IO_OP_XR_REQUEST_SESSION
+ * @see WAPI_IO_OP_XR_SESSION_REQUEST
  *
  * @param type     Session type.
  * @param session  [out] Session handle.
@@ -143,7 +143,7 @@ wapi_result_t wapi_xr_create_ref_space(wapi_handle_t session, wapi_xr_ref_space_
 /**
  * Wait for the next XR frame. Blocks until the runtime is ready.
  *
- * @see WAPI_IO_OP_XR_WAIT_FRAME
+ * @see WAPI_IO_OP_XR_FRAME_WAIT
  *
  * @param session  Session handle.
  * @param state    [out] Frame state with views and timing.

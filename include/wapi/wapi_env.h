@@ -82,10 +82,10 @@ wapi_result_t wapi_env_environ_get(int32_t index, char* buf, wapi_size_t buf_len
  * @return WAPI_OK on success, WAPI_ERR_NOENT if not found.
  *
  * Wasm signature: (i32, i32, i64, i32) -> i32
- *   (name is a pointer to wapi_string_view_t passed indirectly)
+ *   (name is a pointer to wapi_stringview_t passed indirectly)
  */
 WAPI_IMPORT(wapi_env, getenv)
-wapi_result_t wapi_env_getenv(wapi_string_view_t name,
+wapi_result_t wapi_env_getenv(wapi_stringview_t name,
                            char* buf, wapi_size_t buf_len, wapi_size_t* val_len);
 
 /* ============================================================
@@ -137,7 +137,7 @@ _Noreturn void wapi_env_exit(int32_t code);
  * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_env, open_url)
-wapi_result_t wapi_env_open_url(wapi_string_view_t url);
+wapi_result_t wapi_env_open_url(wapi_stringview_t url);
 
 /* ============================================================
  * Host Information (Escape Hatch)
@@ -171,7 +171,7 @@ wapi_result_t wapi_env_open_url(wapi_string_view_t url);
  * Wasm signature: (i32, i32, i64, i32) -> i32
  */
 WAPI_IMPORT(wapi_env, host_get)
-wapi_result_t wapi_env_host_get(wapi_string_view_t key,
+wapi_result_t wapi_env_host_get(wapi_stringview_t key,
                                 char* buf, wapi_size_t buf_len,
                                 wapi_size_t* val_len);
 

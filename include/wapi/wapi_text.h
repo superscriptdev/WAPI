@@ -2,8 +2,7 @@
  * WAPI - Text
  * Version 1.0.0
  *
- * All text-related types and operations: declaration, shaping,
- * and layout. Single import module for the complete text pipeline.
+ * All text-related types and operations: Shaping, and layout. 
  *
  * Shaping: UTF-8 text + font spec -> glyph runs (IDs, positions,
  *   advances, cluster mapping). Uses host HarfBuzz/DirectWrite/CoreText.
@@ -25,7 +24,11 @@ extern "C" {
 
 /* ============================================================
  * Text Style Properties
- * ============================================================ */
+ * ============================================================
+ * Font weight and style are redeclared here per-capability to keep
+ * wapi_text self-contained; the values are intentionally the same
+ * as wapi_font's to allow round-tripping.
+ */
 
 typedef enum wapi_text_font_weight_t {
     WAPI_TEXT_FONT_WEIGHT_THIN       = 100,
@@ -68,7 +71,7 @@ typedef enum wapi_text_direction_t {
  * ============================================================
  *
  * Layout (64 bytes, align 8):
- *   Offset  0: wapi_string_view_t font_family    (16 bytes, UTF-8, 0 = system default)
+ *   Offset  0: wapi_stringview_t font_family    (16 bytes, UTF-8, 0 = system default)
  *   Offset 16: float    font_size                 (logical pixels)
  *   Offset 20: uint32_t font_weight               (wapi_text_font_weight_t)
  *   Offset 24: uint32_t font_style                (wapi_text_font_style_t)
@@ -77,11 +80,11 @@ typedef enum wapi_text_direction_t {
  *   Offset 36: uint32_t color                     (RGBA8: 0xRRGGBBAA)
  *   Offset 40: uint32_t text_align                (wapi_text_align_t)
  *   Offset 44: uint32_t text_direction            (wapi_text_direction_t)
- *   Offset 48: wapi_string_view_t font_fallback   (16 bytes, comma-separated families)
+ *   Offset 48: wapi_stringview_t font_fallback   (16 bytes, comma-separated families)
  */
 
 typedef struct wapi_text_style_t {
-    wapi_string_view_t font_family;
+    wapi_stringview_t font_family;
     float           font_size;
     uint32_t        font_weight;
     uint32_t        font_style;
@@ -90,7 +93,7 @@ typedef struct wapi_text_style_t {
     uint32_t        color;
     uint32_t        text_align;
     uint32_t        text_direction;
-    wapi_string_view_t font_fallback;
+    wapi_stringview_t font_fallback;
 } wapi_text_style_t;
 
 /* ============================================================
@@ -98,14 +101,14 @@ typedef struct wapi_text_style_t {
  * ============================================================
  *
  * Layout (32 bytes, align 8):
- *   Offset  0: wapi_string_view_t text  UTF-8 text data (16 bytes)
+ *   Offset  0: wapi_stringview_t text  UTF-8 text data (16 bytes)
  *   Offset 16: uint64_t style           Linear memory address of wapi_text_style_t
  *   Offset 24: uint32_t _reserved
  *   Offset 28: uint32_t _pad
  */
 
 typedef struct wapi_text_run_t {
-    wapi_string_view_t       text;
+    wapi_stringview_t       text;
     uint64_t                 style;  /* Linear memory address of wapi_text_style_t */
     uint32_t                 _reserved;
     uint32_t                 _pad;
@@ -123,7 +126,7 @@ typedef struct wapi_text_run_t {
  */
 
 typedef struct wapi_text_desc_t {
-    uint64_t                 nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
+    uint64_t                 nextInChain;  /* Address of wapi_chain_t, or 0 */
     uint64_t                 runs;         /* Address of wapi_text_run_t array */
     uint32_t                 run_count;
     uint32_t                 _reserved;
@@ -138,7 +141,7 @@ typedef struct wapi_text_desc_t {
  * Specifies which font to shape with and optional OpenType features.
  *
  * Layout (40 bytes, align 8):
- *   Offset  0: wapi_string_view_t family  (16 bytes)
+ *   Offset  0: wapi_stringview_t family  (16 bytes)
  *   Offset 16: float    size              (logical pixels)
  *   Offset 20: uint32_t weight            (wapi_text_font_weight_t)
  *   Offset 24: uint32_t style             (wapi_text_font_style_t)
@@ -146,7 +149,7 @@ typedef struct wapi_text_desc_t {
  *   Offset 32: uint64_t features          Linear memory address of OpenType tags
  */
 typedef struct wapi_text_font_desc_t {
-    wapi_string_view_t family;
+    wapi_stringview_t family;
     float           size;
     uint32_t        weight;
     uint32_t        style;
@@ -235,7 +238,7 @@ _Static_assert(_Alignof(wapi_text_font_metrics_t) == 4,
  */
 WAPI_IMPORT(wapi_text, shape)
 wapi_handle_t wapi_text_shape(const wapi_text_font_desc_t* font,
-                              wapi_string_view_t text,
+                              wapi_stringview_t text,
                               uint32_t script, uint32_t direction);
 
 /**

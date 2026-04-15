@@ -82,7 +82,7 @@ extern "C" {
  */
 
 typedef struct wapi_module_desc_t {
-    wapi_string_view_t  name;       /* Human-readable name (e.g., "image-decoder") */
+    wapi_stringview_t  name;       /* Human-readable name (e.g., "image-decoder") */
     wapi_version_t      version;    /* Semver of the module's ABI surface */
 } wapi_module_desc_t;
 
@@ -153,8 +153,49 @@ _Static_assert(offsetof(wapi_val_t, of)   == 8, "");
  * entirely on cache hit.
  */
 
+/* ------------------------------------------------------------
+ * Deployment modes
+ * ------------------------------------------------------------
+ * The same Wasm binary can be deployed in two different ways.
+ * The binary does not declare which — the caller picks per load.
+ *
+ *   LIBRARY MODE (wapi_module_load):
+ *     Fresh instance per call. Private linear memory. Isolated
+ *     state. Equivalent to linking libfoo.a into your program.
+ *     Cheap to tear down, no sharing concerns.
+ *
+ *   SERVICE MODE (wapi_module_join):
+ *     Refcounted shared instance. First caller starts it;
+ *     subsequent callers attach. Alive until the last handle is
+ *     released. Equivalent to talking to a running daemon.
+ *     One instance, one linear memory, many callers — the memory
+ *     savings compound for modules with heavy data tables
+ *     (Unicode, fonts, ML weights, codecs, tzdata).
+ *
+ * Both modes share the same bytes cache (hash-addressed), so a
+ * module is never downloaded or compiled more than once per host
+ * regardless of mode. Service mode additionally shares the live
+ * instance across all callers agreeing on the same (hash, name).
+ *
+ * Lifetime:
+ *   - Library: caller-controlled via wapi_module_release.
+ *   - Service: host-controlled via refcounting. An instance stays
+ *     alive as long as at least one handle references it. The host
+ *     MAY park an idle instance (refcount zero) for a short grace
+ *     period to absorb join/release churn before tearing it down.
+ *
+ * Graceful teardown for both modes uses the host-module shutdown
+ * handshake defined in wapi.h (WAPI_EVENT_QUIT / wapi_exit).
+ * wapi_module has no shutdown API of its own — every instance,
+ * whether loaded as a library, joined as a service, or running as
+ * the top-level app, exits through the same path.
+ */
+
 /**
  * Load a module by content hash, fetching from URL if not cached.
+ *
+ * LIBRARY MODE: every call produces a fresh, private instance with
+ * its own linear memory. Callers do not share state.
  *
  * @param hash    SHA-256 hash of the expected Wasm binary.
  * @param url     Fetch URL (http, file, etc.). Ignored on cache hit.
@@ -165,8 +206,45 @@ _Static_assert(offsetof(wapi_val_t, of)   == 8, "");
  */
 WAPI_IMPORT(wapi_module, load)
 wapi_result_t wapi_module_load(const wapi_module_hash_t* hash,
-                               wapi_string_view_t url,
+                               wapi_stringview_t url,
                                wapi_handle_t* module);
+
+/**
+ * Join (or start) a shared service instance of a module.
+ *
+ * SERVICE MODE: if an instance with the same (hash, name) is already
+ * running, attach to it and increment the refcount. Otherwise start
+ * a new instance, then attach. The returned handle must be released
+ * via wapi_module_release when the caller no longer needs the
+ * service — the host destroys the instance only when all handles
+ * have been released.
+ *
+ * Two callers joining with the same (hash, name) get handles that
+ * refer to the SAME running instance. Different names under the
+ * same hash produce distinct instances (e.g., two independent
+ * copies of a crypto service with different key material).
+ *
+ * @param hash    SHA-256 hash of the expected Wasm binary.
+ * @param url     Fetch URL. Ignored on bytes-cache hit, required
+ *                otherwise. A join that finds the service already
+ *                running uses neither cache nor URL.
+ * @param name    Human-readable service name. Empty string for
+ *                "the default instance of this hash". Callers that
+ *                agree on the name agree on the instance.
+ * @param module  [out] Module handle.
+ * @return WAPI_OK on success,
+ *         WAPI_ERR_NOENT if not cached and url is absent or fetch failed,
+ *         WAPI_ERR_LOOP if joining this service would form a cycle
+ *                       in the caller's dependency graph.
+ */
+WAPI_IMPORT(wapi_module, join)
+wapi_result_t wapi_module_join(const wapi_module_hash_t* hash,
+                               wapi_stringview_t url,
+                               wapi_stringview_t name,
+                               wapi_handle_t* module);
+
+/* Shutdown: see wapi.h. All modules (app, library, service)
+ * exit through the shared wapi_exit / WAPI_EVENT_QUIT handshake. */
 
 /**
  * Get a function handle from a loaded module by name.
@@ -179,7 +257,7 @@ wapi_result_t wapi_module_load(const wapi_module_hash_t* hash,
  */
 WAPI_IMPORT(wapi_module, get_func)
 wapi_result_t wapi_module_get_func(wapi_handle_t module,
-                                   wapi_string_view_t func_name,
+                                   wapi_stringview_t func_name,
                                    wapi_handle_t* func);
 
 /**
@@ -504,7 +582,7 @@ wapi_bool_t wapi_module_is_cached(const wapi_module_hash_t* hash);
  */
 WAPI_IMPORT(wapi_module, prefetch)
 wapi_result_t wapi_module_prefetch(const wapi_module_hash_t* hash,
-                                   wapi_string_view_t url);
+                                   wapi_stringview_t url);
 
 #ifdef __cplusplus
 }

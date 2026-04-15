@@ -97,14 +97,60 @@ function renderList(list) {
         </table>`;
 }
 
+function renderSvcStats(s) {
+    document.getElementById('svc-stats').innerHTML =
+        `<span class="k">services:</span> <span class="v">${s.count}</span>   ` +
+        `<span class="k">users:</span> <span class="v">${s.totalUsers}</span>   ` +
+        `<span class="k">pending ops:</span> <span class="v">${s.totalPending}</span>`;
+}
+
+function renderServices(list) {
+    const content = document.getElementById('svc-content');
+    if (!list.length) {
+        content.innerHTML =
+            '<div class="empty">No live services.<br><br>' +
+            'Services appear here once a WAPI app calls ' +
+            '<code>wapi_module.join()</code>.</div>';
+        return;
+    }
+
+    list.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+
+    const rows = list.map((s) => `<tr>
+            <td class="hash" title="${escapeHtml(s.hashHex)}">${escapeHtml(fmtHash(s.hashHex))}</td>
+            <td title="${escapeHtml(s.name || '')}">${escapeHtml(s.name || '-')}</td>
+            <td title="${escapeHtml(s.url || '')}">${escapeHtml(originOf(s.url))}</td>
+            <td class="num">${s.users || 0}</td>
+            <td class="num">${s.pending || 0}</td>
+            <td class="num" title="${new Date(s.startedAt || 0).toISOString()}">${fmtAgo(s.startedAt)}</td>
+        </tr>`).join('');
+
+    content.innerHTML = `
+        <table>
+            <colgroup>
+                <col class="c-hash"><col class="c-name"><col class="c-origin">
+                <col class="c-users"><col class="c-pend"><col class="c-up">
+            </colgroup>
+            <thead><tr>
+                <th>hash</th><th>name</th><th>origin</th>
+                <th class="num">users</th><th class="num">pend</th><th class="num">up</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+}
+
 async function refresh() {
     try {
-        const [stats, list] = await Promise.all([
+        const [stats, list, svcStats, svcList] = await Promise.all([
             send({ type: 'modules.stats' }),
             send({ type: 'modules.list' }),
+            send({ type: 'services.stats' }),
+            send({ type: 'services.list' }),
         ]);
         renderStats(stats);
         renderList(list);
+        renderSvcStats(svcStats);
+        renderServices(svcList);
     } catch (e) {
         document.getElementById('content').innerHTML =
             `<div class="err">Error: ${escapeHtml(e.message)}</div>`;
@@ -122,4 +168,23 @@ document.getElementById('clear').addEventListener('click', async () => {
     }
 });
 
+// 1 Hz auto-refresh while the popup is visible. Paused under
+// visibilitychange so a popup left open in the background doesn't
+// keep waking the service worker.
+let pollTimer = 0;
+function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(refresh, 1000);
+}
+function stopPolling() {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = 0;
+}
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') startPolling();
+    else stopPolling();
+});
+
 refresh();
+if (document.visibilityState === 'visible') startPolling();

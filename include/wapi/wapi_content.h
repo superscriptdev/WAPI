@@ -43,11 +43,11 @@ typedef enum wapi_content_node_type_t {
     WAPI_CONTENT_NODE_BUTTON     = 5,   /* Interactive button */
     WAPI_CONTENT_NODE_LINK       = 6,   /* Navigation link */
     WAPI_CONTENT_NODE_HEADING    = 7,   /* Heading (level 1-6 via detail) */
-    WAPI_CONTENT_NODE_TEXT_INPUT = 8,   /* Text input field */
+    WAPI_CONTENT_NODE_TEXTINPUT = 8,   /* Text input field */
     WAPI_CONTENT_NODE_CHECKBOX   = 9,   /* Checkbox / toggle */
     WAPI_CONTENT_NODE_SLIDER     = 10,  /* Range / slider */
     WAPI_CONTENT_NODE_LIST       = 11,  /* List container */
-    WAPI_CONTENT_NODE_LIST_ITEM  = 12,  /* List item */
+    WAPI_CONTENT_NODE_LISTITEM  = 12,  /* List item */
     WAPI_CONTENT_NODE_NAVIGATION = 13,  /* Navigation landmark */
     WAPI_CONTENT_NODE_MAIN       = 14,  /* Main content landmark */
     WAPI_CONTENT_NODE_REGION     = 15,  /* Generic landmark region */
@@ -79,7 +79,7 @@ typedef enum wapi_content_node_type_t {
  *   Offset 12: uint32_t first_child    Index (UINT32_MAX = none)
  *   Offset 16: uint32_t next_sibling   Index (UINT32_MAX = none)
  *   Offset 20: uint32_t state_flags    WAPI_CONTENT_STATE_* bitmask
- *   Offset 24: wapi_string_view_t label  Accessible name (16 bytes)
+ *   Offset 24: wapi_stringview_t label  Accessible name (16 bytes)
  *   Offset 40: uint64_t value          Linear memory address of value data
  *   Offset 48: uint32_t value_len
  *   Offset 52: float    bounds_x       Bounding rect X
@@ -107,7 +107,7 @@ typedef struct wapi_content_node_t {
     uint32_t    first_child;
     uint32_t    next_sibling;
     uint32_t    state_flags;
-    wapi_string_view_t label;
+    wapi_stringview_t label;
     uint64_t    value;       /* Linear memory address of type-specific value data */
     wapi_size_t value_len;
     float       bounds_x;

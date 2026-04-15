@@ -33,7 +33,7 @@ extern "C" {
  * @return WAPI_OK on success, WAPI_ERR_NOENT if key not found.
  */
 WAPI_IMPORT(wapi_kv, get)
-wapi_result_t wapi_kv_get(wapi_string_view_t key,
+wapi_result_t wapi_kv_get(wapi_stringview_t key,
                        void* buf, wapi_size_t buf_len, wapi_size_t* val_len);
 
 /**
@@ -45,20 +45,20 @@ wapi_result_t wapi_kv_get(wapi_string_view_t key,
  * @return WAPI_OK on success.
  */
 WAPI_IMPORT(wapi_kv, set)
-wapi_result_t wapi_kv_set(wapi_string_view_t key,
+wapi_result_t wapi_kv_set(wapi_stringview_t key,
                        const void* value, wapi_size_t val_len);
 
 /**
  * Delete a key.
  */
 WAPI_IMPORT(wapi_kv, delete)
-wapi_result_t wapi_kv_delete(wapi_string_view_t key);
+wapi_result_t wapi_kv_delete(wapi_stringview_t key);
 
 /**
  * Check if a key exists.
  */
 WAPI_IMPORT(wapi_kv, has)
-wapi_bool_t wapi_kv_has(wapi_string_view_t key);
+wapi_bool_t wapi_kv_has(wapi_stringview_t key);
 
 /**
  * Clear all keys.

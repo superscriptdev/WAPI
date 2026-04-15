@@ -28,8 +28,8 @@ typedef enum wapi_media_action_t {
     WAPI_MEDIA_ACTION_STOP           = 2,
     WAPI_MEDIA_ACTION_SEEK_BACKWARD  = 3,
     WAPI_MEDIA_ACTION_SEEK_FORWARD   = 4,
-    WAPI_MEDIA_ACTION_PREVIOUS_TRACK = 5,
-    WAPI_MEDIA_ACTION_NEXT_TRACK     = 6,
+    WAPI_MEDIA_ACTION_PREVIOUSTRACK = 5,
+    WAPI_MEDIA_ACTION_NEXTTRACK     = 6,
     WAPI_MEDIA_ACTION_FORCE32        = 0x7FFFFFFF
 } wapi_media_action_t;
 
@@ -41,18 +41,18 @@ typedef enum wapi_media_action_t {
  * ============================================================
  *
  * Layout (64 bytes, align 8):
- *   Offset  0: wapi_string_view_t title       (16 bytes)
- *   Offset 16: wapi_string_view_t artist      (16 bytes)
- *   Offset 32: wapi_string_view_t album       (16 bytes)
+ *   Offset  0: wapi_stringview_t title       (16 bytes)
+ *   Offset 16: wapi_stringview_t artist      (16 bytes)
+ *   Offset 32: wapi_stringview_t album       (16 bytes)
  *   Offset 48: uint64_t artwork_data          Linear memory address of PNG/JPEG data
  *   Offset 56: uint32_t artwork_len
  *   Offset 60: uint32_t _pad
  */
 
 typedef struct wapi_media_metadata_t {
-    wapi_string_view_t title;
-    wapi_string_view_t artist;
-    wapi_string_view_t album;
+    wapi_stringview_t title;
+    wapi_stringview_t artist;
+    wapi_stringview_t album;
     uint64_t    artwork_data;   /* Linear memory address of PNG/JPEG image data */
     wapi_size_t artwork_len;
     uint32_t    _pad;

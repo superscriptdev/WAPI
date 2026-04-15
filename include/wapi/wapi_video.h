@@ -73,7 +73,7 @@ typedef enum wapi_video_source_t {
  */
 
 typedef struct wapi_video_desc_t {
-    uint64_t               nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
+    uint64_t               nextInChain;  /* Address of wapi_chain_t, or 0 */
     uint32_t               source;      /* wapi_video_source_t */
     uint32_t               _pad0;
     uint64_t               data;        /* Address of data (URL or buffer) */
@@ -233,8 +233,8 @@ wapi_result_t wapi_video_get_frame_texture(wapi_handle_t video,
  *
  * Wasm signature: (i32, i32, i32, i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_video, render_to_texture)
-wapi_result_t wapi_video_render_to_texture(wapi_handle_t video,
+WAPI_IMPORT(wapi_video, blit)
+wapi_result_t wapi_video_blit(wapi_handle_t video,
                                         wapi_handle_t gpu_texture,
                                         int32_t x, int32_t y,
                                         int32_t width, int32_t height);

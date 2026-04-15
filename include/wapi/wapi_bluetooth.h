@@ -25,18 +25,18 @@ extern "C" {
  * BLE scan filter.
  *
  * Layout (32 bytes, align 8):
- *   Offset  0: wapi_string_view_t service_uuid  UUID string (NULL = any)
- *   Offset 16: wapi_string_view_t name_prefix   Device name prefix (NULL = any)
+ *   Offset  0: wapi_stringview_t service_uuid  UUID string (NULL = any)
+ *   Offset 16: wapi_stringview_t name_prefix   Device name prefix (NULL = any)
  */
 typedef struct wapi_bt_filter_t {
-    wapi_string_view_t service_uuid;
-    wapi_string_view_t name_prefix;
+    wapi_stringview_t service_uuid;
+    wapi_stringview_t name_prefix;
 } wapi_bt_filter_t;
 
 /**
  * Request a BLE device (shows picker dialog).
  *
- * @see WAPI_IO_OP_BT_REQUEST_DEVICE
+ * @see WAPI_IO_OP_BT_DEVICE_REQUEST
  * @param filters       Array of scan filters.
  * @param filter_count  Number of filters.
  * @param device        [out] Device handle.
@@ -67,7 +67,7 @@ wapi_result_t wapi_bt_disconnect(wapi_handle_t device);
  * @param service      [out] Service handle.
  */
 WAPI_IMPORT(wapi_bt, get_service)
-wapi_result_t wapi_bt_get_service(wapi_handle_t device, wapi_string_view_t uuid,
+wapi_result_t wapi_bt_get_service(wapi_handle_t device, wapi_stringview_t uuid,
                                wapi_handle_t* service);
 
 /**
@@ -78,13 +78,13 @@ wapi_result_t wapi_bt_get_service(wapi_handle_t device, wapi_string_view_t uuid,
  * @param characteristic [out] Characteristic handle.
  */
 WAPI_IMPORT(wapi_bt, get_characteristic)
-wapi_result_t wapi_bt_get_characteristic(wapi_handle_t service, wapi_string_view_t uuid,
+wapi_result_t wapi_bt_get_characteristic(wapi_handle_t service, wapi_stringview_t uuid,
                                       wapi_handle_t* characteristic);
 
 /**
  * Read a GATT characteristic value.
  *
- * @see WAPI_IO_OP_BT_READ_VALUE
+ * @see WAPI_IO_OP_BT_VALUE_READ
  */
 WAPI_IMPORT(wapi_bt, read_value)
 wapi_result_t wapi_bt_read_value(wapi_handle_t characteristic, void* buf,
@@ -93,7 +93,7 @@ wapi_result_t wapi_bt_read_value(wapi_handle_t characteristic, void* buf,
 /**
  * Write a GATT characteristic value.
  *
- * @see WAPI_IO_OP_BT_WRITE_VALUE
+ * @see WAPI_IO_OP_BT_VALUE_WRITE
  */
 WAPI_IMPORT(wapi_bt, write_value)
 wapi_result_t wapi_bt_write_value(wapi_handle_t characteristic, const void* data,
@@ -102,7 +102,7 @@ wapi_result_t wapi_bt_write_value(wapi_handle_t characteristic, const void* data
 /**
  * Subscribe to GATT characteristic notifications.
  *
- * @see WAPI_IO_OP_BT_START_NOTIFICATIONS
+ * @see WAPI_IO_OP_BT_NOTIFICATIONS_START
  */
 WAPI_IMPORT(wapi_bt, start_notifications)
 wapi_result_t wapi_bt_start_notifications(wapi_handle_t characteristic);

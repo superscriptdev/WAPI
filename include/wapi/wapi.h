@@ -138,6 +138,7 @@ typedef uint64_t wapi_flags_t;
 #define WAPI_ERR_RANGE            ((wapi_result_t)-30)  /* Result out of range */
 #define WAPI_ERR_DEADLK           ((wapi_result_t)-31)  /* Deadlock would occur */
 #define WAPI_ERR_NOSYS            ((wapi_result_t)-32)  /* Function not implemented */
+#define WAPI_ERR_LOOP             ((wapi_result_t)-33)  /* Cyclic reference detected */
 
 /* ============================================================
  * String View
@@ -166,25 +167,25 @@ typedef uint64_t wapi_flags_t;
  *   Offset  0: uint64_t data    (linear memory address of UTF-8 bytes)
  *   Offset  8: uint64_t length  (byte count, or WAPI_STRLEN for null-terminated)
  */
-typedef struct wapi_string_view_t {
+typedef struct wapi_stringview_t {
     uint64_t    data;       /* Linear memory address of UTF-8 bytes */
     wapi_size_t length;
-} wapi_string_view_t;
+} wapi_stringview_t;
 
-#define WAPI_STRING_VIEW_INIT { 0, WAPI_STRLEN }
+#define WAPI_STRINGVIEW_INIT { 0, WAPI_STRLEN }
 
 /** Create a string view from a C string literal. */
-#define WAPI_STR(s) ((wapi_string_view_t){ (uintptr_t)(s), WAPI_STRLEN })
+#define WAPI_STR(s) ((wapi_stringview_t){ (uintptr_t)(s), WAPI_STRLEN })
 
 /** Create a string view with explicit length. */
-#define WAPI_STRN(s, n) ((wapi_string_view_t){ (uintptr_t)(s), (n) })
+#define WAPI_STRN(s, n) ((wapi_stringview_t){ (uintptr_t)(s), (n) })
 
 /* ============================================================
  * Chained Struct (Forward Compatibility)
  * ============================================================
  * Following webgpu.h's nextInChain pattern for ABI-stable extension.
  * Descriptors that can be extended have a nextInChain pointer as
- * their first field. Extension structs embed wapi_chained_struct_t
+ * their first field. Extension structs embed wapi_chain_t
  * as their first field with an sType tag identifying the extension.
  */
 
@@ -201,6 +202,7 @@ typedef enum wapi_stype_t {
     WAPI_STYPE_IMAGE_EXTENDED          = 0x0301,
     /* Networking extensions */
     WAPI_STYPE_NET_TLS_CONFIG          = 0x0400,
+    WAPI_STYPE_NET_SIGNALING           = 0x0401,
     /* Reserved for future use */
     WAPI_STYPE_FORCE32 = 0x7FFFFFFF
 } wapi_stype_t;
@@ -214,11 +216,11 @@ typedef enum wapi_stype_t {
  *   Offset  8: wapi_stype_t sType (struct type tag)
  *   Offset 12: uint32_t   _pad
  */
-typedef struct wapi_chained_struct_t {
+typedef struct wapi_chain_t {
     uint64_t      next;     /* Linear memory address of next struct, or 0 */
     wapi_stype_t  sType;
     uint32_t      _pad;
-} wapi_chained_struct_t;
+} wapi_chain_t;
 
 /* ============================================================
  * Version
@@ -310,8 +312,12 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_STAT         = 0x05,  /* fd -> result_ptr=stat_buf */
     WAPI_IO_OP_LOG          = 0x06,  /* flags=level(WAPI_LOG_*), addr/len=message, addr2/len2=tag (fire-and-forget, no completion) */
 
-    /* ---- Core: Network (0x0A-0x0F) ---- */
-    WAPI_IO_OP_CONNECT      = 0x0A,  /* addr/len=url, flags=transport -> result_ptr=conn */
+    /* ---- Core: Network (0x0A-0x0F) ----
+     * See wapi_network.h. flags = WAPI_NET_* qualities bitfield; the
+     * platform picks any transport that satisfies the requested qualities,
+     * or completes with WAPI_ERR_NOTSUP. SEND/RECV preserve message
+     * boundaries iff the channel was opened with WAPI_NET_MESSAGE_FRAMED. */
+    WAPI_IO_OP_CONNECT      = 0x0A,  /* addr/len=address, flags=qualities -> result_ptr=conn */
     WAPI_IO_OP_ACCEPT       = 0x0B,  /* fd=listener -> result_ptr=conn */
     WAPI_IO_OP_SEND         = 0x0C,  /* fd, addr/len=data -> result_ptr=bytes_sent */
     WAPI_IO_OP_RECV         = 0x0D,  /* fd, addr/len=buf -> result_ptr=bytes_recv */
@@ -324,49 +330,44 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_AUDIO_WRITE  = 0x1E,  /* fd=stream, addr/len=samples */
     WAPI_IO_OP_AUDIO_READ   = 0x1F,  /* fd=stream, addr/len=buf -> result_ptr=bytes_read */
 
-    /* ---- Extended Network (0x040-0x04F) ---- */
-    WAPI_IO_OP_NETWORK_LISTEN         = 0x040, /* addr/len=bind_addr, flags=transport, flags2=port<<16|backlog -> result_ptr=listener */
-    WAPI_IO_OP_NETWORK_SEND_DATAGRAM  = 0x041, /* fd=conn, addr/len=data */
-    WAPI_IO_OP_NETWORK_RECV_DATAGRAM  = 0x042, /* fd=conn, addr/len=buf -> result_ptr=recv_len */
-    WAPI_IO_OP_NETWORK_STREAM_OPEN    = 0x043, /* fd=conn, flags=stream_type -> result_ptr=stream */
-    WAPI_IO_OP_NETWORK_STREAM_ACCEPT  = 0x044, /* fd=conn -> result_ptr=stream */
-    WAPI_IO_OP_NETWORK_RESOLVE        = 0x045, /* addr/len=host, addr2/len2=addrs_buf -> result_ptr=count */
+    /* ---- Extended Network (0x040-0x04F) ----
+     * Channel ops are only valid on connections opened with
+     * WAPI_NET_MULTIPLEXED. Each channel may have its own qualities,
+     * so a single multiplexed connection can carry e.g. one reliable
+     * byte stream alongside one unreliable framed datagram channel. */
+    WAPI_IO_OP_NETWORK_LISTEN          = 0x040, /* addr/len=bind_addr, flags=qualities, flags2=port<<16|backlog -> result_ptr=listener */
+    WAPI_IO_OP_NETWORK_CHANNEL_OPEN    = 0x043, /* fd=conn, flags=channel_qualities -> result_ptr=channel */
+    WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT  = 0x044, /* fd=conn -> result_ptr=channel */
+    WAPI_IO_OP_NETWORK_RESOLVE         = 0x045, /* addr/len=host, addr2/len2=addrs_buf -> result_ptr=count */
 
-    /* ---- P2P / WebRTC (0x050-0x05F) ---- */
-    WAPI_IO_OP_P2P_CREATE            = 0x050, /* addr/len=config(wapi_p2p_config_t) -> result_ptr=conn */
-    WAPI_IO_OP_P2P_CREATE_CHANNEL    = 0x051, /* fd=conn, addr/len=label, flags=channel_flags -> result_ptr=channel */
-    WAPI_IO_OP_P2P_ACCEPT_CHANNEL    = 0x052, /* fd=conn -> result_ptr=channel (completes when remote opens a channel) */
-    WAPI_IO_OP_P2P_CREATE_OFFER      = 0x053, /* fd=conn, addr/len=sdp_buf -> result_ptr=sdp_len */
-    WAPI_IO_OP_P2P_CREATE_ANSWER     = 0x054, /* fd=conn, addr/len=sdp_buf -> result_ptr=sdp_len */
-    WAPI_IO_OP_P2P_SET_REMOTE_DESC   = 0x055, /* fd=conn, addr/len=sdp */
-    WAPI_IO_OP_P2P_ADD_ICE_CANDIDATE = 0x056, /* fd=conn, addr/len=candidate */
-    WAPI_IO_OP_P2P_GATHER_ICE        = 0x057, /* fd=conn, addr/len=buf -> result_ptr=candidate_len (completes per candidate; len=0 means done) */
+    /* ---- HTTP (0x060-0x06F) ---- */
+    WAPI_IO_OP_HTTP_FETCH             = 0x060, /* addr/len=url, addr2/len2=response_buf, flags=method (0=GET, 1=POST, 2=PUT, 3=DELETE, 4=HEAD) -> completion.result=bytes_written or negative error, completion.flags=http_status */
 
     /* ---- Serial (0x080-0x08F) ---- */
-    WAPI_IO_OP_SERIAL_REQUEST_PORT = 0x080, /* -> result_ptr=port_handle */
+    WAPI_IO_OP_SERIAL_PORT_REQUEST = 0x080, /* -> result_ptr=port_handle */
     WAPI_IO_OP_SERIAL_OPEN         = 0x081, /* fd=port, addr/len=config_ptr */
     WAPI_IO_OP_SERIAL_READ         = 0x082, /* fd=port, addr/len=buf -> result_ptr=bytes_read */
     WAPI_IO_OP_SERIAL_WRITE        = 0x083, /* fd=port, addr/len=data */
 
     /* ---- MIDI (0x090-0x09F) ---- */
-    WAPI_IO_OP_MIDI_REQUEST_ACCESS = 0x090, /* flags=sysex_flag */
-    WAPI_IO_OP_MIDI_OPEN_PORT      = 0x091, /* flags=port_type, flags2=port_index -> result_ptr=port_handle */
+    WAPI_IO_OP_MIDI_ACCESS_REQUEST = 0x090, /* flags=sysex_flag */
+    WAPI_IO_OP_MIDI_PORT_OPEN      = 0x091, /* flags=port_type, flags2=port_index -> result_ptr=port_handle */
     WAPI_IO_OP_MIDI_SEND           = 0x092, /* fd=port, addr/len=data */
     WAPI_IO_OP_MIDI_RECV           = 0x093, /* fd=port, addr/len=buf -> result_ptr=msg_len */
 
     /* ---- Bluetooth (0x0A0-0x0AF) ---- */
-    WAPI_IO_OP_BT_REQUEST_DEVICE       = 0x0A0, /* addr/len=filters, flags2=filter_count -> result_ptr=device */
+    WAPI_IO_OP_BT_DEVICE_REQUEST       = 0x0A0, /* addr/len=filters, flags2=filter_count -> result_ptr=device */
     WAPI_IO_OP_BT_CONNECT              = 0x0A1, /* fd=device */
-    WAPI_IO_OP_BT_READ_VALUE           = 0x0A2, /* fd=characteristic, addr/len=buf -> result_ptr=val_len */
-    WAPI_IO_OP_BT_WRITE_VALUE          = 0x0A3, /* fd=characteristic, addr/len=data */
-    WAPI_IO_OP_BT_START_NOTIFICATIONS  = 0x0A4, /* fd=characteristic */
-    WAPI_IO_OP_BT_GET_SERVICE          = 0x0A5, /* fd=device, addr/len=uuid -> result_ptr=service */
-    WAPI_IO_OP_BT_GET_CHARACTERISTIC   = 0x0A6, /* fd=service, addr/len=uuid -> result_ptr=char */
+    WAPI_IO_OP_BT_VALUE_READ           = 0x0A2, /* fd=characteristic, addr/len=buf -> result_ptr=val_len */
+    WAPI_IO_OP_BT_VALUE_WRITE          = 0x0A3, /* fd=characteristic, addr/len=data */
+    WAPI_IO_OP_BT_NOTIFICATIONS_START  = 0x0A4, /* fd=characteristic */
+    WAPI_IO_OP_BT_SERVICE_GET          = 0x0A5, /* fd=device, addr/len=uuid -> result_ptr=service */
+    WAPI_IO_OP_BT_CHARACTERISTIC_GET   = 0x0A6, /* fd=service, addr/len=uuid -> result_ptr=char */
 
     /* ---- USB (0x0B0-0x0BF) ---- */
-    WAPI_IO_OP_USB_REQUEST_DEVICE   = 0x0B0, /* addr/len=filters, flags2=filter_count -> result_ptr=device */
+    WAPI_IO_OP_USB_DEVICE_REQUEST   = 0x0B0, /* addr/len=filters, flags2=filter_count -> result_ptr=device */
     WAPI_IO_OP_USB_OPEN             = 0x0B1, /* fd=device */
-    WAPI_IO_OP_USB_CLAIM_INTERFACE  = 0x0B2, /* fd=device, flags=interface_num */
+    WAPI_IO_OP_USB_INTERFACE_CLAIM  = 0x0B2, /* fd=device, flags=interface_num */
     WAPI_IO_OP_USB_TRANSFER_IN      = 0x0B3, /* fd=device, addr/len=buf, flags=endpoint -> result_ptr=transferred */
     WAPI_IO_OP_USB_TRANSFER_OUT     = 0x0B4, /* fd=device, addr/len=data, flags=endpoint -> result_ptr=transferred */
     WAPI_IO_OP_USB_CONTROL_TRANSFER = 0x0B5, /* fd=device, offset=packed_setup, addr/len=buf -> result_ptr=transferred */
@@ -377,13 +378,19 @@ typedef enum wapi_io_opcode_t {
 
     /* ---- Camera (0x0D0-0x0DF) ---- */
     WAPI_IO_OP_CAMERA_OPEN       = 0x0D0, /* addr/len=config -> result_ptr=camera_handle */
-    WAPI_IO_OP_CAMERA_READ_FRAME = 0x0D1, /* fd=camera, addr/len=buf, addr2/len2=frame_info -> result_ptr=data_size */
+    WAPI_IO_OP_CAMERA_FRAME_READ = 0x0D1, /* fd=camera, addr/len=buf, addr2/len2=frame_info -> result_ptr=data_size */
 
     /* ---- Codec (0x100-0x10F) ---- */
     WAPI_IO_OP_CODEC_DECODE     = 0x100, /* fd=codec, offset=timestamp_us, addr/len=data, flags=chunk_flags */
     WAPI_IO_OP_CODEC_ENCODE     = 0x101, /* fd=codec, offset=timestamp_us, addr/len=data */
-    WAPI_IO_OP_CODEC_GET_OUTPUT = 0x102, /* fd=codec, addr/len=buf -> result_ptr=out_len */
+    WAPI_IO_OP_CODEC_OUTPUT_GET = 0x102, /* fd=codec, addr/len=buf -> result_ptr=out_len */
     WAPI_IO_OP_CODEC_FLUSH      = 0x103, /* fd=codec */
+
+    /* ---- Compression (0x140-0x14F) ---- */
+    WAPI_IO_OP_COMPRESS_PROCESS = 0x140, /* addr/len=input, addr2/len2=output, flags=algo (wapi_compress_algo_t), flags2=mode (wapi_compress_mode_t) -> completion.result=bytes_written or negative error */
+
+    /* ---- Font bytes (0x150-0x15F) ---- */
+    WAPI_IO_OP_FONT_BYTES_GET   = 0x150, /* addr/len=family_name, addr2/len2=output_buf, flags=weight (wapi_font_weight_t, 0=default), flags2=style (wapi_font_style_t) -> completion.result=bytes_written or negative error (raw ttf/otf/woff2 container; caller parses) */
 
     /* ---- Video (0x110-0x11F) ---- */
     WAPI_IO_OP_VIDEO_CREATE = 0x110, /* addr/len=desc -> result_ptr=video_handle */
@@ -396,34 +403,36 @@ typedef enum wapi_io_opcode_t {
 
     /* ---- Screen Capture (0x130-0x13F) ---- */
     WAPI_IO_OP_CAPTURE_REQUEST   = 0x130, /* flags=source_type -> result_ptr=capture_handle */
-    WAPI_IO_OP_CAPTURE_GET_FRAME = 0x131, /* fd=capture, addr/len=buf, addr2/len2=frame_info */
+    WAPI_IO_OP_CAPTURE_FRAME_GET = 0x131, /* fd=capture, addr/len=buf, addr2/len2=frame_info */
 
     /* ---- Dialog (0x180-0x18F) ---- */
-    WAPI_IO_OP_DIALOG_OPEN_FILE   = 0x180, /* addr/len=default_path, addr2/len2=result_buf, offset=filters_ptr, flags2=filter_count -> result_ptr=result_len */
-    WAPI_IO_OP_DIALOG_SAVE_FILE   = 0x181, /* addr/len=default_path, addr2/len2=result_buf, offset=filters_ptr, flags2=filter_count -> result_ptr=result_len */
-    WAPI_IO_OP_DIALOG_OPEN_FOLDER = 0x182, /* addr/len=default_path, addr2/len2=result_buf -> result_ptr=result_len */
-    WAPI_IO_OP_DIALOG_MESSAGE_BOX = 0x183, /* addr/len=title, addr2/len2=message, flags=type, flags2=buttons -> result_ptr=button_id */
+    WAPI_IO_OP_DIALOG_FILE_OPEN   = 0x180, /* addr/len=default_path, addr2/len2=result_buf, offset=filters_ptr, flags2=filter_count -> result_ptr=result_len */
+    WAPI_IO_OP_DIALOG_FILE_SAVE   = 0x181, /* addr/len=default_path, addr2/len2=result_buf, offset=filters_ptr, flags2=filter_count -> result_ptr=result_len */
+    WAPI_IO_OP_DIALOG_FOLDER_OPEN = 0x182, /* addr/len=default_path, addr2/len2=result_buf -> result_ptr=result_len */
+    WAPI_IO_OP_DIALOG_MESSAGEBOX = 0x183, /* addr/len=title, addr2/len2=message, flags=type, flags2=buttons -> result_ptr=button_id */
+    WAPI_IO_OP_DIALOG_PICK_COLOR = 0x184, /* addr/len=title, flags=initial_rgba, flags2=color_flags -> result_ptr=picked_rgba */
+    WAPI_IO_OP_DIALOG_PICK_FONT  = 0x185, /* addr/len=title, addr2/len2=name_buf, offset=io_ptr -> io struct updated in place */
 
     /* ---- Permissions & Auth (0x190-0x19F) ---- */
     WAPI_IO_OP_PERM_REQUEST            = 0x190, /* addr/len=capability -> result_ptr=state */
     WAPI_IO_OP_BIO_AUTHENTICATE        = 0x191, /* addr/len=reason, flags=bio_type_mask */
-    WAPI_IO_OP_AUTHN_CREATE_CREDENTIAL = 0x192, /* addr/len=rp_id, addr2/len2=challenge, result_ptr=user_entity */
-    WAPI_IO_OP_AUTHN_GET_ASSERTION     = 0x193, /* addr/len=rp_id, addr2/len2=challenge */
+    WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE = 0x192, /* addr/len=rp_id, addr2/len2=challenge, result_ptr=user_entity */
+    WAPI_IO_OP_AUTHN_ASSERTION_GET     = 0x193, /* addr/len=rp_id, addr2/len2=challenge */
 
     /* ---- Pickers (0x1A0-0x1AF) ---- */
     WAPI_IO_OP_CONTACTS_PICK       = 0x1A0, /* addr/len=results_buf, flags=properties_mask, flags2=allow_multiple -> result_ptr=count */
     WAPI_IO_OP_EYEDROPPER_PICK     = 0x1A1, /* -> result_ptr=rgba */
     WAPI_IO_OP_CONTACTS_ICON_READ  = 0x1A3, /* fd=icon_handle, addr/len=buf -> result_ptr=bytes_written */
-    WAPI_IO_OP_PAY_REQUEST_PAYMENT = 0x1A2, /* addr/len=request_desc, addr2/len2=token_buf -> result_ptr=token_len */
+    WAPI_IO_OP_PAY_PAYMENT_REQUEST = 0x1A2, /* addr/len=request_desc, addr2/len2=token_buf -> result_ptr=token_len */
 
     /* ---- XR (0x200-0x20F) ---- */
-    WAPI_IO_OP_XR_REQUEST_SESSION = 0x200, /* flags=session_type -> result_ptr=session */
-    WAPI_IO_OP_XR_WAIT_FRAME      = 0x201, /* fd=session, addr/len=views_buf, addr2/len2=state, flags2=max_views */
+    WAPI_IO_OP_XR_SESSION_REQUEST = 0x200, /* flags=session_type -> result_ptr=session */
+    WAPI_IO_OP_XR_FRAME_WAIT      = 0x201, /* fd=session, addr/len=views_buf, addr2/len2=state, flags2=max_views */
     WAPI_IO_OP_XR_HIT_TEST        = 0x202, /* fd=session, addr/len=origin(12), addr2/len2=direction(12) -> result_ptr=pose */
 
     /* ---- Geolocation (0x210-0x21F) ---- */
-    WAPI_IO_OP_GEO_GET_POSITION   = 0x210, /* offset=timeout_ms, flags=accuracy -> result_ptr=position */
-    WAPI_IO_OP_GEO_WATCH_POSITION = 0x211, /* flags=accuracy -> result_ptr=watch_handle */
+    WAPI_IO_OP_GEO_POSITION_GET   = 0x210, /* offset=timeout_ms, flags=accuracy -> result_ptr=position */
+    WAPI_IO_OP_GEO_POSITION_WATCH = 0x211, /* flags=accuracy -> result_ptr=watch_handle */
 
     /* ---- Sandbox Filesystem (0x2A0-0x2AF) ---- */
     WAPI_IO_OP_SANDBOX_OPEN   = 0x2A0, /* addr/len=path, flags=open_flags -> result_ptr=fd */
@@ -504,7 +513,6 @@ typedef struct wapi_io_op_t {
 /* ============================================================
  * Event Types
  * ============================================================
- * Event type ranges follow SDL3 conventions for familiarity.
  */
 
 typedef enum wapi_event_type_t {
@@ -513,11 +521,11 @@ typedef enum wapi_event_type_t {
     /* Application lifecycle (0x100-0x1FF) */
     WAPI_EVENT_QUIT             = 0x100,
     WAPI_EVENT_TERMINATING      = 0x101,
-    WAPI_EVENT_LOW_MEMORY       = 0x102,
-    WAPI_EVENT_WILL_ENTER_BG    = 0x103,
-    WAPI_EVENT_DID_ENTER_BG     = 0x104,
-    WAPI_EVENT_WILL_ENTER_FG    = 0x105,
-    WAPI_EVENT_DID_ENTER_FG     = 0x106,
+    WAPI_EVENT_LOWMEMORY        = 0x102,
+    WAPI_EVENT_BG_WILLENTER     = 0x103,
+    WAPI_EVENT_BG_DIDENTER      = 0x104,
+    WAPI_EVENT_FG_WILLENTER     = 0x105,
+    WAPI_EVENT_FG_DIDENTER      = 0x106,
 
     /* Surface events (0x200-0x20F) */
     WAPI_EVENT_SURFACE_RESIZED      = 0x0200,
@@ -534,11 +542,18 @@ typedef enum wapi_event_type_t {
     WAPI_EVENT_WINDOW_RESTORED      = 0x0217,
     WAPI_EVENT_WINDOW_MOVED         = 0x0218,
 
-    /* Keyboard events (0x300-0x3FF) */
+    /* Keyboard events (0x300-0x31F) */
     WAPI_EVENT_KEY_DOWN         = 0x300,
     WAPI_EVENT_KEY_UP           = 0x301,
-    WAPI_EVENT_TEXT_INPUT        = 0x302,
-    WAPI_EVENT_TEXT_EDITING      = 0x303,
+
+    /* IME / text input events (0x320-0x32F)
+     * Keyboard events carry physical key transitions only; text is a
+     * separate stream produced by the IME. See wapi_input.h for the
+     * accessors that read the payloads referenced by these events. */
+    WAPI_EVENT_IME_START        = 0x320,  /* Composition began */
+    WAPI_EVENT_IME_UPDATE       = 0x321,  /* Preedit text/cursor/segments changed */
+    WAPI_EVENT_IME_COMMIT       = 0x322,  /* Finalized text ready to insert */
+    WAPI_EVENT_IME_CANCEL       = 0x323,  /* Composition abandoned */
 
     /* Mouse events (0x400-0x4FF) */
     WAPI_EVENT_MOUSE_MOTION     = 0x400,
@@ -666,10 +681,10 @@ typedef enum wapi_scancode_t {
     WAPI_SCANCODE_SPACE     = 44,
 
     /* Modifiers */
-    WAPI_SCANCODE_LCTRL  = 224, WAPI_SCANCODE_LSHIFT = 225,
-    WAPI_SCANCODE_LALT   = 226, WAPI_SCANCODE_LGUI   = 227,
-    WAPI_SCANCODE_RCTRL  = 228, WAPI_SCANCODE_RSHIFT = 229,
-    WAPI_SCANCODE_RALT   = 230, WAPI_SCANCODE_RGUI   = 231,
+    WAPI_SCANCODE_CTRL_LEFT  = 224, WAPI_SCANCODE_SHIFT_LEFT  = 225,
+    WAPI_SCANCODE_ALT_LEFT   = 226, WAPI_SCANCODE_GUI_LEFT    = 227,
+    WAPI_SCANCODE_CTRL_RIGHT = 228, WAPI_SCANCODE_SHIFT_RIGHT = 229,
+    WAPI_SCANCODE_ALT_RIGHT  = 230, WAPI_SCANCODE_GUI_RIGHT   = 231,
 
     /* Function keys */
     WAPI_SCANCODE_F1  = 58,  WAPI_SCANCODE_F2  = 59,
@@ -682,10 +697,10 @@ typedef enum wapi_scancode_t {
     /* Navigation */
     WAPI_SCANCODE_INSERT    = 73,
     WAPI_SCANCODE_HOME      = 74,
-    WAPI_SCANCODE_PAGEUP    = 75,
+    WAPI_SCANCODE_PAGEUP   = 75,
     WAPI_SCANCODE_DELETE    = 76,
     WAPI_SCANCODE_END       = 77,
-    WAPI_SCANCODE_PAGEDOWN  = 78,
+    WAPI_SCANCODE_PAGEDOWN = 78,
     WAPI_SCANCODE_RIGHT     = 79,
     WAPI_SCANCODE_LEFT      = 80,
     WAPI_SCANCODE_DOWN      = 81,
@@ -698,22 +713,22 @@ typedef enum wapi_scancode_t {
  * Modifier Flags
  * ============================================================ */
 
-#define WAPI_KMOD_NONE   0x0000
-#define WAPI_KMOD_LSHIFT 0x0001
-#define WAPI_KMOD_RSHIFT 0x0002
-#define WAPI_KMOD_LCTRL  0x0040
-#define WAPI_KMOD_RCTRL  0x0080
-#define WAPI_KMOD_LALT   0x0100
-#define WAPI_KMOD_RALT   0x0200
-#define WAPI_KMOD_LGUI   0x0400
-#define WAPI_KMOD_RGUI   0x0800
-#define WAPI_KMOD_CAPS   0x2000
-#define WAPI_KMOD_NUM    0x1000
+#define WAPI_KMOD_NONE        0x0000
+#define WAPI_KMOD_SHIFT_LEFT  0x0001
+#define WAPI_KMOD_SHIFT_RIGHT 0x0002
+#define WAPI_KMOD_CTRL_LEFT   0x0040
+#define WAPI_KMOD_CTRL_RIGHT  0x0080
+#define WAPI_KMOD_ALT_LEFT    0x0100
+#define WAPI_KMOD_ALT_RIGHT   0x0200
+#define WAPI_KMOD_GUI_LEFT    0x0400
+#define WAPI_KMOD_GUI_RIGHT   0x0800
+#define WAPI_KMOD_CAPS        0x2000
+#define WAPI_KMOD_NUM         0x1000
 
-#define WAPI_KMOD_SHIFT  (WAPI_KMOD_LSHIFT | WAPI_KMOD_RSHIFT)
-#define WAPI_KMOD_CTRL   (WAPI_KMOD_LCTRL  | WAPI_KMOD_RCTRL)
-#define WAPI_KMOD_ALT    (WAPI_KMOD_LALT   | WAPI_KMOD_RALT)
-#define WAPI_KMOD_GUI    (WAPI_KMOD_LGUI   | WAPI_KMOD_RGUI)
+#define WAPI_KMOD_SHIFT  (WAPI_KMOD_SHIFT_LEFT | WAPI_KMOD_SHIFT_RIGHT)
+#define WAPI_KMOD_CTRL   (WAPI_KMOD_CTRL_LEFT  | WAPI_KMOD_CTRL_RIGHT)
+#define WAPI_KMOD_ALT    (WAPI_KMOD_ALT_LEFT   | WAPI_KMOD_ALT_RIGHT)
+#define WAPI_KMOD_GUI    (WAPI_KMOD_GUI_LEFT   | WAPI_KMOD_GUI_RIGHT)
 
 /* Platform action modifier: Cmd on macOS, Ctrl everywhere else.
  * The host sets this bit on key events so modules can test a single
@@ -742,25 +757,25 @@ typedef enum wapi_gamepad_button_t {
     WAPI_GAMEPAD_BUTTON_BACK   = 4,
     WAPI_GAMEPAD_BUTTON_GUIDE  = 5,
     WAPI_GAMEPAD_BUTTON_START  = 6,
-    WAPI_GAMEPAD_BUTTON_LSTICK = 7,
-    WAPI_GAMEPAD_BUTTON_RSTICK = 8,
-    WAPI_GAMEPAD_BUTTON_LSHOULDER = 9,
-    WAPI_GAMEPAD_BUTTON_RSHOULDER = 10,
-    WAPI_GAMEPAD_BUTTON_DPAD_UP    = 11,
-    WAPI_GAMEPAD_BUTTON_DPAD_DOWN  = 12,
-    WAPI_GAMEPAD_BUTTON_DPAD_LEFT  = 13,
-    WAPI_GAMEPAD_BUTTON_DPAD_RIGHT = 14,
-    WAPI_GAMEPAD_BUTTON_FORCE32    = 0x7FFFFFFF
+    WAPI_GAMEPAD_BUTTON_STICK_LEFT     = 7,
+    WAPI_GAMEPAD_BUTTON_STICK_RIGHT    = 8,
+    WAPI_GAMEPAD_BUTTON_SHOULDER_LEFT  = 9,
+    WAPI_GAMEPAD_BUTTON_SHOULDER_RIGHT = 10,
+    WAPI_GAMEPAD_BUTTON_DPAD_UP        = 11,
+    WAPI_GAMEPAD_BUTTON_DPAD_DOWN      = 12,
+    WAPI_GAMEPAD_BUTTON_DPAD_LEFT      = 13,
+    WAPI_GAMEPAD_BUTTON_DPAD_RIGHT     = 14,
+    WAPI_GAMEPAD_BUTTON_FORCE32        = 0x7FFFFFFF
 } wapi_gamepad_button_t;
 
 typedef enum wapi_gamepad_axis_t {
-    WAPI_GAMEPAD_AXIS_LEFTX        = 0,
-    WAPI_GAMEPAD_AXIS_LEFTY        = 1,
-    WAPI_GAMEPAD_AXIS_RIGHTX       = 2,
-    WAPI_GAMEPAD_AXIS_RIGHTY       = 3,
-    WAPI_GAMEPAD_AXIS_LEFT_TRIGGER = 4,
-    WAPI_GAMEPAD_AXIS_RIGHT_TRIGGER = 5,
-    WAPI_GAMEPAD_AXIS_FORCE32      = 0x7FFFFFFF
+    WAPI_GAMEPAD_AXIS_STICK_LEFT_X   = 0,
+    WAPI_GAMEPAD_AXIS_STICK_LEFT_Y   = 1,
+    WAPI_GAMEPAD_AXIS_STICK_RIGHT_X  = 2,
+    WAPI_GAMEPAD_AXIS_STICK_RIGHT_Y  = 3,
+    WAPI_GAMEPAD_AXIS_TRIGGER_LEFT   = 4,
+    WAPI_GAMEPAD_AXIS_TRIGGER_RIGHT  = 5,
+    WAPI_GAMEPAD_AXIS_FORCE32        = 0x7FFFFFFF
 } wapi_gamepad_axis_t;
 
 /* ============================================================
@@ -790,13 +805,44 @@ typedef struct wapi_keyboard_event_t {
     uint8_t     repeat;      /* 1 = key repeat */
 } wapi_keyboard_event_t;
 
-/** Text input event */
-typedef struct wapi_text_input_event_t {
+/** IME event (composition start/update/commit/cancel)
+ *
+ * Variable-length payloads (UTF-8 text, attribute segments) are read
+ * through wapi_input.h accessors keyed on `sequence`. The sequence is
+ * valid from the time the event is delivered until the module's next
+ * wapi_io_poll call returns; the module MUST drain anything it cares
+ * about inside the event handler.
+ *
+ * Layout (40 bytes, align 8):
+ *   0:  type             u32   WAPI_EVENT_IME_*
+ *   4:  surface_id       u32
+ *   8:  timestamp        u64
+ *  16:  sequence         u64   Host-assigned monotonic payload id
+ *  24:  text_len         u32   UTF-8 byte length (preedit or commit)
+ *  28:  cursor           u32   Byte offset of caret within preedit text
+ *  32:  segment_count    u32   Number of attribute segments
+ *  36:  flags            u8    WAPI_IME_F_*
+ *  37:  _pad0            u8
+ *  38:  _pad1            u8
+ *  39:  _pad2            u8
+ */
+typedef struct wapi_ime_event_t {
     uint32_t    type;
     uint32_t    surface_id;
     uint64_t    timestamp;
-    char        text[32];    /* UTF-8 text input (null-terminated) */
-} wapi_text_input_event_t;
+    uint64_t    sequence;
+    uint32_t    text_len;
+    uint32_t    cursor;
+    uint32_t    segment_count;
+    uint8_t     flags;
+    uint8_t     _pad0;
+    uint8_t     _pad1;
+    uint8_t     _pad2;
+} wapi_ime_event_t;
+
+/* IME event flags */
+#define WAPI_IME_F_CURSORVISIBLE  0x01  /* Caret should be drawn inside preedit */
+#define WAPI_IME_F_MULTILINE       0x02  /* Text contains newlines (dictation, paste) */
 
 /** Mouse motion event */
 typedef struct wapi_mouse_motion_event_t {
@@ -1074,7 +1120,7 @@ typedef union wapi_event_t {
     uint32_t                          type;
     wapi_event_common_t               common;
     wapi_keyboard_event_t             key;
-    wapi_text_input_event_t           text;
+    wapi_ime_event_t                  ime;
     wapi_mouse_motion_event_t         motion;
     wapi_mouse_button_event_t         button;
     wapi_mouse_wheel_event_t          wheel;
@@ -1167,12 +1213,12 @@ typedef struct wapi_io_t {
                           int32_t timeout_ms);
     void          (*flush)(void* impl, uint32_t event_type);
     wapi_bool_t   (*capability_supported)(void* impl,
-                                          wapi_string_view_t name);
+                                          wapi_stringview_t name);
     wapi_result_t (*capability_version)(void* impl,
-                                        wapi_string_view_t name,
+                                        wapi_stringview_t name,
                                         wapi_version_t* version);
     wapi_result_t (*perm_query)(void* impl,
-                                wapi_string_view_t capability,
+                                wapi_stringview_t capability,
                                 wapi_perm_state_t* state);
 } wapi_io_t;
 
@@ -1240,9 +1286,13 @@ static inline _Noreturn void wapi_panic(const char* msg, wapi_size_t msg_len) {
  * Returns the host-determined vtable for the calling module.
  * Deterministic, safe, not influenced by any parent.
  *
- * Wasm signature: () -> i32
+ * Provided by the reactor shim that ships with each wapi-capable
+ * wasm build; implemented in terms of the host import module
+ * "wapi_io_bridge" (submit / poll / wait / cancel / flush). There
+ * is no `wapi.io_get` host import — modules get the vtable from
+ * their own link unit so function pointers are real wasm function
+ * references in the default table.
  */
-WAPI_IMPORT(wapi, io_get)
 const wapi_io_t* wapi_io_get(void);
 
 /**
@@ -1300,22 +1350,23 @@ const wapi_allocator_t* wapi_allocator_get(void);
 #define WAPI_CAP_CRYPTO        "wapi.crypto"
 #define WAPI_CAP_BIOMETRIC     "wapi.biometric"
 #define WAPI_CAP_SHARE         "wapi.share"
-#define WAPI_CAP_KV_STORAGE    "wapi.kvstorage"
+#define WAPI_CAP_KVSTORAGE    "wapi.kvstorage"
 #define WAPI_CAP_PAYMENTS      "wapi.payments"
 #define WAPI_CAP_USB           "wapi.usb"
 #define WAPI_CAP_MIDI          "wapi.midi"
 #define WAPI_CAP_BLUETOOTH     "wapi.bluetooth"
 #define WAPI_CAP_CAMERA        "wapi.camera"
 #define WAPI_CAP_XR            "wapi.xr"
-#define WAPI_CAP_AUDIO_PLUGIN  "wapi.audioplugin"
+#define WAPI_CAP_AUDIOPLUGIN  "wapi.audioplugin"
 #define WAPI_CAP_THREAD        "wapi.thread"
-#define WAPI_CAP_SYNC          "wapi.sync"
 #define WAPI_CAP_PROCESS       "wapi.process"
 #define WAPI_CAP_DIALOG        "wapi.dialog"
 #define WAPI_CAP_SYSINFO       "wapi.sysinfo"
 #define WAPI_CAP_EYEDROP       "wapi.eyedrop"
 #define WAPI_CAP_CONTACTS      "wapi.contacts"
-#define WAPI_CAP_P2P           "wapi.p2p"
+#define WAPI_CAP_HTTP          "wapi.http"
+#define WAPI_CAP_COMPRESSION   "wapi.compression"
+#define WAPI_CAP_POWER         "wapi.power"
 
 /* ============================================================
  * Presets
@@ -1333,19 +1384,19 @@ static const char* const WAPI_PRESET_EMBEDDED[] = {
 static const char* const WAPI_PRESET_HEADLESS[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
-    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
+    "wapi.thread", "wapi.process", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_COMPUTE[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
-    "wapi.gpu", "wapi.thread", "wapi.sync", "wapi.process",
+    "wapi.gpu", "wapi.thread", "wapi.process",
     "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_AUDIO[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem",
-    "wapi.audio", "wapi.thread", "wapi.sync", "wapi.module", NULL
+    "wapi.audio", "wapi.thread", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_GRAPHICAL[] = {
@@ -1354,7 +1405,7 @@ static const char* const WAPI_PRESET_GRAPHICAL[] = {
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
     "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
     "wapi.font", "wapi.dialog",
-    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
+    "wapi.thread", "wapi.process", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_MOBILE[] = {
@@ -1363,7 +1414,7 @@ static const char* const WAPI_PRESET_MOBILE[] = {
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
     "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
     "wapi.font",
-    "wapi.thread", "wapi.sync",
+    "wapi.thread",
     "wapi.geolocation", "wapi.camera", "wapi.notifications",
     "wapi.sensors", "wapi.biometric", "wapi.module", NULL
 };
@@ -1398,6 +1449,12 @@ static inline wapi_bool_t wapi_preset_supported(const wapi_io_t* io,
  * Module entry point. Called by the host after instantiation.
  * The module calls wapi_io_get() / wapi_allocator_get() to obtain
  * its vtables, queries capabilities, and initializes.
+ *
+ * wapi_main does NOT return when the module "is done". It returns
+ * once initialization is complete; the instance then stays live,
+ * driven by wapi_frame, wapi_io events, or incoming service calls.
+ * The module leaves for good by calling wapi_exit.
+ *
  * Returns WAPI_OK on success, or a negative error code to abort.
  *
  * Wasm signature: () -> i32
@@ -1413,6 +1470,73 @@ static inline wapi_bool_t wapi_preset_supported(const wapi_io_t* io,
  * Exported as: "wapi_frame"
  */
 /* WAPI_EXPORT(wapi_frame) wapi_result_t wapi_frame(wapi_timestamp_t timestamp); */
+
+/* ============================================================
+ * Shutdown handshake
+ * ============================================================
+ * Every WAPI module — top-level app, dynamically loaded library,
+ * or shared service — exits through the same two-step handshake.
+ * The host owns destruction; the module owns the moment at which
+ * its state is consistent enough to be destroyed.
+ *
+ *   Step 1 — Request shutdown (host → module):
+ *
+ *     The host posts WAPI_EVENT_QUIT (graceful) or
+ *     WAPI_EVENT_TERMINATING (imminent, possibly forced) into the
+ *     module's wapi_io event queue. Triggers: tab / window close,
+ *     page navigation, extension reload, service refcount dropping
+ *     to zero, OS sleep, host memory pressure, user "quit".
+ *
+ *     The module handles the event on its next poll: flushes
+ *     buffers, persists state, releases held handles.
+ *
+ *   Step 2 — Finalize shutdown (module → host):
+ *
+ *     When cleanup is complete the module calls wapi_exit. The
+ *     call does not return to user code — control leaves the
+ *     module and the host destroys the instance.
+ *
+ * A module MAY also call wapi_exit without waiting for a request
+ * event (idle timeout, fatal internal error, explicit quit). The
+ * host treats this identically to the request / finalize path
+ * with the request step skipped.
+ *
+ * Watchdog:
+ *
+ *   After posting WAPI_EVENT_QUIT the host starts a bounded grace
+ *   timer (implementation-defined, typically ~1 second). If the
+ *   module does not reach wapi_exit within the window the host
+ *   force-destroys the instance. Modules that never poll, or that
+ *   have no state to flush, are safe to force-destroy and this is
+ *   the default for pure / stateless modules.
+ *
+ *   WAPI_EVENT_TERMINATING is sent when the host cannot wait —
+ *   the instance will be destroyed whether the module responds or
+ *   not. Modules should still try to flush, but the grace window
+ *   may be much shorter or zero.
+ *
+ * During shutdown processing the module MUST NOT call back into
+ * wapi_module_load or wapi_module_join. The host is permitted to
+ * reject such calls with WAPI_ERR_BUSY.
+ */
+
+/**
+ * Finalize shutdown of the calling module instance.
+ *
+ * Called by the module after it has finished flushing state —
+ * either in response to a WAPI_EVENT_QUIT / WAPI_EVENT_TERMINATING
+ * request, or as a voluntary exit. The host destroys the instance
+ * and this call does not return to user code.
+ *
+ * For a shared service instance the host waits for any outstanding
+ * handles to drain before destroying the instance. For a library
+ * instance or top-level app the instance is destroyed immediately
+ * after the call.
+ *
+ * @return WAPI_OK on success.
+ */
+WAPI_IMPORT(wapi, exit)
+wapi_result_t wapi_exit(void);
 
 /* ################################################################
  * PART 7 — COMPILE-TIME LAYOUT VERIFICATION
@@ -1476,12 +1600,19 @@ _Static_assert(sizeof(wapi_keyboard_event_t) == 32, "");
 _Static_assert(_Alignof(wapi_keyboard_event_t) == 8, "");
 
 /* --- Text Input Event (48 bytes) --- */
-_Static_assert(offsetof(wapi_text_input_event_t, type)       ==  0, "");
-_Static_assert(offsetof(wapi_text_input_event_t, surface_id) ==  4, "");
-_Static_assert(offsetof(wapi_text_input_event_t, timestamp)  ==  8, "");
-_Static_assert(offsetof(wapi_text_input_event_t, text)       == 16, "");
-_Static_assert(sizeof(wapi_text_input_event_t) == 48, "");
-_Static_assert(_Alignof(wapi_text_input_event_t) == 8, "");
+_Static_assert(offsetof(wapi_ime_event_t, type)          ==  0, "");
+_Static_assert(offsetof(wapi_ime_event_t, surface_id)    ==  4, "");
+_Static_assert(offsetof(wapi_ime_event_t, timestamp)     ==  8, "");
+_Static_assert(offsetof(wapi_ime_event_t, sequence)      == 16, "");
+_Static_assert(offsetof(wapi_ime_event_t, text_len)      == 24, "");
+_Static_assert(offsetof(wapi_ime_event_t, cursor)        == 28, "");
+_Static_assert(offsetof(wapi_ime_event_t, segment_count) == 32, "");
+_Static_assert(offsetof(wapi_ime_event_t, flags)         == 36, "");
+_Static_assert(offsetof(wapi_ime_event_t, _pad0)         == 37, "");
+_Static_assert(offsetof(wapi_ime_event_t, _pad1)         == 38, "");
+_Static_assert(offsetof(wapi_ime_event_t, _pad2)         == 39, "");
+_Static_assert(sizeof(wapi_ime_event_t) == 40, "wapi_ime_event_t must be 40 bytes");
+_Static_assert(_Alignof(wapi_ime_event_t) == 8, "wapi_ime_event_t must be 8-byte aligned");
 
 /* --- Mouse Motion Event (40 bytes) --- */
 _Static_assert(offsetof(wapi_mouse_motion_event_t, type)         ==  0, "");
@@ -1665,17 +1796,17 @@ _Static_assert(_Alignof(wapi_io_event_t) == 8, "wapi_io_event_t must be 8-byte a
 /* --- Address-containing structs (layout identical on all platforms) --- */
 
 /* String View (16 bytes, align 8) */
-_Static_assert(offsetof(wapi_string_view_t, data)   == 0, "");
-_Static_assert(offsetof(wapi_string_view_t, length) == 8, "");
-_Static_assert(sizeof(wapi_string_view_t) == 16, "wapi_string_view_t must be 16 bytes");
-_Static_assert(_Alignof(wapi_string_view_t) == 8, "wapi_string_view_t must be 8-byte aligned");
+_Static_assert(offsetof(wapi_stringview_t, data)   == 0, "");
+_Static_assert(offsetof(wapi_stringview_t, length) == 8, "");
+_Static_assert(sizeof(wapi_stringview_t) == 16, "wapi_stringview_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_stringview_t) == 8, "wapi_stringview_t must be 8-byte aligned");
 
 /* Chained Struct (16 bytes, align 8) */
-_Static_assert(offsetof(wapi_chained_struct_t, next)  == 0, "");
-_Static_assert(offsetof(wapi_chained_struct_t, sType) == 8, "");
-_Static_assert(offsetof(wapi_chained_struct_t, _pad)  == 12, "");
-_Static_assert(sizeof(wapi_chained_struct_t) == 16, "wapi_chained_struct_t must be 16 bytes");
-_Static_assert(_Alignof(wapi_chained_struct_t) == 8, "wapi_chained_struct_t must be 8-byte aligned");
+_Static_assert(offsetof(wapi_chain_t, next)  == 0, "");
+_Static_assert(offsetof(wapi_chain_t, sType) == 8, "");
+_Static_assert(offsetof(wapi_chain_t, _pad)  == 12, "");
+_Static_assert(sizeof(wapi_chain_t) == 16, "wapi_chain_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_chain_t) == 8, "wapi_chain_t must be 8-byte aligned");
 
 /* --- Pointer-containing structs (wasm32 only, build-time vtables) --- */
 #ifdef __wasm__

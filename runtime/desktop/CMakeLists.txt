@@ -57,7 +57,6 @@ set(SOURCES
     src/wapi_host_battery.c
     src/wapi_host_idle.c
     src/wapi_host_haptics.c
-    src/wapi_host_p2p.c
     src/wapi_host_hid.c
     src/wapi_host_serial.c
     src/wapi_host_screen_capture.c

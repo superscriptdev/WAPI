@@ -55,7 +55,7 @@ typedef struct wapi_usb_filter_t {
 /**
  * Request access to a USB device (shows permission prompt).
  *
- * @see WAPI_IO_OP_USB_REQUEST_DEVICE
+ * @see WAPI_IO_OP_USB_DEVICE_REQUEST
  * @param filters      Array of filters (NULL = any device).
  * @param filter_count Number of filters.
  * @param device       [out] USB device handle.
@@ -81,7 +81,7 @@ wapi_result_t wapi_usb_close(wapi_handle_t device);
 /**
  * Claim a USB interface.
  *
- * @see WAPI_IO_OP_USB_CLAIM_INTERFACE
+ * @see WAPI_IO_OP_USB_INTERFACE_CLAIM
  */
 WAPI_IMPORT(wapi_usb, claim_interface)
 wapi_result_t wapi_usb_claim_interface(wapi_handle_t device, uint8_t interface_num);

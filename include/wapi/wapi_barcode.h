@@ -27,13 +27,13 @@ extern "C" {
 
 typedef enum wapi_barcode_format_t {
     WAPI_BARCODE_QR          = 0,
-    WAPI_BARCODE_EAN_13      = 1,
-    WAPI_BARCODE_EAN_8       = 2,
-    WAPI_BARCODE_CODE_128    = 3,
-    WAPI_BARCODE_CODE_39     = 4,
-    WAPI_BARCODE_UPC_A       = 5,
-    WAPI_BARCODE_UPC_E       = 6,
-    WAPI_BARCODE_DATA_MATRIX = 7,
+    WAPI_BARCODE_EAN13      = 1,
+    WAPI_BARCODE_EAN8       = 2,
+    WAPI_BARCODE_CODE128    = 3,
+    WAPI_BARCODE_CODE39     = 4,
+    WAPI_BARCODE_UPCA       = 5,
+    WAPI_BARCODE_UPCE       = 6,
+    WAPI_BARCODE_DATAMATRIX = 7,
     WAPI_BARCODE_PDF417      = 8,
     WAPI_BARCODE_AZTEC       = 9,
     WAPI_BARCODE_FORCE32     = 0x7FFFFFFF
@@ -98,8 +98,8 @@ wapi_result_t wapi_barcode_detect(const void* image_data, uint32_t width,
  *
  * Wasm signature: (i32, i32, i32) -> i32
  */
-WAPI_IMPORT(wapi_barcode, detect_from_camera)
-wapi_result_t wapi_barcode_detect_from_camera(wapi_handle_t camera_handle,
+WAPI_IMPORT(wapi_barcode, detect)
+wapi_result_t wapi_barcode_detect(wapi_handle_t camera_handle,
                                               wapi_barcode_result_t* results_buf,
                                               uint32_t max_results);
 

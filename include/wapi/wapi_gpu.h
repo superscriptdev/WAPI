@@ -65,7 +65,7 @@ extern "C" {
  *   Offset 16: uint64_t required_features       Linear memory address of uint32_t array
  */
 typedef struct wapi_gpu_device_desc_t {
-    uint64_t              nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
+    uint64_t              nextInChain;  /* Address of wapi_chain_t, or 0 */
     uint32_t              power_preference;
     uint32_t              required_features_count;
     uint64_t              required_features;  /* Address of uint32_t array */
@@ -73,8 +73,8 @@ typedef struct wapi_gpu_device_desc_t {
 
 /** Power preference values (matching WGPUPowerPreference) */
 #define WAPI_GPU_POWER_DEFAULT      0
-#define WAPI_GPU_POWER_LOW_POWER    1
-#define WAPI_GPU_POWER_HIGH_PERF    2
+#define WAPI_GPU_POWER_LOWPOWER    1
+#define WAPI_GPU_POWER_HIGHPERF    2
 
 /**
  * Request a GPU device through the WAPI.
@@ -124,18 +124,18 @@ wapi_result_t wapi_gpu_release_device(wapi_handle_t device);
 
 /** Texture format for surface rendering (matching WGPUTextureFormat values) */
 typedef enum wapi_gpu_texture_format_t {
-    WAPI_GPU_FORMAT_RGBA8_UNORM       = 0x0016,  /* WGPUTextureFormat_RGBA8Unorm */
-    WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB  = 0x0017,  /* WGPUTextureFormat_RGBA8UnormSrgb */
-    WAPI_GPU_FORMAT_BGRA8_UNORM       = 0x001B,  /* WGPUTextureFormat_BGRA8Unorm */
-    WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB  = 0x001C,  /* WGPUTextureFormat_BGRA8UnormSrgb */
-    WAPI_GPU_FORMAT_RGBA16_FLOAT      = 0x0028,  /* WGPUTextureFormat_RGBA16Float */
+    WAPI_GPU_FORMAT_RGBA8UNORM       = 0x0016,  /* WGPUTextureFormat_RGBA8Unorm */
+    WAPI_GPU_FORMAT_RGBA8UNORM_SRGB  = 0x0017,  /* WGPUTextureFormat_RGBA8UnormSrgb */
+    WAPI_GPU_FORMAT_BGRA8UNORM       = 0x001B,  /* WGPUTextureFormat_BGRA8Unorm */
+    WAPI_GPU_FORMAT_BGRA8UNORM_SRGB  = 0x001C,  /* WGPUTextureFormat_BGRA8UnormSrgb */
+    WAPI_GPU_FORMAT_RGBA16FLOAT      = 0x0028,  /* WGPUTextureFormat_RGBA16Float */
     WAPI_GPU_FORMAT_FORCE32           = 0x7FFFFFFF
 } wapi_gpu_texture_format_t;
 
 /** Present mode (matching WGPUPresentMode) */
 typedef enum wapi_gpu_present_mode_t {
     WAPI_GPU_PRESENT_FIFO        = 0,  /* VSync */
-    WAPI_GPU_PRESENT_FIFO_RELAXED = 1,
+    WAPI_GPU_PRESENT_FIFORELAXED = 1,
     WAPI_GPU_PRESENT_IMMEDIATE   = 2,  /* No VSync */
     WAPI_GPU_PRESENT_MAILBOX     = 3,  /* Triple buffering */
     WAPI_GPU_PRESENT_FORCE32     = 0x7FFFFFFF
@@ -153,27 +153,27 @@ typedef enum wapi_gpu_present_mode_t {
  *   Offset 24: uint32_t usage         Texture usage flags (WGPUTextureUsage)
  *   Offset 28: uint32_t _pad
  */
-typedef struct wapi_gpu_surface_config_t {
-    uint64_t                     nextInChain;  /* Address of wapi_chained_struct_t, or 0 */
+typedef struct wapi_gpu_surface_desc_t {
+    uint64_t                     nextInChain;  /* Address of wapi_chain_t, or 0 */
     wapi_handle_t                surface;
     wapi_handle_t                device;
     uint32_t                   format;        /* wapi_gpu_texture_format_t */
     uint32_t                   present_mode;  /* wapi_gpu_present_mode_t */
     uint32_t                   usage;         /* WGPUTextureUsage flags */
     uint32_t                   _pad;
-} wapi_gpu_surface_config_t;
+} wapi_gpu_surface_desc_t;
 
 /**
  * Configure a WAPI surface for GPU rendering.
  * After this call, the surface can provide textures for rendering.
  *
- * @param config  Surface GPU configuration.
+ * @param desc  Surface GPU descriptor.
  * @return WAPI_OK on success.
  *
  * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_gpu, configure_surface)
-wapi_result_t wapi_gpu_configure_surface(const wapi_gpu_surface_config_t* config);
+wapi_result_t wapi_gpu_configure_surface(const wapi_gpu_surface_desc_t* desc);
 
 /**
  * Get the current texture to render to from a configured surface.
@@ -426,7 +426,7 @@ typedef void (*wapi_gpu_proc_t)(void);
  * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_gpu, get_proc_address)
-wapi_gpu_proc_t wapi_gpu_get_proc_address(wapi_string_view_t name);
+wapi_gpu_proc_t wapi_gpu_get_proc_address(wapi_stringview_t name);
 
 #ifdef __cplusplus
 }

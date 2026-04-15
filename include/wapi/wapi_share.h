@@ -24,16 +24,16 @@ extern "C" {
  * Share data descriptor.
  *
  * Layout (64 bytes, align 8):
- *   Offset  0: wapi_string_view_t title
- *   Offset 16: wapi_string_view_t text
- *   Offset 32: wapi_string_view_t url
- *   Offset 48: wapi_string_view_t file_path  (NULL for no file)
+ *   Offset  0: wapi_stringview_t title
+ *   Offset 16: wapi_stringview_t text
+ *   Offset 32: wapi_stringview_t url
+ *   Offset 48: wapi_stringview_t file_path  (NULL for no file)
  */
 typedef struct wapi_share_data_t {
-    wapi_string_view_t title;
-    wapi_string_view_t text;
-    wapi_string_view_t url;
-    wapi_string_view_t file_path;
+    wapi_stringview_t title;
+    wapi_stringview_t text;
+    wapi_stringview_t url;
+    wapi_stringview_t file_path;
 } wapi_share_data_t;
 
 /**

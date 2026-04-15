@@ -55,8 +55,6 @@ static const char* SUPPORTED_CAPS[] = {
     "wapi.battery",
     "wapi.idle",
     "wapi.haptics",
-    /* Communication */
-    "wapi.p2p",
     /* Hardware access */
     "wapi.hid",
     "wapi.serial",

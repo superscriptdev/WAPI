@@ -46,12 +46,12 @@ typedef enum wapi_pixel_format_t {
  *   Offset  8: int32_t  height    Requested height (0 = default)
  *   Offset 12: int32_t  fps       Requested frame rate (0 = default)
  */
-typedef struct wapi_camera_config_t {
+typedef struct wapi_camera_desc_t {
     uint32_t facing;
     int32_t  width;
     int32_t  height;
     int32_t  fps;
-} wapi_camera_config_t;
+} wapi_camera_desc_t;
 
 /**
  * Camera frame metadata.
@@ -80,11 +80,11 @@ int32_t wapi_camera_count(void);
 /**
  * Open a camera (shows permission prompt if needed).
  *
- * @param config  Camera configuration.
+ * @param desc    Camera descriptor.
  * @param camera  [out] Camera handle.
  */
 WAPI_IMPORT(wapi_camera, open)
-wapi_result_t wapi_camera_open(const wapi_camera_config_t* config,
+wapi_result_t wapi_camera_open(const wapi_camera_desc_t* desc,
                             wapi_handle_t* camera);
 
 /**

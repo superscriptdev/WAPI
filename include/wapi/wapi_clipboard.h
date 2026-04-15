@@ -40,7 +40,7 @@ extern "C" {
  * ============================================================ */
 
 typedef struct wapi_clipboard_item_t {
-    wapi_string_view_t mime;    /* Offset  0: MIME type string (16 bytes) */
+    wapi_stringview_t mime;    /* Offset  0: MIME type string (16 bytes) */
     uint64_t        data;       /* Offset 16: Linear memory address of data */
     wapi_size_t     data_len;   /* Offset 24: Data length in bytes */
     uint32_t        _pad;       /* Offset 28: (alignment padding) */
@@ -94,7 +94,7 @@ wapi_result_t wapi_clipboard_format_name(wapi_size_t index, char* buf,
  * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_clipboard, has_format)
-wapi_bool_t wapi_clipboard_has_format(wapi_string_view_t mime);
+wapi_bool_t wapi_clipboard_has_format(wapi_stringview_t mime);
 
 /**
  * Read data from the clipboard in a specific format.
@@ -108,7 +108,7 @@ wapi_bool_t wapi_clipboard_has_format(wapi_string_view_t mime);
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_clipboard, read)
-wapi_result_t wapi_clipboard_read(wapi_string_view_t mime,
+wapi_result_t wapi_clipboard_read(wapi_stringview_t mime,
                                   void* buf, wapi_size_t buf_len,
                                   wapi_size_t* bytes_written);
 

@@ -40,8 +40,8 @@ typedef struct wapi_geo_position_t {
 } wapi_geo_position_t;
 
 /* Accuracy hint */
-#define WAPI_GEO_HIGH_ACCURACY  0x0001
-#define WAPI_GEO_LOW_POWER      0x0002
+#define WAPI_GEO_HIGHACCURACY  0x0001
+#define WAPI_GEO_LOWPOWER      0x0002
 
 /**
  * Request the current position (one-shot).

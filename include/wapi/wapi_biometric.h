@@ -46,7 +46,7 @@ uint32_t wapi_bio_available_types(void);
  *         WAPI_ERR_CANCELED if user canceled.
  */
 WAPI_IMPORT(wapi_bio, authenticate)
-wapi_result_t wapi_bio_authenticate(uint32_t type, wapi_string_view_t reason);
+wapi_result_t wapi_bio_authenticate(uint32_t type, wapi_stringview_t reason);
 
 #ifdef __cplusplus
 }

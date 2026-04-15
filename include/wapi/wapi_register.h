@@ -39,7 +39,7 @@ extern "C" {
  *   Offset  0: uint32_t type
  *   Offset  4: uint32_t surface_id
  *   Offset  8: uint64_t timestamp              (8 bytes)
- *   Offset 16: wapi_string_view_t url          (16 bytes, URL or file path)
+ *   Offset 16: wapi_stringview_t url          (16 bytes, URL or file path)
  *   Offset 32: uint32_t _reserved
  *   Offset 36: uint32_t _pad
  */
@@ -47,7 +47,7 @@ typedef struct wapi_open_event_t {
     uint32_t    type;
     uint32_t    surface_id;
     uint64_t    timestamp;
-    wapi_string_view_t url;  /* URL or file path */
+    wapi_stringview_t url;  /* URL or file path */
     uint32_t    _reserved;
     uint32_t    _pad;
 } wapi_open_event_t;
@@ -57,16 +57,16 @@ typedef struct wapi_open_event_t {
  * ============================================================
  *
  * Layout (64 bytes, align 8):
- *   Offset  0: wapi_string_view_t extension    (16 bytes)
- *   Offset 16: wapi_string_view_t mime_type    (16 bytes)
- *   Offset 32: wapi_string_view_t description  (16 bytes)
- *   Offset 48: wapi_string_view_t icon_path    (16 bytes)
+ *   Offset  0: wapi_stringview_t extension    (16 bytes)
+ *   Offset 16: wapi_stringview_t mime_type    (16 bytes)
+ *   Offset 32: wapi_stringview_t description  (16 bytes)
+ *   Offset 48: wapi_stringview_t icon_path    (16 bytes)
  */
 typedef struct wapi_filetype_desc_t {
-    wapi_string_view_t extension;    /* e.g., ".xyz" */
-    wapi_string_view_t mime_type;    /* e.g., "application/x-xyz" */
-    wapi_string_view_t description;  /* e.g., "XYZ Document" */
-    wapi_string_view_t icon_path;    /* Optional icon path (0 for none) */
+    wapi_stringview_t extension;    /* e.g., ".xyz" */
+    wapi_stringview_t mime_type;    /* e.g., "application/x-xyz" */
+    wapi_stringview_t description;  /* e.g., "XYZ Document" */
+    wapi_stringview_t icon_path;    /* Optional icon path (0 for none) */
 } wapi_filetype_desc_t;
 
 _Static_assert(sizeof(wapi_filetype_desc_t) == 64,
@@ -86,8 +86,8 @@ _Static_assert(_Alignof(wapi_filetype_desc_t) == 8,
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, url_scheme)
-wapi_result_t wapi_register_url_scheme(wapi_string_view_t scheme);
+WAPI_IMPORT(wapi_register, scheme_add)
+wapi_result_t wapi_register_scheme_add(wapi_stringview_t scheme);
 
 /**
  * Unregister a previously registered URL scheme.
@@ -97,8 +97,8 @@ wapi_result_t wapi_register_url_scheme(wapi_string_view_t scheme);
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, unregister_url_scheme)
-wapi_result_t wapi_register_unregister_url_scheme(wapi_string_view_t scheme);
+WAPI_IMPORT(wapi_register, scheme_remove)
+wapi_result_t wapi_register_scheme_remove(wapi_stringview_t scheme);
 
 /* ============================================================
  * File Type Registration
@@ -112,8 +112,8 @@ wapi_result_t wapi_register_unregister_url_scheme(wapi_string_view_t scheme);
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, file_type)
-wapi_result_t wapi_register_file_type(const wapi_filetype_desc_t* desc);
+WAPI_IMPORT(wapi_register, filetype_add)
+wapi_result_t wapi_register_filetype_add(const wapi_filetype_desc_t* desc);
 
 /**
  * Unregister a file type association.
@@ -123,8 +123,8 @@ wapi_result_t wapi_register_file_type(const wapi_filetype_desc_t* desc);
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, unregister_file_type)
-wapi_result_t wapi_register_unregister_file_type(wapi_string_view_t extension);
+WAPI_IMPORT(wapi_register, filetype_remove)
+wapi_result_t wapi_register_filetype_remove(wapi_stringview_t extension);
 
 /* ============================================================
  * File Preview Provider
@@ -138,8 +138,8 @@ wapi_result_t wapi_register_unregister_file_type(wapi_string_view_t extension);
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, preview_provider)
-wapi_result_t wapi_register_preview_provider(wapi_string_view_t extension);
+WAPI_IMPORT(wapi_register, preview_add)
+wapi_result_t wapi_register_preview_add(wapi_stringview_t extension);
 
 /* ============================================================
  * Default Handler Queries
@@ -153,8 +153,8 @@ wapi_result_t wapi_register_preview_provider(wapi_string_view_t extension);
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, is_default_for_scheme)
-wapi_bool_t wapi_register_is_default_for_scheme(wapi_string_view_t scheme);
+WAPI_IMPORT(wapi_register, scheme_isdefault)
+wapi_bool_t wapi_register_scheme_isdefault(wapi_stringview_t scheme);
 
 /**
  * Check if this app is the default handler for a file type.
@@ -164,8 +164,8 @@ wapi_bool_t wapi_register_is_default_for_scheme(wapi_string_view_t scheme);
  *
  * Wasm signature: (i32) -> i32
  */
-WAPI_IMPORT(wapi_register, is_default_for_type)
-wapi_bool_t wapi_register_is_default_for_type(wapi_string_view_t extension);
+WAPI_IMPORT(wapi_register, filetype_isdefault)
+wapi_bool_t wapi_register_filetype_isdefault(wapi_stringview_t extension);
 
 #ifdef __cplusplus
 }

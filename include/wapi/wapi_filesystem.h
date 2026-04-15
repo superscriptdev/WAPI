@@ -28,11 +28,11 @@ extern "C" {
 
 typedef enum wapi_filetype_t {
     WAPI_FILETYPE_UNKNOWN          = 0,
-    WAPI_FILETYPE_BLOCK_DEVICE     = 1,
-    WAPI_FILETYPE_CHARACTER_DEVICE = 2,
+    WAPI_FILETYPE_BLOCKDEVICE     = 1,
+    WAPI_FILETYPE_CHARACTERDEVICE = 2,
     WAPI_FILETYPE_DIRECTORY        = 3,
-    WAPI_FILETYPE_REGULAR_FILE     = 4,
-    WAPI_FILETYPE_SYMBOLIC_LINK    = 7,
+    WAPI_FILETYPE_REGULARFILE     = 4,
+    WAPI_FILETYPE_SYMBOLICLINK    = 7,
     WAPI_FILETYPE_FORCE32          = 0x7FFFFFFF
 } wapi_filetype_t;
 
@@ -178,7 +178,7 @@ wapi_handle_t wapi_filesystem_preopen_handle(int32_t index);
  * Wasm signature: (i32, i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, open)
-wapi_result_t wapi_filesystem_open(wapi_handle_t dir_fd, wapi_string_view_t path,
+wapi_result_t wapi_filesystem_open(wapi_handle_t dir_fd, wapi_stringview_t path,
                         uint32_t oflags, uint32_t fdflags, wapi_handle_t* fd);
 
 /**
@@ -274,7 +274,7 @@ wapi_result_t wapi_filesystem_stat(wapi_handle_t fd, wapi_filestat_t* stat);
  * Wasm signature: (i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, path_stat)
-wapi_result_t wapi_filesystem_path_stat(wapi_handle_t dir_fd, wapi_string_view_t path,
+wapi_result_t wapi_filesystem_path_stat(wapi_handle_t dir_fd, wapi_stringview_t path,
                              wapi_filestat_t* stat);
 
 /**
@@ -291,7 +291,7 @@ wapi_result_t wapi_filesystem_set_size(wapi_handle_t fd, wapi_filesize_t size);
  * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, mkdir)
-wapi_result_t wapi_filesystem_mkdir(wapi_handle_t dir_fd, wapi_string_view_t path);
+wapi_result_t wapi_filesystem_mkdir(wapi_handle_t dir_fd, wapi_stringview_t path);
 
 /**
  * Remove a directory (must be empty).
@@ -299,7 +299,7 @@ wapi_result_t wapi_filesystem_mkdir(wapi_handle_t dir_fd, wapi_string_view_t pat
  * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, rmdir)
-wapi_result_t wapi_filesystem_rmdir(wapi_handle_t dir_fd, wapi_string_view_t path);
+wapi_result_t wapi_filesystem_rmdir(wapi_handle_t dir_fd, wapi_stringview_t path);
 
 /**
  * Remove a file.
@@ -307,7 +307,7 @@ wapi_result_t wapi_filesystem_rmdir(wapi_handle_t dir_fd, wapi_string_view_t pat
  * Wasm signature: (i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, unlink)
-wapi_result_t wapi_filesystem_unlink(wapi_handle_t dir_fd, wapi_string_view_t path);
+wapi_result_t wapi_filesystem_unlink(wapi_handle_t dir_fd, wapi_stringview_t path);
 
 /**
  * Rename a file or directory.
@@ -315,8 +315,8 @@ wapi_result_t wapi_filesystem_unlink(wapi_handle_t dir_fd, wapi_string_view_t pa
  * Wasm signature: (i32, i32, i32, i32) -> i32
  */
 WAPI_IMPORT(wapi_filesystem, rename)
-wapi_result_t wapi_filesystem_rename(wapi_handle_t old_dir_fd, wapi_string_view_t old_path,
-                          wapi_handle_t new_dir_fd, wapi_string_view_t new_path);
+wapi_result_t wapi_filesystem_rename(wapi_handle_t old_dir_fd, wapi_stringview_t old_path,
+                          wapi_handle_t new_dir_fd, wapi_stringview_t new_path);
 
 /**
  * Read directory entries.

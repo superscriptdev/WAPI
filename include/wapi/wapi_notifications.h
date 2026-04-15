@@ -31,16 +31,16 @@ typedef enum wapi_notify_urgency_t {
  * Notification descriptor.
  *
  * Layout (56 bytes, align 8):
- *   Offset  0: wapi_string_view_t title
- *   Offset 16: wapi_string_view_t body
- *   Offset 32: wapi_string_view_t icon_url  (NULL for no icon)
+ *   Offset  0: wapi_stringview_t title
+ *   Offset 16: wapi_stringview_t body
+ *   Offset 32: wapi_stringview_t icon_url  (NULL for no icon)
  *   Offset 48: uint32_t urgency
  *   Offset 52: uint32_t _reserved
  */
 typedef struct wapi_notify_desc_t {
-    wapi_string_view_t title;
-    wapi_string_view_t body;
-    wapi_string_view_t icon_url;
+    wapi_stringview_t title;
+    wapi_stringview_t body;
+    wapi_stringview_t icon_url;
     uint32_t      urgency;
     uint32_t      _reserved;
 } wapi_notify_desc_t;

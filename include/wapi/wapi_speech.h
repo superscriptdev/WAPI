@@ -27,16 +27,16 @@ extern "C" {
  * Utterance descriptor.
  *
  * Layout (48 bytes, align 8):
- *   Offset  0: wapi_string_view_t text
- *   Offset 16: wapi_string_view_t lang  BCP 47 tag (e.g., "en-US"), NULL for default
+ *   Offset  0: wapi_stringview_t text
+ *   Offset 16: wapi_stringview_t lang  BCP 47 tag (e.g., "en-US"), NULL for default
  *   Offset 32: float    rate       0.1-10.0, 1.0 = normal
  *   Offset 36: float    pitch      0.0-2.0, 1.0 = normal
  *   Offset 40: float    volume     0.0-1.0
  *   Offset 44: uint32_t _pad
  */
 typedef struct wapi_speech_utterance_t {
-    wapi_string_view_t text;
-    wapi_string_view_t lang;
+    wapi_stringview_t text;
+    wapi_stringview_t lang;
     float       rate;
     float       pitch;
     float       volume;
@@ -82,7 +82,7 @@ wapi_bool_t wapi_speech_is_speaking(void);
  * @param session    [out] Recognition session handle.
  */
 WAPI_IMPORT(wapi_speech, recognize_start)
-wapi_result_t wapi_speech_recognize_start(wapi_string_view_t lang,
+wapi_result_t wapi_speech_recognize_start(wapi_stringview_t lang,
                                        wapi_bool_t continuous, wapi_handle_t* session);
 
 /**

@@ -47,12 +47,12 @@ typedef enum wapi_process_io_t {
  * ============================================================
  *
  * Layout (56 bytes, align 8):
- *   Offset  0: ptr          argv         Pointer to array of wapi_string_view_t
+ *   Offset  0: ptr          argv         Pointer to array of wapi_stringview_t
  *   Offset  4: uint32_t     argc         Argument count (argv[0] is the program)
- *   Offset  8: ptr          envp         Pointer to array of wapi_string_view_t
+ *   Offset  8: ptr          envp         Pointer to array of wapi_stringview_t
  *                                        ("KEY=VALUE" pairs), NULL to inherit
  *   Offset 12: uint32_t     envc         Environment variable count
- *   Offset 16: wapi_string_view_t cwd    Working directory (UTF-8), NULL = inherit (16 bytes)
+ *   Offset 16: wapi_stringview_t cwd    Working directory (UTF-8), NULL = inherit (16 bytes)
  *   Offset 32: uint32_t     stdin_mode   wapi_process_io_t
  *   Offset 36: uint32_t     stdout_mode  wapi_process_io_t
  *   Offset 40: uint32_t     stderr_mode  wapi_process_io_t
@@ -61,11 +61,11 @@ typedef enum wapi_process_io_t {
  */
 
 typedef struct wapi_process_desc_t {
-    const wapi_string_view_t* argv;
+    const wapi_stringview_t* argv;
     uint32_t                  argc;
-    const wapi_string_view_t* envp;
+    const wapi_stringview_t* envp;
     uint32_t                  envc;
-    wapi_string_view_t        cwd;
+    wapi_stringview_t        cwd;
     uint32_t                  stdin_mode;
     uint32_t                  stdout_mode;
     uint32_t                  stderr_mode;

@@ -35,6 +35,7 @@ Where WASI and the Component Model aim for language-agnostic composability throu
 - **Zero abstraction tax.** The ABI maps directly to Wasm value types. No serialization, no intermediate representations, no code generation steps between the application and the host.
 - **Capability-based security by default.** Modules start with zero access. Every resource is a host-validated handle. There is no ambient authority.
 - **Additive complexity.** A CLI tool imports only `wapi_env` and `wapi_filesystem`. A game imports the full graphical stack. The module declares what it needs; the host provides exactly that.
+- **Self-contained capabilities.** Each capability header stands alone. Vocabulary shared across capabilities (font style, pixel format, etc.) is redeclared per namespace rather than factored into a shared header, so no capability has a compile-time or link-time dependency on another. See §6.1. The cost is a little syntactic duplication; the benefit is that there is no cross-capability dependency graph to track, validate, or version.
 
 ### 1.2 Non-Goals
 
@@ -131,6 +132,93 @@ At the Wasm level, a struct pointer is a single `i64` parameter.
 ### 2.7 Arrays
 
 Arrays are passed as `(pointer, count)` pairs — two `i64` parameters at the Wasm level. The pointer references the first element; the count specifies the number of elements. In struct layouts, both fields are `uint64_t` following the unified layout principle (see [Section 2.2](#22-pointer-representation)). Wasm32 modules zero-extend their 32-bit values.
+
+### 2.8 Naming Conventions
+
+Every identifier at the ABI surface — functions, types, structs, fields, enum values, macros — follows three spelling rules. The goal is a surface that sorts into hierarchical groups and can be navigated with `grep`.
+
+Casing is fixed: functions, types, and fields are `lower_snake_case`; macros and enum values are `UPPER_SNAKE_CASE`; type names end in `_t`. These rules apply on top of that casing and govern how segments are chosen and ordered.
+
+**Rule 1: Read left to right, most general to most specific.**
+
+Each underscore-separated segment is one step down the hierarchy. The leftmost segment names the module (`wapi`, `WAPI_`), the next names a subsystem (`INPUT`, `GAMEPAD`, `GPU`), and each subsequent segment narrows the meaning further.
+
+```
+WAPI_GAMEPAD_AXIS_TRIGGER_LEFT
+ └──┘ └─────┘ └──┘ └─────┘ └──┘
+  │      │     │      │     └─ which instance
+  │      │     │      └─────── axis sub-kind
+  │      │     └────────────── property kind
+  │      └──────────────────── device
+  └─────────────────────────── module
+```
+
+Sorting by name groups related identifiers: every `WAPI_GAMEPAD_*` constant lives in one block, every `..._AXIS_*` in a sub-block, and so on. The header reads top-down as an outline.
+
+**Rule 2: Underscores separate levels of hierarchy, not words.**
+
+A concept that takes multiple English words to name remains one segment — the words are joined without a separator. Underscores are reserved for crossing a hierarchy boundary; they are not generic word delimiters.
+
+| Identifier                            | Why it is one segment                       |
+|---------------------------------------|---------------------------------------------|
+| `WAPI_CURSOR_NOTALLOWED`              | "not allowed" names one cursor kind         |
+| `WAPI_PEN_AXIS_TANGENTIALPRESSURE`    | "tangential pressure" is one axis           |
+| `wapi_input_start_textinput`          | "text input" is one mode                    |
+| `wapi_keyboard_get_modstate`          | "mod state" is one query                    |
+
+A segment earns its own underscore only when more than one sibling exists at that level. If a word has no siblings, it belongs joined to its parent.
+
+**Rule 3: Category before instance.**
+
+When several instances share a category, the category is the earlier segment and the instance is the later one — never the reverse. This is a corollary of Rule 1 (categories are broader than instances) and the practical payoff of Rule 1 (grouping under `grep`).
+
+| Prefer                              | Avoid                               |
+|-------------------------------------|-------------------------------------|
+| `WAPI_GAMEPAD_AXIS_TRIGGER_LEFT`    | `WAPI_GAMEPAD_AXIS_LEFT_TRIGGER`    |
+| `WAPI_GAMEPAD_AXIS_TRIGGER_RIGHT`   | `WAPI_GAMEPAD_AXIS_RIGHT_TRIGGER`   |
+| `WAPI_GAMEPAD_AXIS_STICK_LEFT_X`    | `WAPI_GAMEPAD_AXIS_LEFTX`           |
+| `WAPI_GAMEPAD_BUTTON_DPAD_UP`       | `WAPI_GAMEPAD_BUTTON_UP_DPAD`       |
+| `WAPI_GAMEPAD_BUTTON_SHOULDER_LEFT` | `WAPI_GAMEPAD_BUTTON_LSHOULDER`     |
+
+After Rule 3, `grep TRIGGER_` finds every trigger, `grep STICK_` finds every stick, and the enum values for a gamepad sort into sensible blocks instead of interleaving instances of different kinds.
+
+**Applying the rules.**
+
+When choosing a name, walk down the hierarchy and emit one segment per level, joining multi-word concepts within a level:
+
+1. Start at the module (`wapi` / `WAPI`).
+2. Add the subsystem (device, capability, operation domain).
+3. Add the property kind if there are multiple kinds at that level.
+4. Add the specific instance last.
+5. If a step has only one occupant, join its word(s) to the next segment — do not emit a lone underscore.
+
+When a name already exists and feels wrong, check the three rules in order. Rule 1 catches reversed hierarchies, Rule 2 catches spurious underscores between words of one concept, and Rule 3 catches instance-before-category mistakes.
+
+### 2.9 Type Suffixes
+
+Every struct and enum that crosses the ABI uses one of three suffixes. The suffix tells the reader what the data is *for* and whether it can be cached. Do not introduce `config`, `settings`, `options`, `params`, `descriptor`, `properties`, or similar variants — the three suffixes below cover every case.
+
+| Suffix     | Form        | Direction          | Lifetime                                           | Example                                  |
+|------------|-------------|--------------------|----------------------------------------------------|------------------------------------------|
+| `_desc_t`  | struct      | caller → platform  | Describes caller intent. Passed to `*_create`, `*_open`, `*_configure`. | `wapi_surface_desc_t`, `wapi_gpu_device_desc_t` |
+| `_info_t`  | struct      | platform → caller  | Static identity/capability. Filled by the platform when the resource is opened and does not change at runtime. Safe to cache. | `wapi_gamepad_info_t`, `wapi_display_info_t`    |
+| `_state_t` | struct      | platform → caller  | Live runtime snapshot. Changes frame-to-frame. Must be re-read. | `wapi_finger_state_t`, `wapi_xr_frame_state_t`  |
+| `_state_t` | **enum**    | value type         | Enumeration of discrete state values. The struct/enum distinction resolves the overload. | `wapi_power_idle_state_t`, `wapi_perm_state_t`  |
+
+**Method naming follows from the suffix:**
+
+- `wapi_X_open(const wapi_X_desc_t* desc, ...)` — create, takes `_desc_t`.
+- `wapi_X_configure(handle, const wapi_X_desc_t* desc)` — reconfigure an existing object. Still takes `_desc_t` — the struct describes the new configuration; there is no `_config_t`.
+- `wapi_X_get_info(handle, wapi_X_info_t* out)` — one-time static query.
+- `wapi_X_get_state(handle, wapi_X_state_t* out)` — live snapshot query, expected to be called every frame.
+
+**Info vs state — the cache rule.** If a reader sees `_info_t` they may read it once when they open the handle and store it. If they see `_state_t` they must re-read it whenever they need a current value. Choose the suffix based on this behavior, not on the word that reads most naturally. If the data ever changes at runtime — even occasionally, even on plug/unplug — it is state, not info.
+
+**When in doubt, ask:**
+
+1. Is the struct filled by the caller or by the platform? Caller → `_desc_t`. Platform → `_info_t` or `_state_t`.
+2. If platform-filled, is the value stable for the lifetime of the handle? Stable → `_info_t`. Volatile → `_state_t`.
+3. If it is an enum of possible states (not a struct), it is `_state_t`.
 
 ---
 
@@ -400,15 +488,34 @@ The `wapi` namespace provides the two vtable acquisition imports (`io_get`, `all
 | `wapi_camera`        | Camera capture                                 |
 | `wapi_xr`            | VR/AR (WebXR, OpenXR)                          |
 | `wapi_module`        | Runtime module loading, cross-module calls     |
-| `wapi_thread`        | Thread creation and management                 |
-| `wapi_sync`          | Synchronization primitives (mutex, futex)      |
+| `wapi_thread`        | Threads, TLS, and synchronization primitives   |
 | `wapi_process`       | Process spawning and management                |
 | `wapi_dialog`        | File/save/message dialogs                      |
 | `wapi_sysinfo`       | System information queries                     |
 | `wapi_eyedrop`       | Screen color picker                            |
 | `wapi_contacts`      | Contact picker and icon access                 |
 
-### 6.1 Import Annotation
+### 6.1 Namespace Isolation
+
+Each capability module is a **self-contained unit**. A capability's C header declares every type it needs, even when another capability declares a type with the same shape. Headers do not `#include` each other except for the universal `wapi.h`, and no capability has a compile-time or link-time dependency on another.
+
+**Concrete rule:** when two capabilities need the same vocabulary (font weight, font style, pixel format, etc.), each redeclares its own namespaced enum. The values are kept identical so a plain `uint32_t` field round-trips between them, but the *types* stay distinct.
+
+Example: `wapi_font_style_t`, `wapi_text_font_style_t`, and `wapi_dialog_font_style_t` all exist, all use `NORMAL=0 / ITALIC=1 / OBLIQUE=2`. A module that reads a style from the font picker and passes it into text shaping does so through raw `uint32_t` round-tripping — there is no shared C type binding the two capabilities together.
+
+**Why:**
+- A host can implement `wapi_text` without ever touching `wapi_font`. No transitive ABI surface.
+- Each header compiles in isolation; there is no cross-capability build graph to manage.
+- There is nothing to track in a cross-capability dependency system, because there are no cross-capability dependencies.
+- A module can link against exactly the capabilities it needs without pulling in vocabulary from others.
+
+**Cost:** syntactic duplication of small enums. This is deliberate. Duplicating a 5-line enum is cheaper than shipping a dependency graph.
+
+**What's shared anyway:**
+- `wapi.h` — the universal header with calling conventions, result codes, handle system, and vtables. Every capability header includes it.
+- Wire values (integer constants) within a logical family (font style, pixel format, key codes) are kept consistent across capabilities so that round-tripping works. Consistency is maintained by convention and review, not by a shared C type.
+
+### 6.2 Import Annotation
 
 When compiling to Wasm, functions are annotated with `import_module` and `import_name` attributes:
 
@@ -828,13 +935,14 @@ The following capability names are defined by the spec. Each has a corresponding
 | `wapi.camera`            | `WAPI_CAP_CAMERA`          | Camera capture                                 |
 | `wapi.xr`               | `WAPI_CAP_XR`              | VR/AR (WebXR, OpenXR)                          |
 | `wapi.module`            | `WAPI_CAP_MODULE`          | Runtime module loading, cross-module calls     |
-| `wapi.thread`            | `WAPI_CAP_THREAD`          | Thread creation and management                 |
-| `wapi.sync`              | `WAPI_CAP_SYNC`            | Synchronization primitives (mutex, futex)      |
+| `wapi.thread`            | `WAPI_CAP_THREAD`          | Threads, TLS, and synchronization primitives   |
 | `wapi.process`           | `WAPI_CAP_PROCESS`         | Process spawning and management                |
 | `wapi.dialog`            | `WAPI_CAP_DIALOG`          | File/save/message dialogs                      |
 | `wapi.sysinfo`           | `WAPI_CAP_SYSINFO`         | System information queries                     |
 | `wapi.eyedrop`           | `WAPI_CAP_EYEDROP`         | Screen color picker                            |
 | `wapi.contacts`          | `WAPI_CAP_CONTACTS`        | Contact picker and icon access                 |
+| `wapi.http`              | `WAPI_CAP_HTTP`            | One-shot HTTP requests (`WAPI_IO_OP_HTTP_FETCH`) |
+| `wapi.compression`       | `WAPI_CAP_COMPRESSION`     | Compression / decompression (`WAPI_IO_OP_COMPRESS_PROCESS`) |
 
 ### 9.5 Vendor Capabilities
 
@@ -879,19 +987,19 @@ static const char* const WAPI_PRESET_EMBEDDED[] = {
 static const char* const WAPI_PRESET_HEADLESS[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
-    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
+    "wapi.thread", "wapi.process", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_COMPUTE[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
-    "wapi.gpu", "wapi.thread", "wapi.sync", "wapi.process",
+    "wapi.gpu", "wapi.thread", "wapi.process",
     "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_AUDIO[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem",
-    "wapi.audio", "wapi.thread", "wapi.sync", "wapi.module", NULL
+    "wapi.audio", "wapi.thread", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_GRAPHICAL[] = {
@@ -900,7 +1008,7 @@ static const char* const WAPI_PRESET_GRAPHICAL[] = {
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
     "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
     "wapi.font", "wapi.dialog",
-    "wapi.thread", "wapi.sync", "wapi.process", "wapi.module", NULL
+    "wapi.thread", "wapi.process", "wapi.module", NULL
 };
 
 static const char* const WAPI_PRESET_MOBILE[] = {
@@ -909,7 +1017,7 @@ static const char* const WAPI_PRESET_MOBILE[] = {
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
     "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
     "wapi.font",
-    "wapi.thread", "wapi.sync",
+    "wapi.thread",
     "wapi.geolocation", "wapi.camera", "wapi.notifications",
     "wapi.sensors", "wapi.biometric", "wapi.module", NULL
 };

@@ -23,10 +23,10 @@ typedef enum wapi_sensor_type_t {
     WAPI_SENSOR_ACCELEROMETER    = 0,
     WAPI_SENSOR_GYROSCOPE        = 1,
     WAPI_SENSOR_MAGNETOMETER     = 2,
-    WAPI_SENSOR_AMBIENT_LIGHT    = 3,
+    WAPI_SENSOR_AMBIENTLIGHT    = 3,
     WAPI_SENSOR_PROXIMITY        = 4,
     WAPI_SENSOR_GRAVITY          = 5,
-    WAPI_SENSOR_LINEAR_ACCEL     = 6,
+    WAPI_SENSOR_LINEARACCEL     = 6,
     WAPI_SENSOR_FORCE32          = 0x7FFFFFFF
 } wapi_sensor_type_t;
 

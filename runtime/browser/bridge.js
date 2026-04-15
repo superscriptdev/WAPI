@@ -7,25 +7,69 @@
 // isolated world (which DOES have chrome.runtime) and forward
 // whitelisted messages to sw.js.
 //
-// Message shape from the shim:
-//   { source: 'wapi', type: 'modules.<verb>', ...payload }
+// Two message flavors, distinguished by the presence of a reqId:
 //
-// We forward any message in the `modules.*` namespace and drop the
-// rest. Replies are ignored — page-side calls are fire-and-forget.
+//   Fire-and-forget (no reqId):
+//     shim → { source: 'wapi', type: 'modules.<verb>', ...payload }
+//     bridge forwards, ignores reply. Used by modules.store.
+//
+//   Request/reply (reqId present):
+//     shim → { source: 'wapi', type: 'modules.<verb>', reqId, ...payload }
+//     bridge forwards, awaits SW reply, posts
+//     { source: 'wapi-reply', reqId, result | error } back into the
+//     page via window.postMessage so the shim's Promise resolves.
+//     Used by modules.fetch (bytes round-trip).
+//
+// We forward any message in the `modules.*` or `services.*` namespace
+// and drop the rest.
 
 window.addEventListener('message', (ev) => {
     if (ev.source !== window) return;
     const m = ev.data;
     if (!m || m.source !== 'wapi') return;
-    if (typeof m.type !== 'string' || !m.type.startsWith('modules.')) return;
+    if (typeof m.type !== 'string') return;
+    if (!m.type.startsWith('modules.') && !m.type.startsWith('services.')) return;
+
+    const reqId = m.reqId;
     try {
-        chrome.runtime.sendMessage(m, () => {
-            // Swallow lastError so it doesn't surface as an
-            // unchecked-runtime-error in DevTools when the SW is
-            // momentarily unavailable.
-            void chrome.runtime.lastError;
+        chrome.runtime.sendMessage(m, (resp) => {
+            const err = chrome.runtime.lastError;
+            if (reqId == null) {
+                // Fire-and-forget: swallow lastError so it doesn't
+                // surface as an unchecked-runtime-error.
+                void err;
+                return;
+            }
+            if (err) {
+                window.postMessage({
+                    source: 'wapi-reply',
+                    reqId,
+                    error: err.message || String(err),
+                }, '*');
+                return;
+            }
+            if (resp && resp.error) {
+                window.postMessage({
+                    source: 'wapi-reply',
+                    reqId,
+                    error: resp.error,
+                }, '*');
+                return;
+            }
+            window.postMessage({
+                source: 'wapi-reply',
+                reqId,
+                result: resp,
+            }, '*');
         });
-    } catch {
-        // Extension context may be invalidated during reload.
+    } catch (e) {
+        // Extension context may be invalidated mid-reload.
+        if (reqId != null) {
+            window.postMessage({
+                source: 'wapi-reply',
+                reqId,
+                error: String(e && e.message || e),
+            }, '*');
+        }
     }
 });

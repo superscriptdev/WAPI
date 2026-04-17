@@ -47,7 +47,7 @@ static const char* SUPPORTED_CAPS[] = {
     "wapi.codec",
     "wapi.compression",
     "wapi.media_session",
-    "wapi.media_caps",
+
     "wapi.encoding",
     /* Authentication & connectivity */
     "wapi.authn",

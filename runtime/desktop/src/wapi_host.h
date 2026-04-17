@@ -538,7 +538,7 @@ void wapi_host_register_orientation(wasmtime_linker_t* linker);
 void wapi_host_register_codec(wasmtime_linker_t* linker);
 void wapi_host_register_compression(wasmtime_linker_t* linker);
 void wapi_host_register_media_session(wasmtime_linker_t* linker);
-void wapi_host_register_media_caps(wasmtime_linker_t* linker);
+
 void wapi_host_register_encoding(wasmtime_linker_t* linker);
 void wapi_host_register_authn(wasmtime_linker_t* linker);
 void wapi_host_register_network_info(wasmtime_linker_t* linker);

@@ -313,7 +313,7 @@ int main(int argc, char** argv) {
     wapi_host_register_codec(linker);
     wapi_host_register_compression(linker);
     wapi_host_register_media_session(linker);
-    wapi_host_register_media_caps(linker);
+
     wapi_host_register_encoding(linker);
     wapi_host_register_authn(linker);
     wapi_host_register_network_info(linker);

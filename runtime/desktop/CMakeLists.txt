@@ -50,7 +50,6 @@ set(SOURCES
     src/wapi_host_codec.c
     src/wapi_host_compression.c
     src/wapi_host_media_session.c
-    src/wapi_host_media_caps.c
     src/wapi_host_encoding.c
     src/wapi_host_authn.c
     src/wapi_host_network_info.c

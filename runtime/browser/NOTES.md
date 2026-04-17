@@ -122,7 +122,7 @@ loudly instead of half-running:
 - `wapi_filesystem` — each service should get a sandboxed OPFS root keyed
   by `(hash, name)`. Needs the per-service scope decision codified first.
 - `wapi_kvstorage` — same story as filesystem: per-service IDB namespace.
-- `wapi_sysinfo`, `wapi_notifications`, `wapi_codec`, `wapi_mediacaps`,
+- `wapi_sysinfo`, `wapi_notifications`, `wapi_codec`,
   `wapi_networkinfo`, and every UI/hardware/user-gesture capability —
   either trivially stubbable or intentionally unavailable in a headless
   host. Wire on demand.

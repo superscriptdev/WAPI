@@ -124,7 +124,6 @@ wapi/
 │       ├── wapi_codec.h        # Hardware audio/video codecs
 │       ├── wapi_camera.h       # Camera capture
 │       ├── wapi_screencapture.h
-│       ├── wapi_mediacaps.h
 │       ├── wapi_mediasession.h
 │       │
 │       │  # Content (declare vs render — see "Why a content tree?" below)

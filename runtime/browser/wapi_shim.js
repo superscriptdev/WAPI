@@ -166,11 +166,6 @@ const WAPI_GPU_FORMAT_RGBA8_UNORM_SRGB = 0x0017;
 const WAPI_GPU_FORMAT_BGRA8_UNORM      = 0x001B;
 const WAPI_GPU_FORMAT_BGRA8_UNORM_SRGB = 0x001C;
 
-// Clipboard formats
-const WAPI_CLIPBOARD_TEXT  = 0;
-const WAPI_CLIPBOARD_HTML  = 1;
-const WAPI_CLIPBOARD_IMAGE = 2;
-
 // Surface flags
 const WAPI_SURFACE_FLAG_RESIZABLE  = 0x0001;
 const WAPI_SURFACE_FLAG_HIGH_DPI   = 0x0010;
@@ -3689,113 +3684,156 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_input (events)
         // -------------------------------------------------------------------
+        // Synthetic singleton device handles. The browser exposes a single
+        // logical mouse/keyboard/pointer, so device_open returns these fixed
+        // handles and subsequent calls route to the shared DOM-event state.
+        const WAPI_INPUT_HANDLE_MOUSE    = 0x10000001;
+        const WAPI_INPUT_HANDLE_KEYBOARD = 0x10000002;
+        const WAPI_INPUT_HANDLE_POINTER  = 0x10000003;
+
         const wapi_input = {
-            poll_event(eventPtr) {
-                // Also poll gamepads
-                self._pollGamepads();
-
-                if (self._eventQueue.length === 0) return 0;
-                const ev = self._eventQueue.shift();
-                self._writeEvent(eventPtr, ev);
-                return 1;
+            // ---- Device enumeration ------------------------------------
+            device_count(type) {
+                // type: 0=mouse, 1=keyboard, 2=touch, 3=pen, 4=gamepad, 5=pointer, 6=hid
+                if (type === 0 || type === 1 || type === 5) return 1;
+                return 0;
+            },
+            device_open(type, index, outHandlePtr) {
+                if (index !== 0) return WAPI_ERR_RANGE;
+                let handle;
+                if (type === 0)      handle = WAPI_INPUT_HANDLE_MOUSE;
+                else if (type === 1) handle = WAPI_INPUT_HANDLE_KEYBOARD;
+                else if (type === 5) handle = WAPI_INPUT_HANDLE_POINTER;
+                else return WAPI_ERR_NOTSUP;
+                self._writeI32(outHandlePtr, handle);
+                return WAPI_OK;
+            },
+            device_close(handle) { return WAPI_OK; },
+            device_get_type(handle) {
+                if (handle === WAPI_INPUT_HANDLE_MOUSE)    return 0;
+                if (handle === WAPI_INPUT_HANDLE_KEYBOARD) return 1;
+                if (handle === WAPI_INPUT_HANDLE_POINTER)  return 5;
+                return -1;
+            },
+            device_get_uid(handle, uidPtr) {
+                self._refreshViews();
+                for (let i = 0; i < 16; i++) self._u8[uidPtr + i] = 0;
+                self._u8[uidPtr + 0] = handle & 0xFF;
+                return WAPI_OK;
+            },
+            device_get_name(handle, bufPtr, bufLen, nameLenPtr) {
+                let name = "unknown";
+                if (handle === WAPI_INPUT_HANDLE_MOUSE)    name = "Browser Mouse";
+                else if (handle === WAPI_INPUT_HANDLE_KEYBOARD) name = "Browser Keyboard";
+                else if (handle === WAPI_INPUT_HANDLE_POINTER)  name = "Browser Pointer";
+                const written = self._writeString(bufPtr, bufLen, name);
+                self._writeU32(nameLenPtr, written);
+                return WAPI_OK;
             },
 
-            wait_event(eventPtr, timeoutMs) {
-                // Cannot block in browser; just poll
-                return wapi_input.poll_event(eventPtr);
-            },
-
-            flush_events(eventType) {
-                if (eventType === 0) {
-                    self._eventQueue.length = 0;
-                } else {
-                    self._eventQueue = self._eventQueue.filter(e => e.type !== eventType);
-                }
-            },
-
-            key_pressed(scancode) {
-                return self._keyState.has(scancode) ? 1 : 0;
-            },
-
-            get_mod_state() {
-                return self._modState;
-            },
-
-            mouse_position(surfaceHandle, xPtr, yPtr) {
+            // ---- Mouse --------------------------------------------------
+            mouse_get_info(handle, infoPtr) { return WAPI_ERR_NOTSUP; },
+            mouse_get_position(handle, surface, xPtr, yPtr) {
                 self._writeF32(xPtr, self._mouseX);
                 self._writeF32(yPtr, self._mouseY);
                 return WAPI_OK;
             },
-
-            mouse_button_state() {
+            mouse_get_button_state(handle) {
                 return self._mouseButtons;
             },
-
-            set_relative_mouse(surfaceHandle, enabled) {
-                const info = self._surfaces.get(surfaceHandle);
+            mouse_set_relative(handle, surface, enabled) {
+                const info = self._surfaces.get(surface);
                 if (!info) return WAPI_ERR_BADF;
-                if (enabled) {
-                    info.canvas.requestPointerLock();
-                } else {
-                    document.exitPointerLock();
-                }
+                if (enabled) info.canvas.requestPointerLock();
+                else         document.exitPointerLock();
                 return WAPI_OK;
             },
-
+            mouse_warp(handle, surface, x, y) { return WAPI_ERR_NOTSUP; },
             mouse_set_cursor(handle, cursorType) {
-                // Map WAPI cursor types to CSS cursor values
                 const cursors = [
-                    'default',    // 0 DEFAULT
-                    'pointer',    // 1 POINTER
-                    'text',       // 2 TEXT
-                    'crosshair',  // 3 CROSSHAIR
-                    'move',       // 4 MOVE
-                    'ns-resize',  // 5 RESIZE_NS
-                    'ew-resize',  // 6 RESIZE_EW
-                    'nwse-resize',// 7 RESIZE_NWSE
-                    'nesw-resize',// 8 RESIZE_NESW
-                    'not-allowed',// 9 NOT_ALLOWED
-                    'wait',       // 10 WAIT
-                    'grab',       // 11 GRAB
-                    'grabbing',   // 12 GRABBING
-                    'none',       // 13 NONE
+                    'default', 'pointer', 'text', 'crosshair', 'move',
+                    'ns-resize', 'ew-resize', 'nwse-resize', 'nesw-resize',
+                    'not-allowed', 'wait', 'grab', 'grabbing', 'none',
                 ];
                 const css = cursors[cursorType] || 'default';
-                // Apply to all surface canvases
                 for (const [, info] of self._surfaces) {
                     if (info.canvas) info.canvas.style.cursor = css;
                 }
                 return WAPI_OK;
             },
+            mouse_set_cursor_image(handle, dataPtr, w, h, hotX, hotY) { return WAPI_ERR_NOTSUP; },
 
-            start_text_input(surfaceHandle) {
-                // No-op in browser -- keyboard events always fire
+            // ---- Keyboard -----------------------------------------------
+            keyboard_key_pressed(handle, scancode) {
+                return self._keyState.has(scancode) ? 1 : 0;
+            },
+            keyboard_get_modstate(handle) {
+                return self._modState;
             },
 
-            stop_text_input(surfaceHandle) {
-                // No-op
-            },
+            // ---- Text input (surface-scoped, void return) --------------
+            start_textinput(surface) { /* no-op in browser */ },
+            stop_textinput(surface)  { /* no-op in browser */ },
 
-            // Pointer (unified) state queries
+            // ---- Touch --------------------------------------------------
+            touch_get_info(handle, infoPtr)               { return WAPI_ERR_NOTSUP; },
+            touch_finger_count(handle)                    { return 0; },
+            touch_get_finger(handle, fingerIndex, statePtr) { return WAPI_ERR_NOTSUP; },
+
+            // ---- Pen ----------------------------------------------------
+            pen_get_info(handle, infoPtr)           { return WAPI_ERR_NOTSUP; },
+            pen_get_axis(handle, axis, valuePtr)    { return WAPI_ERR_NOTSUP; },
+            pen_get_position(handle, xPtr, yPtr)    { return WAPI_ERR_NOTSUP; },
+
+            // ---- Gamepad ------------------------------------------------
+            gamepad_get_info(handle, infoPtr)                        { return WAPI_ERR_NOTSUP; },
+            gamepad_get_button(handle, button)                       { return 0; },
+            gamepad_get_axis(handle, axis, valuePtr)                 { return WAPI_ERR_NOTSUP; },
+            gamepad_rumble(handle, lowFreq, highFreq, durationMs)    { return WAPI_ERR_NOTSUP; },
+            gamepad_rumble_triggers(handle, left, right, durationMs) { return WAPI_ERR_NOTSUP; },
+            gamepad_set_led(handle, r, g, b)                         { return WAPI_ERR_NOTSUP; },
+            gamepad_enable_sensor(handle, sensorType, enabled)       { return WAPI_ERR_NOTSUP; },
+            gamepad_get_sensor_data(handle, sensorType, dataPtr)     { return WAPI_ERR_NOTSUP; },
+            gamepad_get_touchpad_finger(handle, touchpad, finger, statePtr) { return WAPI_ERR_NOTSUP; },
+            gamepad_get_battery(handle, percentPtr)                  { return -1; },
+
+            // ---- Pointer (unified) --------------------------------------
             pointer_get_info(handle, infoPtr) {
-                // Report all capabilities available
+                self._refreshViews();
                 self._u8[infoPtr + 0] = 1; // has_pressure
                 self._u8[infoPtr + 1] = 1; // has_tilt
                 self._u8[infoPtr + 2] = 1; // has_twist
                 self._u8[infoPtr + 3] = 1; // has_width_height
-                // _reserved[12] already zeroed by caller
                 return WAPI_OK;
             },
-
-            pointer_get_position(handle, surfaceHandle, xPtr, yPtr) {
+            pointer_get_position(handle, surface, xPtr, yPtr) {
                 self._writeF32(xPtr, self._pointerX);
                 self._writeF32(yPtr, self._pointerY);
                 return WAPI_OK;
             },
-
             pointer_get_buttons(handle) {
                 return self._pointerButtons;
             },
+
+            // ---- HID ----------------------------------------------------
+            hid_request_device(vendorId, productId, usagePage, outHandlePtr) { return WAPI_ERR_NOTSUP; },
+            hid_get_info(handle, infoPtr)                                    { return WAPI_ERR_NOTSUP; },
+            hid_send_report(handle, reportId, dataPtr, dataLen)              { return WAPI_ERR_NOTSUP; },
+            hid_send_feature_report(handle, reportId, dataPtr, dataLen)      { return WAPI_ERR_NOTSUP; },
+            hid_receive_report(handle, bufPtr, bufLen, bytesReadPtr)         { return WAPI_ERR_NOTSUP; },
+
+            // ---- IME ----------------------------------------------------
+            ime_enable(surfaceId, hint)                          { return WAPI_ERR_NOTSUP; },
+            ime_disable(surfaceId)                               { return WAPI_ERR_NOTSUP; },
+            ime_set_candidate_rect(surfaceId, x, y, w, h)        { return WAPI_ERR_NOTSUP; },
+            ime_commit(surfaceId)                                { return WAPI_ERR_NOTSUP; },
+            ime_cancel(surfaceId)                                { return WAPI_ERR_NOTSUP; },
+            ime_read_text(sequence, bufPtr, bufLen, outLenPtr)   { return WAPI_ERR_NOTSUP; },
+            ime_read_segment(sequence, index, outPtr)            { return WAPI_ERR_NOTSUP; },
+
+            // ---- Hotkey -------------------------------------------------
+            hotkey_register(bindingPtr, outIdPtr)   { return WAPI_ERR_NOTSUP; },
+            hotkey_unregister(id)                   { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -4078,39 +4116,68 @@ class WAPI {
         // wapi_clipboard
         // -------------------------------------------------------------------
         const wapi_clipboard = {
-            has_format(format) {
-                if (format === WAPI_CLIPBOARD_TEXT) return self._clipboardText.length > 0 ? 1 : 0;
-                if (format === WAPI_CLIPBOARD_HTML) return self._clipboardHtml.length > 0 ? 1 : 0;
+            format_count() {
+                let n = 0;
+                if (self._clipboardText.length > 0) n++;
+                if (self._clipboardHtml.length > 0) n++;
+                return n;
+            },
+
+            format_name(index, bufPtr, bufLen, outLenPtr) {
+                const mimes = [];
+                if (self._clipboardText.length > 0) mimes.push("text/plain");
+                if (self._clipboardHtml.length > 0) mimes.push("text/html");
+                if (index < 0 || index >= mimes.length) return WAPI_ERR_RANGE;
+                const written = self._writeString(bufPtr, bufLen, mimes[index]);
+                self._writeU32(outLenPtr, written);
+                return WAPI_OK;
+            },
+
+            has_format(mimeSvPtr) {
+                const mime = self._readStringView(mimeSvPtr);
+                if (mime === "text/plain") return self._clipboardText.length > 0 ? 1 : 0;
+                if (mime === "text/html")  return self._clipboardHtml.length > 0 ? 1 : 0;
                 return 0;
             },
 
-            read(format, bufPtr, bufLen, bytesWrittenPtr) {
+            read(mimeSvPtr, bufPtr, bufLen, bytesWrittenPtr) {
+                const mime = self._readStringView(mimeSvPtr);
                 let data = "";
-                if (format === WAPI_CLIPBOARD_TEXT) data = self._clipboardText;
-                else if (format === WAPI_CLIPBOARD_HTML) data = self._clipboardHtml;
-                else return WAPI_ERR_NOTSUP;
+                if (mime === "text/plain")      data = self._clipboardText;
+                else if (mime === "text/html")  data = self._clipboardHtml;
+                else return WAPI_ERR_NOENT;
 
                 if (data.length === 0) return WAPI_ERR_NOENT;
-
                 const written = self._writeString(bufPtr, bufLen, data);
                 self._writeU32(bytesWrittenPtr, written);
                 return WAPI_OK;
             },
 
-            write(format, dataPtr, len) {
-                const text = self._readString(dataPtr, len);
-                if (format === WAPI_CLIPBOARD_TEXT) {
-                    self._clipboardText = text;
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(text).catch(() => {});
+            set(itemsPtr, count) {
+                self._refreshViews();
+                self._clipboardText = "";
+                self._clipboardHtml = "";
+                // wapi_clipboard_item_t is 32 bytes:
+                //   Offset  0: wapi_stringview_t mime   (16 bytes)
+                //   Offset 16: uint64_t           data  (8 bytes, linear memory address)
+                //   Offset 24: wapi_size_t        data_len (4 bytes)
+                //   Offset 28: uint32_t           _pad
+                for (let i = 0; i < count; i++) {
+                    const itemPtr = itemsPtr + i * 32;
+                    const mime = self._readStringView(itemPtr);
+                    const dataAddr = Number(self._dv.getBigUint64(itemPtr + 16, true));
+                    const dataLen = self._dv.getUint32(itemPtr + 24, true);
+                    const text = self._readString(dataAddr, dataLen);
+                    if (mime === "text/plain") {
+                        self._clipboardText = text;
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(text).catch(() => {});
+                        }
+                    } else if (mime === "text/html") {
+                        self._clipboardHtml = text;
                     }
-                    return WAPI_OK;
                 }
-                if (format === WAPI_CLIPBOARD_HTML) {
-                    self._clipboardHtml = text;
-                    return WAPI_OK;
-                }
-                return WAPI_ERR_NOTSUP;
+                return WAPI_OK;
             },
 
             clear() {
@@ -4265,7 +4332,7 @@ class WAPI {
             get_state(video, statePtr) { return WAPI_ERR_NOTSUP; },
             get_position(video, posPtr) { return WAPI_ERR_NOTSUP; },
             get_frame_texture(video, texPtr) { return WAPI_ERR_NOTSUP; },
-            render_to_texture(video, tex, x, y, w, h) { return WAPI_ERR_NOTSUP; },
+            blit(video, tex, x, y, w, h) { return WAPI_ERR_NOTSUP; },
             bind_audio(video, stream) { return WAPI_ERR_NOTSUP; },
             set_volume(video, vol) { return WAPI_ERR_NOTSUP; },
             set_muted(video, muted) { return WAPI_ERR_NOTSUP; },
@@ -4414,8 +4481,6 @@ class WAPI {
             reclaim(borrow) { return WAPI_ERR_NOTSUP; },
             // Explicit copy
             copy_in(mod, srcPtr, len, childPtrOut) { return WAPI_ERR_NOTSUP; },
-            // I/O policy
-            set_io_policy(mod, policyFlags) { return WAPI_ERR_NOTSUP; },
 
             // (i32 hash_ptr) -> i32
             is_cached(hashPtr) {
@@ -4612,13 +4677,13 @@ class WAPI {
         // wapi_register (app registration - stub)
         // -------------------------------------------------------------------
         const wapi_register = {
-            url_scheme(schemePtr, schemeLen) { return WAPI_ERR_NOTSUP; },
-            unregister_url_scheme(schemePtr, schemeLen) { return WAPI_ERR_NOTSUP; },
-            file_type(descPtr) { return WAPI_ERR_NOTSUP; },
-            unregister_file_type(extPtr, extLen) { return WAPI_ERR_NOTSUP; },
-            preview_provider(extPtr, extLen) { return WAPI_ERR_NOTSUP; },
-            is_default_for_scheme(schemePtr, schemeLen) { return 0; },
-            is_default_for_type(extPtr, extLen) { return 0; },
+            scheme_add(schemeSvPtr) { return WAPI_ERR_NOTSUP; },
+            scheme_remove(schemeSvPtr) { return WAPI_ERR_NOTSUP; },
+            filetype_add(descPtr) { return WAPI_ERR_NOTSUP; },
+            filetype_remove(extSvPtr) { return WAPI_ERR_NOTSUP; },
+            preview_add(extSvPtr) { return WAPI_ERR_NOTSUP; },
+            scheme_isdefault(schemeSvPtr) { return 0; },
+            filetype_isdefault(extSvPtr) { return 0; },
         };
 
         // -------------------------------------------------------------------
@@ -4630,22 +4695,6 @@ class WAPI {
             request_attention(surface, critical) { return WAPI_ERR_NOTSUP; },
             set_overlay_icon(surface, iconData, iconLen, desc, descLen) { return WAPI_ERR_NOTSUP; },
             clear_overlay(surface) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
-        // wapi_perm (permissions)
-        // -------------------------------------------------------------------
-        const wapi_perm = {
-            query(capPtr, capLen, statePtr) {
-                self._refreshViews();
-                self._writeU32(statePtr, 1); // GRANTED by default in browser
-                return WAPI_OK;
-            },
-            request(capPtr, capLen, statePtr) {
-                self._refreshViews();
-                self._writeU32(statePtr, 1); // GRANTED
-                return WAPI_OK;
-            },
         };
 
         // -------------------------------------------------------------------
@@ -4673,6 +4722,8 @@ class WAPI {
             encode(codec, dataPtr, dataLen, timestampLo, timestampHi) { return WAPI_ERR_NOTSUP; },
             get_output(codec, bufPtr, bufLen, outLenPtr, tsPtr) { return WAPI_ERR_NOTSUP; },
             flush(codec) { return WAPI_ERR_NOTSUP; },
+            query_decode(queryPtr, resultPtr) { return WAPI_ERR_NOTSUP; },
+            query_encode(queryPtr, resultPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -4683,14 +4734,6 @@ class WAPI {
             set_playback_state(state) { return WAPI_ERR_NOTSUP; },
             set_position(position, duration) { return WAPI_ERR_NOTSUP; },
             set_actions(actionsPtr, count) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
-        // wapi_mediacaps (media capabilities - stub)
-        // -------------------------------------------------------------------
-        const wapi_mediacaps = {
-            query_decode(queryPtr, resultPtr) { return WAPI_ERR_NOTSUP; },
-            query_encode(queryPtr, resultPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -4763,18 +4806,6 @@ class WAPI {
         };
 
         // -------------------------------------------------------------------
-        // wapi_hid (HID device access - stub)
-        // -------------------------------------------------------------------
-        const wapi_hid = {
-            request_device(vendorId, productId, usagePage, devicePtr) { return WAPI_ERR_NOTSUP; },
-            open(device) { return WAPI_ERR_NOTSUP; },
-            close(device) { return WAPI_ERR_NOTSUP; },
-            send_report(device, reportId, dataPtr, dataLen) { return WAPI_ERR_NOTSUP; },
-            send_feature_report(device, reportId, dataPtr, dataLen) { return WAPI_ERR_NOTSUP; },
-            receive_report(device, bufPtr, bufLen, bytesReadPtr) { return WAPI_ERR_NOTSUP; },
-        };
-
-        // -------------------------------------------------------------------
         // wapi_serial (serial port - stub)
         // -------------------------------------------------------------------
         const wapi_serial = {
@@ -4828,6 +4859,198 @@ class WAPI {
             start_drag(itemsPtr, itemCount, allowedEffects, iconSurface) { return WAPI_ERR_NOTSUP; },
             set_drop_effect(effect) { return WAPI_ERR_NOTSUP; },
             get_drop_data(index, bufPtr, bufLen, bytesWrittenPtr) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_window (OS window management - stub)
+        // -------------------------------------------------------------------
+        const wapi_window = {
+            set_title(surface, titlePtr, titleLen) { return WAPI_ERR_NOTSUP; },
+            get_size_logical(surface, widthPtr, heightPtr) { return WAPI_ERR_NOTSUP; },
+            set_fullscreen(surface, fullscreen) { return WAPI_ERR_NOTSUP; },
+            set_visible(surface, visible) { return WAPI_ERR_NOTSUP; },
+            minimize(surface) { return WAPI_ERR_NOTSUP; },
+            maximize(surface) { return WAPI_ERR_NOTSUP; },
+            restore(surface) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_display (display enumeration - stub)
+        // -------------------------------------------------------------------
+        const wapi_display = {
+            display_count() { return 0; },
+            display_get_info(index, infoPtr) { return WAPI_ERR_NOTSUP; },
+            display_get_subpixels(index, subpixelsPtr, maxCount, countPtr) { return WAPI_ERR_NOTSUP; },
+            display_get_usable_bounds(index, xPtr, yPtr, wPtr, hPtr) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_dialog (native file/message/color/font dialogs - stub)
+        // -------------------------------------------------------------------
+        const wapi_dialog = {
+            open_file(filtersPtr, filterCount, defPathPtr, defPathLen, flags, bufPtr, bufLen, resultLenPtr) { return WAPI_ERR_NOTSUP; },
+            save_file(filtersPtr, filterCount, defPathPtr, defPathLen, bufPtr, bufLen, resultLenPtr) { return WAPI_ERR_NOTSUP; },
+            open_folder(defPathPtr, defPathLen, bufPtr, bufLen, resultLenPtr) { return WAPI_ERR_NOTSUP; },
+            message_box(type, titlePtr, titleLen, msgPtr, msgLen, buttons, resultPtr) { return WAPI_ERR_NOTSUP; },
+            simple_message_box(titlePtr, titleLen, msgPtr, msgLen) { return WAPI_ERR_NOTSUP; },
+            pick_color(titlePtr, titleLen, initialRgba, flags, resultRgbaPtr) { return WAPI_ERR_NOTSUP; },
+            pick_font(titlePtr, titleLen, ioPtr, nameBufPtr, nameCap) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_menu (native menus - stub)
+        // -------------------------------------------------------------------
+        const wapi_menu = {
+            menu_create(outHandlePtr) { return WAPI_ERR_NOTSUP; },
+            menu_add_item(menu, itemPtr) { return WAPI_ERR_NOTSUP; },
+            menu_add_submenu(menu, labelPtr, labelLen, submenu) { return WAPI_ERR_NOTSUP; },
+            menu_show_context(menu, surface, x, y) { return WAPI_ERR_NOTSUP; },
+            menu_set_bar(surface, menu) { return WAPI_ERR_NOTSUP; },
+            menu_destroy(menu) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_tray (system tray - stub)
+        // -------------------------------------------------------------------
+        const wapi_tray = {
+            tray_create(iconDataPtr, iconLen, tooltipPtr, tooltipLen, outHandlePtr) { return WAPI_ERR_NOTSUP; },
+            tray_destroy(handle) { return WAPI_ERR_NOTSUP; },
+            tray_set_icon(handle, iconDataPtr, iconLen) { return WAPI_ERR_NOTSUP; },
+            tray_set_tooltip(handle, textPtr, textLen) { return WAPI_ERR_NOTSUP; },
+            tray_set_menu(handle, itemsPtr, itemCount) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_theme (system appearance preferences)
+        // -------------------------------------------------------------------
+        const wapi_theme = {
+            theme_is_dark() {
+                return (typeof matchMedia === "function" &&
+                        matchMedia("(prefers-color-scheme: dark)").matches) ? 1 : 0;
+            },
+            theme_get_accent_color(rgbaPtr) { return WAPI_ERR_NOTSUP; },
+            theme_get_contrast_preference() {
+                if (typeof matchMedia !== "function") return 0;
+                if (matchMedia("(prefers-contrast: more)").matches) return 1;
+                if (matchMedia("(prefers-contrast: less)").matches) return 2;
+                return 0;
+            },
+            theme_get_reduced_motion() {
+                return (typeof matchMedia === "function" &&
+                        matchMedia("(prefers-reduced-motion: reduce)").matches) ? 1 : 0;
+            },
+            theme_get_font_scale(scalePtr) {
+                self._refreshViews();
+                self._dv.setFloat32(scalePtr, 1.0, true);
+                return WAPI_OK;
+            },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_sysinfo (system/platform information)
+        // -------------------------------------------------------------------
+        const wapi_sysinfo = {
+            sysinfo_get(infoPtr) { return WAPI_ERR_NOTSUP; },
+            sysinfo_get_locale(bufPtr, bufLen, lenPtr) {
+                const locale = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+                const written = self._writeString(bufPtr, bufLen, locale);
+                self._writeU32(lenPtr, written);
+                return WAPI_OK;
+            },
+            sysinfo_get_timezone(bufPtr, bufLen, lenPtr) {
+                let tz = "UTC";
+                try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) {}
+                const written = self._writeString(bufPtr, bufLen, tz);
+                self._writeU32(lenPtr, written);
+                return WAPI_OK;
+            },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_process (subprocess spawn - stub, not available in browser)
+        // -------------------------------------------------------------------
+        const wapi_process = {
+            create(descPtr, processPtr) { return WAPI_ERR_NOTSUP; },
+            get_stdin(process, pipePtr) { return WAPI_ERR_NOTSUP; },
+            get_stdout(process, pipePtr) { return WAPI_ERR_NOTSUP; },
+            get_stderr(process, pipePtr) { return WAPI_ERR_NOTSUP; },
+            pipe_write(pipe, bufPtr, len, writtenPtr) { return WAPI_ERR_NOTSUP; },
+            pipe_read(pipe, bufPtr, len, bytesReadPtr) { return WAPI_ERR_NOTSUP; },
+            pipe_close(pipe) { return WAPI_ERR_NOTSUP; },
+            wait(process, block, exitCodePtr) { return WAPI_ERR_NOTSUP; },
+            kill(process) { return WAPI_ERR_NOTSUP; },
+            destroy(process) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_thread (threads and sync primitives - stub, needs SAB + workers)
+        // -------------------------------------------------------------------
+        const wapi_thread = {
+            create(descPtr, threadPtr) { return WAPI_ERR_NOTSUP; },
+            join(thread, exitCodePtr) { return WAPI_ERR_NOTSUP; },
+            detach(thread) { return WAPI_ERR_NOTSUP; },
+            get_state(thread, statePtr) { return WAPI_ERR_NOTSUP; },
+            current_id() { return 1n; },
+            get_id(thread) { return 0n; },
+            set_qos(qos) { return WAPI_ERR_NOTSUP; },
+            tls_create(destructor, slotPtr) { return WAPI_ERR_NOTSUP; },
+            tls_destroy(slot) { return WAPI_ERR_NOTSUP; },
+            tls_set(slot, value) { return WAPI_ERR_NOTSUP; },
+            tls_get(slot) { return 0; },
+            mutex_create(mutexPtr) { return WAPI_ERR_NOTSUP; },
+            mutex_destroy(mutex) { return WAPI_ERR_NOTSUP; },
+            mutex_lock(mutex) { return WAPI_ERR_NOTSUP; },
+            mutex_try_lock(mutex) { return WAPI_ERR_NOTSUP; },
+            mutex_unlock(mutex) { return WAPI_ERR_NOTSUP; },
+            rwlock_create(rwlockPtr) { return WAPI_ERR_NOTSUP; },
+            rwlock_destroy(rwlock) { return WAPI_ERR_NOTSUP; },
+            rwlock_read_lock(rwlock) { return WAPI_ERR_NOTSUP; },
+            rwlock_try_read_lock(rwlock) { return WAPI_ERR_NOTSUP; },
+            rwlock_write_lock(rwlock) { return WAPI_ERR_NOTSUP; },
+            rwlock_try_write_lock(rwlock) { return WAPI_ERR_NOTSUP; },
+            rwlock_unlock(rwlock) { return WAPI_ERR_NOTSUP; },
+            sem_create(initialValue, semPtr) { return WAPI_ERR_NOTSUP; },
+            sem_destroy(sem) { return WAPI_ERR_NOTSUP; },
+            sem_wait(sem) { return WAPI_ERR_NOTSUP; },
+            sem_try_wait(sem) { return WAPI_ERR_NOTSUP; },
+            sem_wait_timeout(sem, timeoutNs) { return WAPI_ERR_NOTSUP; },
+            sem_signal(sem) { return WAPI_ERR_NOTSUP; },
+            sem_get_value(sem) { return 0; },
+            cond_create(condPtr) { return WAPI_ERR_NOTSUP; },
+            cond_destroy(cond) { return WAPI_ERR_NOTSUP; },
+            cond_wait(cond, mutex) { return WAPI_ERR_NOTSUP; },
+            cond_wait_timeout(cond, mutex, timeoutNs) { return WAPI_ERR_NOTSUP; },
+            cond_signal(cond) { return WAPI_ERR_NOTSUP; },
+            cond_broadcast(cond) { return WAPI_ERR_NOTSUP; },
+            barrier_create(count, barrierPtr) { return WAPI_ERR_NOTSUP; },
+            barrier_destroy(barrier) { return WAPI_ERR_NOTSUP; },
+            barrier_wait(barrier) { return WAPI_ERR_NOTSUP; },
+            call_once(onceFlagPtr, initFunc) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_fwatch (filewatcher - stub)
+        // -------------------------------------------------------------------
+        const wapi_fwatch = {
+            fwatch_add(pathPtr, pathLen, recursive, outHandlePtr) { return WAPI_ERR_NOTSUP; },
+            fwatch_remove(handle) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_eyedrop (screen color picker - stub)
+        // -------------------------------------------------------------------
+        const wapi_eyedrop = {
+            eyedropper_pick(rgbaPtr) { return WAPI_ERR_NOTSUP; },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_plugin (audio plugin host API - stub)
+        // -------------------------------------------------------------------
+        const wapi_plugin = {
+            param_set(paramId, value) { return WAPI_ERR_NOTSUP; },
+            param_get(paramId) { return 0.0; },
+            request_gui_resize(width, height) { return WAPI_ERR_NOTSUP; },
+            send_midi(status, data1, data2) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -5617,11 +5840,14 @@ class WAPI {
                  wapi_clipboard, wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
                  wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
                  wapi_share, wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr,
-                 wapi_register, wapi_taskbar, wapi_perm, wapi_power, wapi_orient,
-                 wapi_codec, wapi_media, wapi_mediacaps, wapi_encode,
+                 wapi_register, wapi_taskbar, wapi_power, wapi_orient,
+                 wapi_codec, wapi_media, wapi_encode,
                  wapi_authn, wapi_netinfo, wapi_haptic,
-                 wapi_p2p, wapi_hid, wapi_serial, wapi_capture, wapi_contacts,
+                 wapi_serial, wapi_capture, wapi_contacts,
                  wapi_barcode, wapi_nfc, wapi_dnd,
+                 wapi_window, wapi_display, wapi_dialog, wapi_menu, wapi_tray,
+                 wapi_theme, wapi_sysinfo, wapi_process, wapi_thread,
+                 wapi_fwatch, wapi_eyedrop, wapi_plugin,
                  wasi_snapshot_preview1 };
     }
 

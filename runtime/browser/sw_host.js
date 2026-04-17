@@ -28,7 +28,7 @@
 // signal rather than runtime surprises):
 //   wapi_crypto (already NOTSUP in shim — async/sync impedance)
 //   wapi_thread (sync primitives), wapi_filesystem, wapi_kvstorage, wapi_sysinfo,
-//   wapi_notifications, wapi_codec, wapi_mediacaps, and every
+//   wapi_notifications, wapi_codec, and every
 //   UI/hardware/user-gesture capability.
 //
 // Consumed by sw.js via importScripts('./sw_host.js'). Exposes

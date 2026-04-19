@@ -2,8 +2,6 @@
  * WAPI - Core
  * Version 1.0.0
  *
- * One binary. One ABI. Every platform.
- *
  * This header defines the complete WAPI core: types, I/O operations,
  * events, execution context, and capability detection. Every capability
  * module includes this header and nothing else from the core.
@@ -52,6 +50,27 @@ extern "C" {
 #define WAPI_IMPORT(module, name)
 #define WAPI_EXPORT(name)
 #endif
+
+/* ============================================================
+ * Opcode Encoding
+ * ============================================================
+ * Every IO opcode is a packed 32-bit value:
+ *   bits 31..16  namespace_id  (u16)
+ *   bits 15..0   method_id     (u16)
+ *
+ * Namespace 0x0000 holds every first-party spec-defined capability
+ * (file, network, timers, audio, crypto, share, sensors, notify,
+ * etc.) — they share one flat 16-bit method-id space. Namespaces
+ * 0x0001..0xFFFF are runtime-allocated by wapi_io_t::namespace_register
+ * for vendor extensions; the spec never hands out a fixed namespace_id.
+ *
+ * Modules never hardcode a vendor namespace_id — they register the
+ * DNS-style name (e.g. "com.acme.ml") once at init, cache the
+ * returned id, and compose opcodes with WAPI_NS(id, method).
+ */
+#define WAPI_NS(ns, method)   (((uint32_t)(ns) << 16) | (uint32_t)(method))
+#define WAPI_NS_ID(op)        ((uint16_t)((uint32_t)(op) >> 16))
+#define WAPI_METHOD_ID(op)    ((uint16_t)((uint32_t)(op) & 0xFFFFu))
 
 /* ============================================================
  * Primitive Types
@@ -241,12 +260,12 @@ typedef struct wapi_version_t {
  * Permission State
  * ============================================================ */
 
-typedef enum wapi_perm_state_t {
-    WAPI_PERM_GRANTED  = 0,  /* Permission granted */
-    WAPI_PERM_DENIED   = 1,  /* Permission denied (do not prompt again) */
-    WAPI_PERM_PROMPT   = 2,  /* Permission not yet requested */
-    WAPI_PERM_FORCE32  = 0x7FFFFFFF
-} wapi_perm_state_t;
+typedef enum wapi_cap_state_t {
+    WAPI_CAP_GRANTED  = 0,  /* Capability granted */
+    WAPI_CAP_DENIED   = 1,  /* Capability denied (do not prompt again) */
+    WAPI_CAP_PROMPT   = 2,  /* Capability not yet requested */
+    WAPI_CAP_FORCE32  = 0x7FFFFFFF
+} wapi_cap_state_t;
 
 /* ============================================================
  * Utility Macros
@@ -291,54 +310,89 @@ typedef enum wapi_perm_state_t {
  * Operation Types
  * ============================================================
  *
- * Opcode ranges:
- *   0x000-0x03F  Core (filesystem, net, timer, audio)
- *   0x040-0x07F  Extended network (net ext, P2P)
+ * Opcodes are (namespace:u16 << 16) | method:u16. See the
+ * "Opcode Encoding" block above.
+ *
+ * Every first-party op lives in namespace 0x0000. Sub-ranges below
+ * are an opcode-layout map, not a privilege tier — every op goes
+ * through the same grant lifecycle (§9); see spec for which capability
+ * gates which range. Vendors get runtime-allocated namespaces (0x0001+)
+ * via wapi_io_t::namespace_register; the spec never reserves a fixed
+ * id for first-party caps in any other namespace.
+ *
+ * Method-id sub-ranges within namespace 0x0000:
+ *   0x000        Capability system + fence
+ *   0x002-0x009  Host filesystem + log (fd-level read/write/open/close/stat,
+ *                log, watch). FS ops gate on wapi.filesystem; LOG on wapi.log.
+ *   0x00A-0x011  Network (connect/accept/send/recv + listen, channel, resolve)
+ *   0x014-0x015  Timers (gated by wapi.clock)
+ *   0x01E-0x01F  Audio
+ *   0x060-0x06F  HTTP
  *   0x080-0x0DF  Hardware I/O (serial, MIDI, BT, USB, NFC, camera)
- *   0x100-0x17F  Media (codec, video, speech, screen capture)
+ *   0x100-0x17F  Media (codec, video, compression, font-bytes, speech, capture)
  *   0x180-0x1FF  User interaction (dialog, auth, pickers)
  *   0x200-0x27F  Spatial (XR, geolocation)
- *   0x800-0xFFF  Vendor / platform-specific extensions
+ *   0x2A0-0x2AF  Sandbox filesystem (open/stat/delete/watch — gated by wapi.sandbox)
+ *   0x2B0-0x2BF  Cache filesystem    (open/stat/delete — gated by wapi.cache)
+ *   0x2C0-0x2CF  wapi.crypto
+ *   0x2D8-0x2DF  wapi.barcode
+ *   0x2E8-0x2EF  wapi.power
+ *   0x2F0-0x2F7  wapi.sensor
+ *   0x2F8-0x2FB  wapi.notify
+ *   0x2FC-0x2FF  wapi.font (local-font enumeration)
+ *   0x300-0x301  Namespace registry (vtable methods, reserved as op ids)
+ *   0x310-0x317  wapi.transfer (clipboard / DnD / share unified)
  */
 
 typedef enum wapi_io_opcode_t {
 
-    /* ---- Core: General (0x00-0x09) ---- */
+    /* ---- Capability system (0x00-0x01) ----
+     * CAP_REQUEST is the one and only "ask the platform to grant
+     * capability X" opcode. Every capability routes its grant
+     * acquisition through here with its capability name (§9); the
+     * platform decides whether to prompt, auto-grant, or auto-deny.
+     * Pair with io->cap_supported / io->cap_version / io->cap_query
+     * on the vtable for the full lifecycle. */
     WAPI_IO_OP_NOP          = 0x00,  /* No operation (fence) */
-    WAPI_IO_OP_READ         = 0x01,  /* fd, offset, addr/len -> result_ptr=bytes_read */
-    WAPI_IO_OP_WRITE        = 0x02,  /* fd, offset, addr/len -> result_ptr=bytes_written */
-    WAPI_IO_OP_OPEN         = 0x03,  /* addr/len=path, flags, flags2=mode -> result_ptr=fd */
-    WAPI_IO_OP_CLOSE        = 0x04,  /* fd */
-    WAPI_IO_OP_STAT         = 0x05,  /* fd -> result_ptr=stat_buf */
-    WAPI_IO_OP_LOG          = 0x06,  /* flags=level(WAPI_LOG_*), addr/len=message, addr2/len2=tag (fire-and-forget, no completion) */
+    WAPI_IO_OP_CAP_REQUEST  = 0x01,  /* addr/len=capability -> result_ptr=wapi_cap_state_t */
 
-    /* ---- Core: Network (0x0A-0x0F) ----
+    /* ---- File I/O + log (0x02-0x09) ----
+     * READ/WRITE/OPEN/CLOSE/STAT/FWATCH_* gate on wapi.filesystem;
+     * LOG gates on wapi.log. */
+    WAPI_IO_OP_READ         = 0x02, /* fd, offset, addr/len -> result_ptr=bytes_read */
+    WAPI_IO_OP_WRITE        = 0x03, /* fd, offset, addr/len -> result_ptr=bytes_written */
+    WAPI_IO_OP_OPEN         = 0x04, /* addr/len=path, flags, flags2=mode -> result_ptr=fd */
+    WAPI_IO_OP_CLOSE        = 0x05, /* fd */
+    WAPI_IO_OP_STAT         = 0x06, /* fd -> result_ptr=stat_buf */
+    WAPI_IO_OP_LOG          = 0x07, /* flags=level(WAPI_LOG_*), addr/len=message, addr2/len2=tag (fire-and-forget, no completion) */
+    WAPI_IO_OP_FWATCH_ADD    = 0x08, /* addr/len=host_path, flags=recursive -> result_ptr=watch_handle */
+    WAPI_IO_OP_FWATCH_REMOVE = 0x09, /* fd=watch_handle */
+
+    /* ---- Network (0x0A-0x11) ----
      * See wapi_network.h. flags = WAPI_NET_* qualities bitfield; the
      * platform picks any transport that satisfies the requested qualities,
      * or completes with WAPI_ERR_NOTSUP. SEND/RECV preserve message
-     * boundaries iff the channel was opened with WAPI_NET_MESSAGE_FRAMED. */
-    WAPI_IO_OP_CONNECT      = 0x0A,  /* addr/len=address, flags=qualities -> result_ptr=conn */
-    WAPI_IO_OP_ACCEPT       = 0x0B,  /* fd=listener -> result_ptr=conn */
-    WAPI_IO_OP_SEND         = 0x0C,  /* fd, addr/len=data -> result_ptr=bytes_sent */
-    WAPI_IO_OP_RECV         = 0x0D,  /* fd, addr/len=buf -> result_ptr=bytes_recv */
+     * boundaries iff the channel was opened with WAPI_NET_MESSAGE_FRAMED.
+     * Channel ops are only valid on connections opened with
+     * WAPI_NET_MULTIPLEXED. Each channel may have its own qualities, so a
+     * single multiplexed connection can carry e.g. one reliable byte stream
+     * alongside one unreliable framed datagram channel. */
+    WAPI_IO_OP_CONNECT                 = 0x0A, /* addr/len=address, flags=qualities -> result_ptr=conn */
+    WAPI_IO_OP_ACCEPT                  = 0x0B, /* fd=listener -> result_ptr=conn */
+    WAPI_IO_OP_SEND                    = 0x0C, /* fd, addr/len=data -> result_ptr=bytes_sent */
+    WAPI_IO_OP_RECV                    = 0x0D, /* fd, addr/len=buf -> result_ptr=bytes_recv */
+    WAPI_IO_OP_NETWORK_LISTEN          = 0x0E, /* addr/len=bind_addr, flags=qualities, flags2=port<<16|backlog -> result_ptr=listener */
+    WAPI_IO_OP_NETWORK_CHANNEL_OPEN    = 0x0F, /* fd=conn, flags=channel_qualities -> result_ptr=channel */
+    WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT  = 0x10, /* fd=conn -> result_ptr=channel */
+    WAPI_IO_OP_NETWORK_RESOLVE         = 0x11, /* addr/len=host, addr2/len2=addrs_buf -> result_ptr=count */
 
-    /* ---- Core: Timers (0x14-0x15) ---- */
-    WAPI_IO_OP_TIMEOUT      = 0x14,  /* offset=duration_ns */
-    WAPI_IO_OP_TIMEOUT_ABS  = 0x15,  /* offset=abs_time_ns */
+    /* ---- Timers (0x14-0x15) ---- gated by wapi.clock */
+    WAPI_IO_OP_TIMEOUT      = 0x14, /* offset=duration_ns */
+    WAPI_IO_OP_TIMEOUT_ABS  = 0x15, /* offset=abs_time_ns */
 
-    /* ---- Core: Audio (0x1E-0x1F) ---- */
+    /* ---- Audio (0x1E-0x1F) ---- */
     WAPI_IO_OP_AUDIO_WRITE  = 0x1E,  /* fd=stream, addr/len=samples */
     WAPI_IO_OP_AUDIO_READ   = 0x1F,  /* fd=stream, addr/len=buf -> result_ptr=bytes_read */
-
-    /* ---- Extended Network (0x040-0x04F) ----
-     * Channel ops are only valid on connections opened with
-     * WAPI_NET_MULTIPLEXED. Each channel may have its own qualities,
-     * so a single multiplexed connection can carry e.g. one reliable
-     * byte stream alongside one unreliable framed datagram channel. */
-    WAPI_IO_OP_NETWORK_LISTEN          = 0x040, /* addr/len=bind_addr, flags=qualities, flags2=port<<16|backlog -> result_ptr=listener */
-    WAPI_IO_OP_NETWORK_CHANNEL_OPEN    = 0x043, /* fd=conn, flags=channel_qualities -> result_ptr=channel */
-    WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT  = 0x044, /* fd=conn -> result_ptr=channel */
-    WAPI_IO_OP_NETWORK_RESOLVE         = 0x045, /* addr/len=host, addr2/len2=addrs_buf -> result_ptr=count */
 
     /* ---- HTTP (0x060-0x06F) ---- */
     WAPI_IO_OP_HTTP_FETCH             = 0x060, /* addr/len=url, addr2/len2=response_buf, flags=method (0=GET, 1=POST, 2=PUT, 3=DELETE, 4=HEAD) -> completion.result=bytes_written or negative error, completion.flags=http_status */
@@ -413,8 +467,7 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_DIALOG_PICK_COLOR = 0x184, /* addr/len=title, flags=initial_rgba, flags2=color_flags -> result_ptr=picked_rgba */
     WAPI_IO_OP_DIALOG_PICK_FONT  = 0x185, /* addr/len=title, addr2/len2=name_buf, offset=io_ptr -> io struct updated in place */
 
-    /* ---- Permissions & Auth (0x190-0x19F) ---- */
-    WAPI_IO_OP_PERM_REQUEST            = 0x190, /* addr/len=capability -> result_ptr=state */
+    /* ---- Auth (0x191-0x19F) ---- */
     WAPI_IO_OP_BIO_AUTHENTICATE        = 0x191, /* addr/len=reason, flags=bio_type_mask */
     WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE = 0x192, /* addr/len=rp_id, addr2/len2=challenge, result_ptr=user_entity */
     WAPI_IO_OP_AUTHN_ASSERTION_GET     = 0x193, /* addr/len=rp_id, addr2/len2=challenge */
@@ -435,14 +488,60 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_GEO_POSITION_WATCH = 0x211, /* flags=accuracy -> result_ptr=watch_handle */
 
     /* ---- Sandbox Filesystem (0x2A0-0x2AF) ---- */
-    WAPI_IO_OP_SANDBOX_OPEN   = 0x2A0, /* addr/len=path, flags=open_flags -> result_ptr=fd */
-    WAPI_IO_OP_SANDBOX_STAT   = 0x2A1, /* addr/len=path -> result_ptr=stat_buf */
-    WAPI_IO_OP_SANDBOX_DELETE = 0x2A2, /* addr/len=path */
+    WAPI_IO_OP_SANDBOX_OPEN          = 0x2A0, /* addr/len=path, flags=open_flags -> result_ptr=fd */
+    WAPI_IO_OP_SANDBOX_STAT          = 0x2A1, /* addr/len=path -> result_ptr=stat_buf */
+    WAPI_IO_OP_SANDBOX_DELETE        = 0x2A2, /* addr/len=path */
+    WAPI_IO_OP_SANDBOX_FWATCH_ADD    = 0x2A3, /* addr/len=path, flags=recursive -> result_ptr=watch_handle */
+    WAPI_IO_OP_SANDBOX_FWATCH_REMOVE = 0x2A4, /* fd=watch_handle */
 
     /* ---- Persistent Cache Filesystem (0x2B0-0x2BF) ---- */
     WAPI_IO_OP_CACHE_OPEN   = 0x2B0, /* addr/len=path, flags=open_flags -> result_ptr=fd */
     WAPI_IO_OP_CACHE_STAT   = 0x2B1, /* addr/len=path -> result_ptr=stat_buf */
     WAPI_IO_OP_CACHE_DELETE = 0x2B2, /* addr/len=path */
+
+    /* ---- wapi.crypto (0x2C0-0x2CF) ----
+     * One-shot crypto ops for large / gesture-gated work. Streaming
+     * variants (hash_update, hash_finish on an existing ctx) remain
+     * direct imports in wapi_crypto.h because they are CPU-bounded. */
+    WAPI_IO_OP_CRYPTO_HASH              = 0x2C0, /* flags=algo, addr/len=data -> result: inline digest (<=64B) */
+    WAPI_IO_OP_CRYPTO_HASH_CREATE       = 0x2C1, /* flags=algo -> result_ptr=ctx */
+    WAPI_IO_OP_CRYPTO_ENCRYPT           = 0x2C2, /* fd=key, flags=algo, offset=iv_ptr packed, addr/len=pt, addr2/len2=ct_buf -> result_ptr=ct_len */
+    WAPI_IO_OP_CRYPTO_DECRYPT           = 0x2C3, /* fd=key, flags=algo, offset=iv_ptr packed, addr/len=ct, addr2/len2=pt_buf -> result_ptr=pt_len */
+    WAPI_IO_OP_CRYPTO_SIGN              = 0x2C4, /* fd=key, flags=algo, addr/len=data, addr2/len2=sig_buf -> result_ptr=sig_len */
+    WAPI_IO_OP_CRYPTO_VERIFY            = 0x2C5, /* fd=key, flags=algo, addr/len=data, addr2/len2=sig -> result=1 ok / 0 fail */
+    WAPI_IO_OP_CRYPTO_DERIVE_KEY        = 0x2C6, /* fd=base_key, flags=algo, addr/len=salt, addr2/len2=info, flags2=iterations, offset=key_len_bits -> result_ptr=derived_key_handle */
+    WAPI_IO_OP_CRYPTO_KEY_IMPORT_RAW    = 0x2C7, /* addr/len=key_bytes, flags=usages -> result_ptr=key_handle */
+    WAPI_IO_OP_CRYPTO_KEY_GENERATE      = 0x2C8, /* flags=algo, flags2=usages -> result_ptr=key_handle */
+    WAPI_IO_OP_CRYPTO_KEY_GENERATE_PAIR = 0x2C9, /* flags=algo, flags2=usages, addr=pub_ptr, addr2=priv_ptr */
+
+    /* ---- wapi.barcode (0x2D8-0x2DF) ---- */
+    WAPI_IO_OP_BARCODE_DETECT_IMAGE     = 0x2D8, /* addr/len=rgba_pixels, flags=width, flags2=height, addr2/len2=results_buf -> result=count */
+    WAPI_IO_OP_BARCODE_DETECT_CAMERA    = 0x2D9, /* fd=camera_handle, addr/len=results_buf -> result=count */
+
+    /* ---- wapi.power (0x2E8-0x2EF) ---- */
+    WAPI_IO_OP_POWER_INFO_GET           = 0x2E8, /* result: inline wapi_power_info_t (16B) */
+    WAPI_IO_OP_POWER_WAKE_ACQUIRE       = 0x2E9, /* flags=lock_type -> result_ptr=lock_handle */
+    WAPI_IO_OP_POWER_IDLE_START         = 0x2EA, /* flags=threshold_ms */
+
+    /* ---- wapi.sensor (0x2F0-0x2F7) ---- */
+    WAPI_IO_OP_SENSOR_START             = 0x2F0, /* flags=sensor_type, offset=freq_hz_f32_as_bits -> result_ptr=sensor_handle */
+
+    /* ---- wapi.notify (0x2F8-0x2FB) ---- */
+    WAPI_IO_OP_NOTIFY_SHOW              = 0x2F8, /* addr/len=notify_desc -> result_ptr=notification_handle */
+
+    /* ---- wapi.font local enum (0x2FC-0x2FF) ---- */
+    WAPI_IO_OP_FONT_FAMILY_INFO         = 0x2FC, /* flags=index, addr/len=info_out_buf -> result=family_count */
+
+    /* ---- wapi.transfer (0x310-0x317) ---- */
+    WAPI_IO_OP_TRANSFER_OFFER           = 0x310, /* fd=seat, flags=mode_bitmask, addr/len=wapi_transfer_offer_t* -> result packed (mode<<8|action) */
+    WAPI_IO_OP_TRANSFER_READ            = 0x311, /* fd=seat, flags=mode, addr/len=mime_sv, addr2/len2=out_buf -> result=bytes_written */
+
+    /* ---- Namespace registry built-ins (namespace 0x0000, methods 0x300+) ----
+     * These are invoked via wapi_io_t::namespace_register / namespace_name
+     * rather than through submit(). Listed here as reserved method-id
+     * values so future "call it as an op" usage would not collide. */
+    WAPI_IO_OP_NAMESPACE_REGISTER = 0x300, /* reserved, invoked via vtable method */
+    WAPI_IO_OP_NAMESPACE_NAME     = 0x301, /* reserved, invoked via vtable method */
 
     WAPI_IO_OP_FORCE32 = 0x7FFFFFFF
 } wapi_io_opcode_t;
@@ -601,11 +700,11 @@ typedef enum wapi_event_type_t {
     WAPI_EVENT_POINTER_ENTER       = 0x904,
     WAPI_EVENT_POINTER_LEAVE       = 0x905,
 
-    /* Drop events (0x1000-0x10FF) */
-    WAPI_EVENT_DROP_FILE        = 0x1000,
-    WAPI_EVENT_DROP_TEXT        = 0x1001,
-    WAPI_EVENT_DROP_BEGIN       = 0x1002,
-    WAPI_EVENT_DROP_COMPLETE    = 0x1003,
+    /* Transfer (DnD/clipboard/share) events (0x1600-0x16FF) */
+    WAPI_EVENT_TRANSFER_ENTER   = 0x1600,
+    WAPI_EVENT_TRANSFER_OVER    = 0x1601,
+    WAPI_EVENT_TRANSFER_LEAVE   = 0x1602,
+    WAPI_EVENT_TRANSFER_DELIVER = 0x1603,
 
     /* Display events (0x1800-0x18FF) */
     WAPI_EVENT_DISPLAY_ADDED    = 0x1800,
@@ -940,14 +1039,18 @@ typedef struct wapi_surface_event_t {
     int32_t     data2;       /* Height for resize, y for move */
 } wapi_surface_event_t;
 
-/** Drop event */
-typedef struct wapi_drop_event_t {
+/** Transfer (DnD) event */
+typedef struct wapi_transfer_event_t {
     uint32_t    type;
     uint32_t    surface_id;
     uint64_t    timestamp;
-    uint64_t    data;        /* Linear memory address of file path or text (valid until next poll) */
-    wapi_size_t data_len;
-} wapi_drop_event_t;
+    int32_t     pointer_id;         /* mouse=0, touch=1+, pen<0 */
+    int32_t     x;                  /* surface-local pointer position */
+    int32_t     y;
+    uint32_t    item_count;
+    uint32_t    available_actions;  /* bitmask of wapi_transfer_action_t */
+    uint32_t    _pad;
+} wapi_transfer_event_t;
 
 /** Pen/stylus event */
 typedef struct wapi_pen_event_t {
@@ -1098,7 +1201,23 @@ typedef struct wapi_content_event_t {
     uint32_t    _reserved;
 } wapi_content_event_t;
 
-/** I/O completion event -- async operation finished */
+/** I/O completion event -- async operation finished.
+ *
+ * Small results that fit in 96 bytes are delivered inline in `payload`
+ * with WAPI_IO_CQE_F_INLINE set. Larger results are written to the
+ * caller-supplied `result_ptr` in the op descriptor, and the flag is
+ * clear. Inlineability per opcode is documented at the opcode's
+ * definition.
+ *
+ * Layout (128 bytes, align 8):
+ *   Offset   0: uint32_t type        (WAPI_EVENT_IO_COMPLETION)
+ *   Offset   4: uint32_t surface_id  (0)
+ *   Offset   8: uint64_t timestamp
+ *   Offset  16: int32_t  result      (bytes transferred / handle / errno)
+ *   Offset  20: uint32_t flags       (WAPI_IO_CQE_F_*)
+ *   Offset  24: uint64_t user_data   (echoed from wapi_io_op_t)
+ *   Offset  32: uint8_t  payload[96] (inline result bytes; semantics per opcode)
+ */
 typedef struct wapi_io_event_t {
     uint32_t    type;           /* WAPI_EVENT_IO_COMPLETION */
     uint32_t    surface_id;     /* Always 0 for I/O events */
@@ -1106,11 +1225,14 @@ typedef struct wapi_io_event_t {
     int32_t     result;         /* Bytes transferred, new fd, or negative error */
     uint32_t    flags;          /* Completion flags (WAPI_IO_CQE_F_*) */
     uint64_t    user_data;      /* Echoed from wapi_io_op_t */
+    uint8_t     payload[96];    /* Inline result bytes (see WAPI_IO_CQE_F_INLINE) */
 } wapi_io_event_t;
 
 /* I/O completion flags */
 #define WAPI_IO_CQE_F_MORE      0x0001  /* More completions coming for this op */
 #define WAPI_IO_CQE_F_OVERFLOW  0x0002  /* Completion queue overflowed */
+#define WAPI_IO_CQE_F_INLINE    0x0004  /* `payload` holds the full result; result_ptr ignored */
+#define WAPI_IO_CQE_F_NOSYS     0x0008  /* Opcode unknown to this host (result=WAPI_ERR_NOSYS) */
 
 /* ============================================================
  * Event Union (128 bytes, padded)
@@ -1131,7 +1253,7 @@ typedef union wapi_event_t {
     wapi_gamepad_touchpad_event_t     gtouchpad;
     wapi_device_event_t               device;
     wapi_surface_event_t              surface;
-    wapi_drop_event_t                 drop;
+    wapi_transfer_event_t             transfer;
     wapi_pen_event_t                  pen;
     wapi_pointer_event_t              pointer;
     wapi_gesture_event_t              gesture;
@@ -1192,16 +1314,30 @@ typedef struct wapi_allocator_t {
  * capability queries. Obtained via wapi_io_get() (module-owned,
  * host-controlled) or passed explicitly by callers.
  *
- * Layout (36 bytes, align 4):
- *   Offset  0: ptr  impl                  Opaque implementation context
- *   Offset  4: ptr  submit                (impl, ops, count) -> i32
- *   Offset  8: ptr  cancel                (impl, user_data) -> i32
- *   Offset 12: ptr  poll                  (impl, event) -> i32
- *   Offset 16: ptr  wait                  (impl, event, timeout_ms) -> i32
- *   Offset 20: ptr  flush                 (impl, event_type) -> void
- *   Offset 24: ptr  capability_supported  (impl, name) -> bool
- *   Offset 28: ptr  capability_version    (impl, name, ver) -> result
- *   Offset 32: ptr  perm_query            (impl, cap, state) -> result
+ * Layout (44 bytes, align 4):
+ *   Offset  0: ptr  impl                Opaque implementation context
+ *   Offset  4: ptr  submit              (impl, ops, count) -> i32
+ *   Offset  8: ptr  cancel              (impl, user_data) -> i32
+ *   Offset 12: ptr  poll                (impl, event) -> i32
+ *   Offset 16: ptr  wait                (impl, event, timeout_ms) -> i32
+ *   Offset 20: ptr  flush               (impl, event_type) -> void
+ *   Offset 24: ptr  cap_supported       (impl, name) -> bool
+ *   Offset 28: ptr  cap_version         (impl, name, ver) -> result
+ *   Offset 32: ptr  cap_query           (impl, cap, state) -> result
+ *   Offset 36: ptr  namespace_register  (impl, name, out_id) -> result
+ *   Offset 40: ptr  namespace_name      (impl, id, buf, len, out_len) -> result
+ *
+ * namespace_register / namespace_name
+ *   Mint a 16-bit namespace id for a DNS-style name (e.g.
+ *   "com.acme.ml") so the module can compose opcodes for a vendor-
+ *   defined capability. Ids are stable for the lifetime of a given
+ *   vtable impl: calling with the same name always returns the same
+ *   id.  Sandbox vtables (see §7.8) MUST return WAPI_ERR_NOTCAPABLE
+ *   from both methods; the child module only gains vendor-opcode
+ *   access via a caller-supplied wrapped vtable its parent explicitly
+ *   hands in. Submitting an opcode whose namespace has no registered
+ *   handler completes with result = WAPI_ERR_NOSYS and flag
+ *   WAPI_IO_CQE_F_NOSYS set.
  */
 typedef struct wapi_io_t {
     void*         impl;
@@ -1212,15 +1348,98 @@ typedef struct wapi_io_t {
     int32_t       (*wait)(void* impl, wapi_event_t* event,
                           int32_t timeout_ms);
     void          (*flush)(void* impl, uint32_t event_type);
-    wapi_bool_t   (*capability_supported)(void* impl,
-                                          wapi_stringview_t name);
-    wapi_result_t (*capability_version)(void* impl,
+    wapi_bool_t   (*cap_supported)(void* impl,
+                                   wapi_stringview_t name);
+    wapi_result_t (*cap_version)(void* impl,
+                                 wapi_stringview_t name,
+                                 wapi_version_t* version);
+    wapi_result_t (*cap_query)(void* impl,
+                               wapi_stringview_t capability,
+                               wapi_cap_state_t* state);
+    wapi_result_t (*namespace_register)(void* impl,
                                         wapi_stringview_t name,
-                                        wapi_version_t* version);
-    wapi_result_t (*perm_query)(void* impl,
-                                wapi_stringview_t capability,
-                                wapi_perm_state_t* state);
+                                        uint16_t* out_id);
+    wapi_result_t (*namespace_name)(void* impl,
+                                    uint16_t id,
+                                    char* buf,
+                                    wapi_size_t buf_len,
+                                    wapi_size_t* name_len);
 } wapi_io_t;
+
+/* ============================================================
+ * Universal Capability Flow
+ * ============================================================
+ * Every capability — whether foundational (clock, env, memory) or
+ * gated (geolocation, bluetooth, camera) — uses the same four-step
+ * lifecycle. Each step has an inline helper below; all four route
+ * through the io vtable so that a scoped/sandboxed vtable restricts
+ * the module's reach without the module bypassing it:
+ *
+ *   1.  wapi_cap_supported(io, WAPI_STR(WAPI_CAP_<X>))
+ *   2.  wapi_cap_version  (io, WAPI_STR(WAPI_CAP_<X>), &v)
+ *   3.  wapi_cap_query    (io, WAPI_STR(WAPI_CAP_<X>), &state)
+ *   4.  wapi_cap_request  (io, WAPI_STR(WAPI_CAP_<X>), &state, ud)
+ *
+ * Steps 1–3 are synchronous vtable reads; step 4 submits
+ * WAPI_IO_OP_CAP_REQUEST via io->submit and completes
+ * asynchronously with the new wapi_cap_state_t written to
+ * *out_state on the completion event.
+ *
+ * Ambient capabilities auto-grant at step 3; gated ones stay at
+ * WAPI_CAP_PROMPT until step 4. There are no per-capability grant
+ * opcodes — every capability routes through WAPI_IO_OP_CAP_REQUEST
+ * keyed by its WAPI_CAP_* name.
+ *
+ * After step 4 returns GRANTED the module uses the capability's own
+ * operations (wapi_bt_connect, wapi_crypto_hash, wapi_notify_show,
+ * …) declared in the per-capability headers.
+ */
+
+/** Step 1 — is the capability present on this host? */
+static inline wapi_bool_t wapi_cap_supported(
+    const wapi_io_t* io,
+    wapi_stringview_t name)
+{
+    return io->cap_supported(io->impl, name);
+}
+
+/** Step 2 — feature-level version of the capability. */
+static inline wapi_result_t wapi_cap_version(
+    const wapi_io_t* io,
+    wapi_stringview_t name,
+    wapi_version_t* out_version)
+{
+    return io->cap_version(io->impl, name, out_version);
+}
+
+/** Step 3 — current grant state, no prompt. */
+static inline wapi_result_t wapi_cap_query(
+    const wapi_io_t* io,
+    wapi_stringview_t capability,
+    wapi_cap_state_t* out_state)
+{
+    return io->cap_query(io->impl, capability, out_state);
+}
+
+/**
+ * Step 4 — submit a capability grant request.
+ * Completion: result = 0 on grant, -WAPI_ERR_ACCES on deny,
+ *   and the new wapi_cap_state_t is written to *out_state.
+ */
+static inline wapi_result_t wapi_cap_request(
+    const wapi_io_t* io,
+    wapi_stringview_t capability,
+    wapi_cap_state_t* out_state,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_CAP_REQUEST;
+    op.addr       = capability.data;
+    op.len        = capability.length;
+    op.result_ptr = (uint64_t)(uintptr_t)out_state;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /* ============================================================
  * Panic Handler Vtable
@@ -1310,9 +1529,9 @@ const wapi_allocator_t* wapi_allocator_get(void);
  * PART 5 — CAPABILITY DETECTION
  *
  * Capabilities are queried through the wapi_io_t vtable's
- * capability_supported and capability_version function pointers.
- * There is no distinction between "core" and "extension"
- * capabilities.
+ * cap_supported and cap_version function pointers (wrapped by the
+ * wapi_cap_supported / wapi_cap_version helpers). There is no
+ * distinction between "core" and "extension" capabilities.
  *
  * Capability names use dot-separated namespacing:
  *   "wapi.gpu"              - Spec-defined capability
@@ -1324,13 +1543,15 @@ const wapi_allocator_t* wapi_allocator_get(void);
  * Capability Names
  * ============================================================
  * String constants for all spec-defined capabilities.
- * These are the canonical names used with io->capability_supported().
- * Obtain the io vtable via wapi_io_get().
+ * These are the canonical names used with wapi_cap_supported() and
+ * friends. Obtain the io vtable via wapi_io_get().
  */
 
 #define WAPI_CAP_ENV           "wapi.env"
 #define WAPI_CAP_CLOCK         "wapi.clock"
-#define WAPI_CAP_FILESYSTEM    "wapi.filesystem"
+#define WAPI_CAP_FILESYSTEM    "wapi.filesystem"   /* host FS + host fwatch */
+#define WAPI_CAP_SANDBOX       "wapi.sandbox"      /* per-module persistent storage, shared across instances, sandbox fwatch */
+#define WAPI_CAP_CACHE         "wapi.cache"        /* per-instance ephemeral, platform-evictable */
 #define WAPI_CAP_NETWORK       "wapi.network"
 #define WAPI_CAP_GPU           "wapi.gpu"
 #define WAPI_CAP_SURFACE       "wapi.surface"
@@ -1339,7 +1560,8 @@ const wapi_allocator_t* wapi_allocator_get(void);
 #define WAPI_CAP_INPUT         "wapi.input"
 #define WAPI_CAP_AUDIO         "wapi.audio"
 #define WAPI_CAP_CONTENT       "wapi.content"
-#define WAPI_CAP_CLIPBOARD     "wapi.clipboard"
+#define WAPI_CAP_TRANSFER      "wapi.transfer"
+#define WAPI_CAP_SEAT          "wapi.seat"
 #define WAPI_CAP_MODULE        "wapi.module"
 #define WAPI_CAP_FONT          "wapi.font"
 #define WAPI_CAP_VIDEO         "wapi.video"
@@ -1349,7 +1571,6 @@ const wapi_allocator_t* wapi_allocator_get(void);
 #define WAPI_CAP_SPEECH        "wapi.speech"
 #define WAPI_CAP_CRYPTO        "wapi.crypto"
 #define WAPI_CAP_BIOMETRIC     "wapi.biometric"
-#define WAPI_CAP_SHARE         "wapi.share"
 #define WAPI_CAP_KVSTORAGE    "wapi.kvstorage"
 #define WAPI_CAP_PAYMENTS      "wapi.payments"
 #define WAPI_CAP_USB           "wapi.usb"
@@ -1367,6 +1588,26 @@ const wapi_allocator_t* wapi_allocator_get(void);
 #define WAPI_CAP_HTTP          "wapi.http"
 #define WAPI_CAP_COMPRESSION   "wapi.compression"
 #define WAPI_CAP_POWER         "wapi.power"
+#define WAPI_CAP_AUTHN         "wapi.authn"
+#define WAPI_CAP_BIOMETRIC     "wapi.biometric"
+#define WAPI_CAP_BARCODE       "wapi.barcode"
+#define WAPI_CAP_CAMERA        "wapi.camera"
+#define WAPI_CAP_ENCODING      "wapi.encoding"
+#define WAPI_CAP_HAPTICS       "wapi.haptics"
+#define WAPI_CAP_MEDIASESSION  "wapi.mediasession"
+#define WAPI_CAP_MENU          "wapi.menu"
+#define WAPI_CAP_NETWORKINFO   "wapi.networkinfo"
+#define WAPI_CAP_ORIENTATION   "wapi.orientation"
+#define WAPI_CAP_REGISTER      "wapi.register"
+#define WAPI_CAP_SCREENCAPTURE "wapi.screencapture"
+#define WAPI_CAP_SENSORS       "wapi.sensors"
+#define WAPI_CAP_SERIAL        "wapi.serial"
+#define WAPI_CAP_TASKBAR       "wapi.taskbar"
+#define WAPI_CAP_TEXT          "wapi.text"
+#define WAPI_CAP_THEME         "wapi.theme"
+#define WAPI_CAP_TRAY          "wapi.tray"
+#define WAPI_CAP_CODEC         "wapi.codec"
+#define WAPI_CAP_USER          "wapi.user"
 
 /* ============================================================
  * Presets
@@ -1403,7 +1644,7 @@ static const char* const WAPI_PRESET_GRAPHICAL[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
-    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.transfer",
     "wapi.font", "wapi.dialog",
     "wapi.thread", "wapi.process", "wapi.module", NULL
 };
@@ -1412,7 +1653,7 @@ static const char* const WAPI_PRESET_MOBILE[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
-    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.transfer",
     "wapi.font",
     "wapi.thread",
     "wapi.geolocation", "wapi.camera", "wapi.notifications",
@@ -1434,7 +1675,7 @@ static const char* const WAPI_PRESET_MOBILE[] = {
 static inline wapi_bool_t wapi_preset_supported(const wapi_io_t* io,
                                                  const char* const* preset) {
     for (int i = 0; preset[i] != NULL; i++) {
-        if (!io->capability_supported(io->impl, WAPI_STR(preset[i]))) return 0;
+        if (!wapi_cap_supported(io, WAPI_STR(preset[i]))) return 0;
     }
     return 1;
 }
@@ -1790,7 +2031,8 @@ _Static_assert(offsetof(wapi_io_event_t, timestamp) ==  8, "");
 _Static_assert(offsetof(wapi_io_event_t, result)    == 16, "");
 _Static_assert(offsetof(wapi_io_event_t, flags)     == 20, "");
 _Static_assert(offsetof(wapi_io_event_t, user_data) == 24, "");
-_Static_assert(sizeof(wapi_io_event_t) == 32, "wapi_io_event_t must be 32 bytes");
+_Static_assert(offsetof(wapi_io_event_t, payload)   == 32, "");
+_Static_assert(sizeof(wapi_io_event_t) == 128, "wapi_io_event_t must be 128 bytes");
 _Static_assert(_Alignof(wapi_io_event_t) == 8, "wapi_io_event_t must be 8-byte aligned");
 
 /* --- Address-containing structs (layout identical on all platforms) --- */
@@ -1819,17 +2061,19 @@ _Static_assert(offsetof(wapi_allocator_t, realloc_fn) == 12, "");
 _Static_assert(sizeof(wapi_allocator_t) == 16, "wapi_allocator_t must be 16 bytes");
 _Static_assert(_Alignof(wapi_allocator_t) == 4, "wapi_allocator_t must be 4-byte aligned");
 
-/* I/O Vtable (24 bytes, align 4) */
+/* I/O Vtable (44 bytes, align 4) */
 _Static_assert(offsetof(wapi_io_t, impl)                 ==  0, "");
 _Static_assert(offsetof(wapi_io_t, submit)               ==  4, "");
 _Static_assert(offsetof(wapi_io_t, cancel)               ==  8, "");
 _Static_assert(offsetof(wapi_io_t, poll)                 == 12, "");
 _Static_assert(offsetof(wapi_io_t, wait)                 == 16, "");
 _Static_assert(offsetof(wapi_io_t, flush)                == 20, "");
-_Static_assert(offsetof(wapi_io_t, capability_supported) == 24, "");
-_Static_assert(offsetof(wapi_io_t, capability_version)   == 28, "");
-_Static_assert(offsetof(wapi_io_t, perm_query)           == 32, "");
-_Static_assert(sizeof(wapi_io_t) == 36, "wapi_io_t must be 36 bytes");
+_Static_assert(offsetof(wapi_io_t, cap_supported) == 24, "");
+_Static_assert(offsetof(wapi_io_t, cap_version)   == 28, "");
+_Static_assert(offsetof(wapi_io_t, cap_query)     == 32, "");
+_Static_assert(offsetof(wapi_io_t, namespace_register)   == 36, "");
+_Static_assert(offsetof(wapi_io_t, namespace_name)       == 40, "");
+_Static_assert(sizeof(wapi_io_t) == 44, "wapi_io_t must be 44 bytes");
 _Static_assert(_Alignof(wapi_io_t) == 4, "wapi_io_t must be 4-byte aligned");
 
 /* Panic Handler (8 bytes, align 4) */
@@ -1838,14 +2082,17 @@ _Static_assert(offsetof(wapi_panic_handler_t, fn)   == 4, "");
 _Static_assert(sizeof(wapi_panic_handler_t) == 8, "wapi_panic_handler_t must be 8 bytes");
 _Static_assert(_Alignof(wapi_panic_handler_t) == 4, "wapi_panic_handler_t must be 4-byte aligned");
 
-/* Drop Event (32 bytes) */
-_Static_assert(offsetof(wapi_drop_event_t, type)       ==  0, "");
-_Static_assert(offsetof(wapi_drop_event_t, surface_id) ==  4, "");
-_Static_assert(offsetof(wapi_drop_event_t, timestamp)  ==  8, "");
-_Static_assert(offsetof(wapi_drop_event_t, data)       == 16, "");
-_Static_assert(offsetof(wapi_drop_event_t, data_len)   == 24, "");
-_Static_assert(sizeof(wapi_drop_event_t) == 32, "");
-_Static_assert(_Alignof(wapi_drop_event_t) == 8, "");
+/* Transfer Event (40 bytes) */
+_Static_assert(offsetof(wapi_transfer_event_t, type)              ==  0, "");
+_Static_assert(offsetof(wapi_transfer_event_t, surface_id)        ==  4, "");
+_Static_assert(offsetof(wapi_transfer_event_t, timestamp)         ==  8, "");
+_Static_assert(offsetof(wapi_transfer_event_t, pointer_id)        == 16, "");
+_Static_assert(offsetof(wapi_transfer_event_t, x)                 == 20, "");
+_Static_assert(offsetof(wapi_transfer_event_t, y)                 == 24, "");
+_Static_assert(offsetof(wapi_transfer_event_t, item_count)        == 28, "");
+_Static_assert(offsetof(wapi_transfer_event_t, available_actions) == 32, "");
+_Static_assert(sizeof(wapi_transfer_event_t)  == 40, "");
+_Static_assert(_Alignof(wapi_transfer_event_t) == 8, "");
 
 #endif /* __wasm__ */
 

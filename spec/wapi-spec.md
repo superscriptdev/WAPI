@@ -39,7 +39,7 @@ Where WASI and the Component Model aim for language-agnostic composability throu
 
 ### 1.2 Non-Goals
 
-- **Runtime identification as the primary mechanism.** Modules should detect features via capabilities, not branch on platform strings. However, `wapi_env_host_get` provides an escape hatch for the ~10% of cases where platform knowledge is genuinely needed (workarounds, analytics, platform-appropriate UI). Prefer capability queries; use host info as a last resort.
+- **Runtime identification as the primary mechanism.** Modules should detect features via capabilities, not branch on platform strings. However, `wapi_sysinfo_host_get` provides an escape hatch for the ~10% of cases where platform knowledge is genuinely needed (workarounds, analytics, platform-appropriate UI). Prefer capability queries; use host info as a last resort.
 - **Backward-compatible evolution of individual function signatures.** Functions are versioned at the module level. When a function signature must change, a new version of the capability module is introduced.
 - **Replacing webgpu.h.** GPU operations use the standard `webgpu.h` API from the webgpu-native project. The WAPI provides only the bridge between its handle/surface model and the WebGPU API.
 
@@ -203,7 +203,7 @@ Every struct and enum that crosses the ABI uses one of three suffixes. The suffi
 | `_desc_t`  | struct      | caller → platform  | Describes caller intent. Passed to `*_create`, `*_open`, `*_configure`. | `wapi_surface_desc_t`, `wapi_gpu_device_desc_t` |
 | `_info_t`  | struct      | platform → caller  | Static identity/capability. Filled by the platform when the resource is opened and does not change at runtime. Safe to cache. | `wapi_gamepad_info_t`, `wapi_display_info_t`    |
 | `_state_t` | struct      | platform → caller  | Live runtime snapshot. Changes frame-to-frame. Must be re-read. | `wapi_finger_state_t`, `wapi_xr_frame_state_t`  |
-| `_state_t` | **enum**    | value type         | Enumeration of discrete state values. The struct/enum distinction resolves the overload. | `wapi_power_idle_state_t`, `wapi_perm_state_t`  |
+| `_state_t` | **enum**    | value type         | Enumeration of discrete state values. The struct/enum distinction resolves the overload. | `wapi_power_idle_state_t`, `wapi_cap_state_t`  |
 
 **Method naming follows from the suffix:**
 
@@ -458,7 +458,7 @@ The `wapi` namespace provides the two vtable acquisition imports (`io_get`, `all
 | Module               | Description                                    |
 |----------------------|------------------------------------------------|
 | `wapi`               | Vtable acquisition (`io_get`, `allocator_get`), panic reporting |
-| `wapi_env`           | Arguments, environment variables, random bytes, exit |
+| `wapi_env`           | Arguments, environment variables, random bytes, locale, timezone, exit |
 | `wapi_clock`         | Monotonic and wall clocks, performance counter |
 | `wapi_filesystem`    | Capability-based filesystem                    |
 | `wapi_network`       | QUIC/WebTransport networking                   |
@@ -470,7 +470,8 @@ The `wapi` namespace provides the two vtable acquisition imports (`io_get`, `all
 | `wapi_audio`         | Audio playback and recording                   |
 | `wapi_audioplugin`   | Audio plugin hosting (VST-style)               |
 | `wapi_content`       | Host-rendered text, images, media              |
-| `wapi_clipboard`     | System clipboard access                        |
+| `wapi_transfer`      | Unified data transfer (clipboard / DnD / share) |
+| `wapi_seat`          | Seat enumeration (multi-user / multi-pointer)   |
 | `wapi_font`          | Font system queries and enumeration            |
 | `wapi_video`         | Video/media playback                           |
 | `wapi_geolocation`   | GPS / location services                        |
@@ -479,7 +480,6 @@ The `wapi` namespace provides the two vtable acquisition imports (`io_get`, `all
 | `wapi_speech`        | Speech recognition and synthesis               |
 | `wapi_crypto`        | Hardware-accelerated cryptography              |
 | `wapi_biometric`     | Fingerprint, face recognition                  |
-| `wapi_share`         | System share sheet                             |
 | `wapi_kvstorage`     | Persistent key-value storage                   |
 | `wapi_payments`      | In-app purchases / payment processing          |
 | `wapi_usb`           | USB device access                              |
@@ -494,6 +494,30 @@ The `wapi` namespace provides the two vtable acquisition imports (`io_get`, `all
 | `wapi_sysinfo`       | System information queries                     |
 | `wapi_eyedrop`       | Screen color picker                            |
 | `wapi_contacts`      | Contact picker and icon access                 |
+
+### 6.0 Unified Transfer (clipboard / DnD / share)
+
+`wapi_transfer` collapses what other platforms split across three APIs (clipboard, drag-and-drop, share-sheet) into one verb — `offer` — with three **delivery modes** that capture the only thing that actually differs: which user gesture routes the offer to a target, and how long the offer persists.
+
+| Mode | Gesture | Offer lifetime | Target |
+|---|---|---|---|
+| `WAPI_TRANSFER_LATENT` | paste | until replaced | any future reader on the seat |
+| `WAPI_TRANSFER_POINTED` | drop on a surface | drag session | revealed at drop position |
+| `WAPI_TRANSFER_ROUTED` | pick from system sheet | until pick or cancel | revealed by user pick |
+
+`mode` is a **bitmask**: a single `wapi_transfer_offer` call can advertise the same payload in multiple delivery modes simultaneously. A "share this" affordance that *also* fills the clipboard *and* allows dragging is one call with `mode = LATENT|POINTED|ROUTED`.
+
+The target side is symmetric across modes. `wapi_transfer_format_count`, `wapi_transfer_has_format`, and `wapi_transfer_read` each take `(seat, mode)` — `LATENT` reads the clipboard pool, `POINTED` reads the active drag session (valid between `WAPI_EVENT_TRANSFER_ENTER` and `WAPI_EVENT_TRANSFER_LEAVE`). `ROUTED` has no target-side API; the recipient is another app picked by the OS sheet.
+
+POINTED-only in-flight UX (cursor hover, drop-effect feedback) is delivered through `WAPI_EVENT_TRANSFER_*` events carrying `wapi_transfer_event_t`. The drag-side app responds with `wapi_transfer_set_action` during `WAPI_EVENT_TRANSFER_OVER`.
+
+### 6.0.1 Seats
+
+A **seat** is one user's bundle of input devices, display(s), audio, clipboard, and active drag state — the same concept as Wayland's `wl_seat` or Linux logind's seat assignment. On single-user systems there is exactly one seat (`WAPI_SEAT_DEFAULT`). On multi-user-on-one-machine configurations (Linux multi-seat, kiosks, shared-display collaboration tools) each user is a distinct seat.
+
+WAPI models seats as a property of the **device**, not of every event. `wapi_pointer_event_t`, key events, and pen events all already carry a `pointer_id` / `device_id`; `wapi_device_seat(device) → wapi_seat_t` recovers the owning seat on demand. Apps that don't care about seats (the common case) ignore it and pass `WAPI_SEAT_DEFAULT` to outbound transfer ops. Apps that do (multi-user kiosks) attribute events to seats by looking up the device and address per-seat clipboards / share sheets explicitly.
+
+`wapi_seat_count` / `wapi_seat_at` / `wapi_seat_name` enumerate seats. Enumeration is freely available — no capability gate — because it only names what the OS already gave the process. Per-seat *operations* go through the per-capability grants (`wapi.transfer`, etc.).
 
 ### 6.1 Namespace Isolation
 
@@ -559,9 +583,9 @@ typedef struct wapi_io_t {
     int32_t       (*poll)(void* impl, wapi_event_t* event);
     int32_t       (*wait)(void* impl, wapi_event_t* event, int32_t timeout_ms);
     void          (*flush)(void* impl, uint32_t event_type);
-    wapi_bool_t   (*capability_supported)(void* impl, wapi_string_view_t name);
-    wapi_result_t (*capability_version)(void* impl, wapi_string_view_t name, wapi_version_t* ver);
-    wapi_result_t (*perm_query)(void* impl, wapi_string_view_t cap, wapi_perm_state_t* state);
+    wapi_bool_t   (*cap_supported)(void* impl, wapi_string_view_t name);
+    wapi_result_t (*cap_version)(void* impl, wapi_string_view_t name, wapi_version_t* ver);
+    wapi_result_t (*cap_query)(void* impl, wapi_string_view_t cap, wapi_cap_state_t* state);
 } wapi_io_t;
 ```
 
@@ -616,23 +640,35 @@ Offset  Size  Type      Field        Description
 
 ### 7.4 Operation Codes
 
-| Opcode                  | Value | Category    | Description                         |
-|-------------------------|-------|-------------|-------------------------------------|
-| `WAPI_IO_OP_NOP`          |   0   | Control     | No operation (fence)                |
-| `WAPI_IO_OP_READ`         |   1   | Filesystem  | Read from fd into buffer            |
-| `WAPI_IO_OP_WRITE`        |   2   | Filesystem  | Write buffer to fd                  |
-| `WAPI_IO_OP_OPEN`         |   3   | Filesystem  | Open a file                         |
-| `WAPI_IO_OP_CLOSE`        |   4   | Filesystem  | Close a handle                      |
-| `WAPI_IO_OP_STAT`         |   5   | Filesystem  | Stat a file                         |
-| `WAPI_IO_OP_LOG`          |   6   | Core        | Log message (fire-and-forget)       |
-| `WAPI_IO_OP_CONNECT`      |  10   | Network     | Open a connection                   |
-| `WAPI_IO_OP_ACCEPT`       |  11   | Network     | Accept a connection                 |
-| `WAPI_IO_OP_SEND`         |  12   | Network     | Send data                           |
-| `WAPI_IO_OP_RECV`         |  13   | Network     | Receive data                        |
-| `WAPI_IO_OP_TIMEOUT`      |  20   | Timer       | Wait for a duration                 |
-| `WAPI_IO_OP_TIMEOUT_ABS`  |  21   | Timer       | Wait until an absolute time         |
-| `WAPI_IO_OP_AUDIO_WRITE`  |  30   | Audio       | Submit audio samples for playback   |
-| `WAPI_IO_OP_AUDIO_READ`   |  31   | Audio       | Read captured audio samples         |
+Selected opcodes (full enum in `wapi.h`). All values are method-ids in namespace `0x0000`.
+
+| Opcode                            | Value  | Cap                | Description                                  |
+|-----------------------------------|--------|--------------------|----------------------------------------------|
+| `WAPI_IO_OP_NOP`                  | `0x00` | (none)             | No operation (fence)                         |
+| `WAPI_IO_OP_CAP_REQUEST`          | `0x01` | (universal)        | Request grant for a capability by name       |
+| `WAPI_IO_OP_READ`                 | `0x02` | `wapi.filesystem`  | Read from fd into buffer                     |
+| `WAPI_IO_OP_WRITE`                | `0x03` | `wapi.filesystem`  | Write buffer to fd                           |
+| `WAPI_IO_OP_OPEN`                 | `0x04` | `wapi.filesystem`  | Open a host-fs file                          |
+| `WAPI_IO_OP_CLOSE`                | `0x05` | `wapi.filesystem`  | Close a handle                               |
+| `WAPI_IO_OP_STAT`                 | `0x06` | `wapi.filesystem`  | Stat a file                                  |
+| `WAPI_IO_OP_LOG`                  | `0x07` | `wapi.log`         | Log message (fire-and-forget)                |
+| `WAPI_IO_OP_FWATCH_ADD`           | `0x08` | `wapi.filesystem`  | Watch a host-fs path                         |
+| `WAPI_IO_OP_FWATCH_REMOVE`        | `0x09` | `wapi.filesystem`  | Stop a host-fs watch                         |
+| `WAPI_IO_OP_CONNECT`              | `0x0A` | `wapi.network`     | Open a connection                            |
+| `WAPI_IO_OP_ACCEPT`               | `0x0B` | `wapi.network`     | Accept a connection                          |
+| `WAPI_IO_OP_SEND`                 | `0x0C` | `wapi.network`     | Send data                                    |
+| `WAPI_IO_OP_RECV`                 | `0x0D` | `wapi.network`     | Receive data                                 |
+| `WAPI_IO_OP_NETWORK_LISTEN`       | `0x0E` | `wapi.network`     | Listen for connections                       |
+| `WAPI_IO_OP_NETWORK_CHANNEL_OPEN` | `0x0F` | `wapi.network`     | Open a channel on a multiplexed conn         |
+| `WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT`| `0x10` | `wapi.network`    | Accept an inbound channel                    |
+| `WAPI_IO_OP_NETWORK_RESOLVE`      | `0x11` | `wapi.network`     | DNS resolve                                  |
+| `WAPI_IO_OP_TIMEOUT`              | `0x14` | `wapi.clock`       | Wait for a duration                          |
+| `WAPI_IO_OP_TIMEOUT_ABS`          | `0x15` | `wapi.clock`       | Wait until an absolute time                  |
+| `WAPI_IO_OP_AUDIO_WRITE`          | `0x1E` | `wapi.audio`       | Submit audio samples for playback            |
+| `WAPI_IO_OP_AUDIO_READ`           | `0x1F` | `wapi.audio`       | Read captured audio samples                  |
+| `WAPI_IO_OP_SANDBOX_OPEN`         |`0x2A0` | `wapi.sandbox`     | Open a sandbox-fs file (module-scoped)       |
+| `WAPI_IO_OP_SANDBOX_FWATCH_ADD`   |`0x2A3` | `wapi.sandbox`     | Watch a sandbox-fs path                      |
+| `WAPI_IO_OP_CACHE_OPEN`           |`0x2B0` | `wapi.cache`       | Open a cache-fs file (instance-scoped)       |
 
 **`WAPI_IO_OP_LOG` field mapping:**
 
@@ -752,7 +788,7 @@ wapi_result_t wapi_main(void) {
     const wapi_io_t* io = wapi_io_get();
     const wapi_allocator_t* alloc = wapi_allocator_get();
 
-    if (io->capability_supported(io->impl, WAPI_STR(WAPI_CAP_GPU))) {
+    if (wapi_cap_supported(io, WAPI_STR(WAPI_CAP_GPU))) {
         /* Request GPU device, create surfaces, etc. */
     }
 
@@ -764,7 +800,7 @@ wapi_result_t wapi_main(void) {
 Every module — top-level or child — is written identically:
 
 1. Call `wapi_io_get()` and `wapi_allocator_get()` for module-owned vtables.
-2. Query capabilities via `io->capability_supported()`.
+2. Query capabilities via `wapi_cap_supported()` (wrapping `io->cap_supported()`).
 3. For headless applications: perform work and return `WAPI_OK` to exit.
 4. For graphical applications: create surfaces, request GPU device, and return `WAPI_OK` to begin the frame loop.
 5. Pass vtables explicitly to libraries that need I/O or allocation.
@@ -813,7 +849,9 @@ If the module does not export `wapi_frame`, the host does not enter a frame loop
 
 ### 9.1 Unified Capability Model
 
-All capabilities, whether foundational (memory, filesystem) or specialized (geolocation, camera), use a single, unified query mechanism. There is no distinction between "core" and "extension" capabilities. This follows the **Vulkan model**: query at startup by string name, use only if the host reports support. Each capability is independently versioned.
+All capabilities — foundational (memory, filesystem, clock) or specialized (geolocation, camera, bluetooth) — use a single, unified lifecycle: **check support → query state → request → use**. There is no distinction between "core" and "extension" capabilities, and there are no "free" capabilities that bypass the grant flow.
+
+Every capability, including the ones that look ambient, routes grant acquisition through the same `WAPI_IO_OP_CAP_REQUEST` opcode with its capability name. Whether that translates to a user-visible prompt, an auto-grant, or an auto-deny is a platform decision. On browser hosts `wapi.clock` auto-grants silently; on an enterprise-managed VM `wapi.network` might auto-deny; on a phone `wapi.geolocation` shows the system prompt. The module's code is identical across all three because the flow is one rubric, not per-capability specialization.
 
 Capability names are **dot-separated strings** following a hierarchical namespace:
 
@@ -822,29 +860,31 @@ wapi.<module>          Spec-defined capabilities
 vendor.<name>.*      Vendor-specific capabilities
 ```
 
+The `WAPI_IO_OP_CAP_REQUEST` opcode is the single grant-request surface. Do not introduce capability-specific grant opcodes — every caller, for every capability, submits `WAPI_IO_OP_CAP_REQUEST` with its capability name and lets the platform decide.
+
 ### 9.2 Capability Check and Request Flow
 
-Capability queries go through the `wapi_io_t` vtable's `capability_supported`, `capability_version`, and `perm_query` function pointers. Using a capability involves up to three steps, depending on whether the capability requires user permission:
+Capability queries go through the `wapi_io_t` vtable's `cap_supported`, `cap_version`, and `cap_query` function pointers, wrapped by inline helpers `wapi_cap_supported` / `wapi_cap_version` / `wapi_cap_query` declared in `wapi.h`. Using a capability involves up to three steps, depending on whether the capability requires user grant:
 
-**Step 1 — Check support.** The module calls `io->capability_supported()` to determine whether the host provides a capability at all. If the host does not support it, the capability is permanently unavailable — there is nothing to request.
+**Step 1 — Check support.** The module calls `wapi_cap_supported()` to determine whether the host provides a capability at all. If the host does not support it, the capability is permanently unavailable — there is nothing to request.
 
-**Step 2 — Query permission state.** For capabilities that require user consent (geolocation, camera, notifications, etc.), the module calls `io->perm_query()` to check the current permission state without triggering a prompt. The result is one of:
+**Step 2 — Query grant state.** For capabilities that require user consent (geolocation, camera, notifications, etc.), the module calls `wapi_cap_query()` to check the current grant state without triggering a prompt. The result is one of:
 
-| State               | Value | Meaning                                                  |
-|---------------------|-------|----------------------------------------------------------|
-| `WAPI_PERM_GRANTED` |   0   | Permission granted — the module may use the capability   |
-| `WAPI_PERM_DENIED`  |   1   | Permission denied — do not prompt again                  |
-| `WAPI_PERM_PROMPT`  |   2   | Permission not yet requested — prompting is possible     |
+| State              | Value | Meaning                                                  |
+|--------------------|-------|----------------------------------------------------------|
+| `WAPI_CAP_GRANTED` |   0   | Capability granted — the module may use it               |
+| `WAPI_CAP_DENIED`  |   1   | Capability denied — do not prompt again                  |
+| `WAPI_CAP_PROMPT`  |   2   | Not yet requested — prompting is possible                |
 
-**Step 3 — Request permission.** If the state is `WAPI_PERM_PROMPT`, the module submits a `WAPI_IO_OP_PERM_REQUEST` operation through `io->submit()`. This is an async I/O operation — the host may show a platform-native permission dialog. The completion event writes the resulting `wapi_perm_state_t` to `result_ptr`.
+**Step 3 — Request grant.** If the state is `WAPI_CAP_PROMPT`, the module calls `wapi_cap_request()` (which submits a `WAPI_IO_OP_CAP_REQUEST` via `io->submit()`). This is an async I/O operation — the host may show a platform-native permission dialog. The completion event writes the resulting `wapi_cap_state_t` to `result_ptr`.
 
 ```
-WAPI_IO_OP_PERM_REQUEST (0x190):
+WAPI_IO_OP_CAP_REQUEST (0x01):
   addr/len   = capability name string (e.g., "wapi.geolocation")
-  result_ptr = pointer to wapi_perm_state_t (written on completion)
+  result_ptr = pointer to wapi_cap_state_t (written on completion)
 ```
 
-Not all capabilities require permissions. Foundational capabilities like memory, clock, and I/O are available immediately after `io->capability_supported()` returns true. Capabilities that access sensitive resources (location, camera, microphone, contacts, notifications) typically require a permission grant. The host decides which capabilities are gated — the module should always check.
+Not all capabilities require an explicit user grant. Foundational capabilities like memory, clock, and I/O auto-grant immediately after `wapi_cap_supported()` returns true. Capabilities that access sensitive resources (location, camera, microphone, contacts, notifications) typically require a grant. The host decides which capabilities are gated — the module should always check.
 
 **Complete example:**
 
@@ -852,51 +892,49 @@ Not all capabilities require permissions. Foundational capabilities like memory,
 const wapi_io_t* io = wapi_io_get();
 
 /* 1. Check if the host supports geolocation at all */
-if (!io->capability_supported(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION))) {
+if (!wapi_cap_supported(io, WAPI_STR(WAPI_CAP_GEOLOCATION))) {
     /* Not available on this host — fall back or skip */
     return;
 }
 
-/* 2. Query current permission state (no prompt) */
-wapi_perm_state_t state;
-io->perm_query(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION), &state);
+/* 2. Query current grant state (no prompt) */
+wapi_cap_state_t state;
+wapi_cap_query(io, WAPI_STR(WAPI_CAP_GEOLOCATION), &state);
 
-if (state == WAPI_PERM_DENIED) {
+if (state == WAPI_CAP_DENIED) {
     /* User previously denied — respect the decision */
     return;
 }
 
-if (state == WAPI_PERM_PROMPT) {
-    /* 3. Request permission (async — triggers platform prompt) */
-    wapi_io_op_t op = {0};
-    op.opcode     = WAPI_IO_OP_PERM_REQUEST;
-    op.addr       = (uint64_t)(uintptr_t)WAPI_CAP_GEOLOCATION;
-    op.len        = sizeof(WAPI_CAP_GEOLOCATION) - 1;
-    op.result_ptr = (uint64_t)(uintptr_t)&state;
-    op.user_data  = MY_PERM_REQUEST_TAG;
-    io->submit(io->impl, &op, 1);
+if (state == WAPI_CAP_PROMPT) {
+    /* 3. Request grant (async — triggers platform prompt) */
+    wapi_cap_request(io, WAPI_STR(WAPI_CAP_GEOLOCATION),
+                     &state, MY_CAP_REQUEST_TAG);
     /* Handle the completion event in the poll loop */
     return;
 }
 
-/* state == WAPI_PERM_GRANTED — use the capability */
+/* state == WAPI_CAP_GRANTED — use the capability */
 ```
 
 ### 9.3 Capability Query API
 
-Capability queries are function pointers on the `wapi_io_t` vtable. String parameters use `wapi_string_view_t` (a 16-byte struct with `uint64_t data` and `uint64_t length`).
+Capability queries are function pointers on the `wapi_io_t` vtable, wrapped by inline helpers in `wapi.h`. String parameters use `wapi_string_view_t` (a 16-byte struct with `uint64_t data` and `uint64_t length`).
 
 ```c
 const wapi_io_t* io = wapi_io_get();
 
 /* Check if a capability is supported by name. Returns WAPI_TRUE/WAPI_FALSE. */
-io->capability_supported(io->impl, name);
+wapi_cap_supported(io, name);
 
 /* Get the version of a supported capability. */
-io->capability_version(io->impl, name, &version);
+wapi_cap_version(io, name, &version);
 
-/* Query permission state for a capability (no prompt). */
-io->perm_query(io->impl, capability, &state);
+/* Query grant state for a capability (no prompt). */
+wapi_cap_query(io, capability, &state);
+
+/* Submit a grant request (async). */
+wapi_cap_request(io, capability, &state, user_data);
 ```
 
 ### 9.4 Spec-Defined Capability Names
@@ -917,7 +955,8 @@ The following capability names are defined by the spec. Each has a corresponding
 | `wapi.audio`             | `WAPI_CAP_AUDIO`           | Audio playback and recording                   |
 | `wapi.audioplugin`       | `WAPI_CAP_AUDIO_PLUGIN`    | Audio plugin hosting (VST-style)               |
 | `wapi.content`           | `WAPI_CAP_CONTENT`         | Host-rendered text, images, media              |
-| `wapi.clipboard`         | `WAPI_CAP_CLIPBOARD`       | System clipboard access                        |
+| `wapi.transfer`          | `WAPI_CAP_TRANSFER`        | Unified clipboard / DnD / share                |
+| `wapi.seat`              | `WAPI_CAP_SEAT`            | Seat enumeration (no permission required)      |
 | `wapi.font`              | `WAPI_CAP_FONT`            | Font system queries and enumeration            |
 | `wapi.video`             | `WAPI_CAP_VIDEO`           | Video/media playback                           |
 | `wapi.geolocation`       | `WAPI_CAP_GEOLOCATION`     | GPS / location services                        |
@@ -926,7 +965,6 @@ The following capability names are defined by the spec. Each has a corresponding
 | `wapi.speech`            | `WAPI_CAP_SPEECH`          | Speech recognition and synthesis               |
 | `wapi.crypto`            | `WAPI_CAP_CRYPTO`          | Hardware-accelerated cryptography              |
 | `wapi.biometric`         | `WAPI_CAP_BIOMETRIC`       | Fingerprint, face recognition                  |
-| `wapi.share`             | `WAPI_CAP_SHARE`           | System share sheet                             |
 | `wapi.kvstorage`         | `WAPI_CAP_KV_STORAGE`      | Persistent key-value storage                   |
 | `wapi.payments`          | `WAPI_CAP_PAYMENTS`        | In-app purchases / payment processing          |
 | `wapi.usb`               | `WAPI_CAP_USB`             | USB device access                              |
@@ -943,6 +981,7 @@ The following capability names are defined by the spec. Each has a corresponding
 | `wapi.contacts`          | `WAPI_CAP_CONTACTS`        | Contact picker and icon access                 |
 | `wapi.http`              | `WAPI_CAP_HTTP`            | One-shot HTTP requests (`WAPI_IO_OP_HTTP_FETCH`) |
 | `wapi.compression`       | `WAPI_CAP_COMPRESSION`     | Compression / decompression (`WAPI_IO_OP_COMPRESS_PROCESS`) |
+| `wapi.user`              | `WAPI_CAP_USER`            | Current-user identity (login / display / email / UPN / id / avatar) |
 
 ### 9.5 Vendor Capabilities
 
@@ -952,7 +991,7 @@ Vendors may define custom capabilities using the `vendor.<vendor_name>.*` namesp
 - `vendor.apple.pencil` Apple Pencil force/tilt data
 - `vendor.valve.steamdeck` Steam Deck-specific features
 
-Vendor capabilities use the same `io->capability_supported()` / `io->capability_version()` query mechanism. Hosts MUST ignore vendor capability queries they do not recognize (returning false from `capability_supported`).
+Vendor capabilities use the same `wapi_cap_supported()` / `wapi_cap_version()` query mechanism. Hosts MUST ignore vendor capability queries they do not recognize (returning false from `cap_supported`).
 
 **Constraints on vendor capabilities:**
 
@@ -962,18 +1001,66 @@ Vendor capabilities use the same `io->capability_supported()` / `io->capability_
 
 ### 9.6 Capability Versioning
 
-Each capability reports its own version via `io->capability_version()`. This allows the module to detect the specific feature level within a capability:
+Each capability reports its own version via `wapi_cap_version()`. This allows the module to detect the specific feature level within a capability:
 
 ```c
 const wapi_io_t* io = wapi_io_get();
 wapi_version_t v;
-if (io->capability_supported(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION))) {
-    io->capability_version(io->impl, WAPI_STR(WAPI_CAP_GEOLOCATION), &v);
+if (wapi_cap_supported(io, WAPI_STR(WAPI_CAP_GEOLOCATION))) {
+    wapi_cap_version(io, WAPI_STR(WAPI_CAP_GEOLOCATION), &v);
     /* v.major, v.minor, v.patch */
 }
 ```
 
-### 9.7 Presets
+### 9.7 Opcode Encoding and Namespace Registration
+
+IO opcodes passed to `wapi_io_t::submit` are packed `(namespace_id:u16 << 16) | method_id:u16`. The encoding is a strict partition of the 32-bit opcode space:
+
+| Namespace range    | Assignment                                               |
+|--------------------|----------------------------------------------------------|
+| `0x0000`           | Every first-party spec-defined capability — file, network, timers, audio, crypto, transfer, barcode, power, sensor, notify, font, sandbox, cache, etc. Low 16 bits are the method-id; the spec carves the method-id space into per-capability sub-ranges (see `wapi.h`). All ops gate through the same grant lifecycle (§9.4); namespace `0x0000` is an opcode-layout artifact, **not** a privilege tier. |
+| `0x0001 – 0xFFFF`  | Vendor extensions. Dynamically registered per session via `wapi_io_t::namespace_register`. Not assigned by the spec; minted by the host on demand. Modules agree on **names** (DNS-style, `"com.acme.ml"`), never on numeric ids. |
+
+Unknown opcode is a **runtime error, not a trap**: `submit` accepts any opcode; completion fires with `result = WAPI_ERR_NOSYS` and `flags |= WAPI_IO_CQE_F_NOSYS`. This lets a host register handlers lazily and lets vendor opcodes submitted on a host that doesn't understand them produce diagnosable completions instead of crashing.
+
+**Vendor registration.** Two new methods on `wapi_io_t`:
+
+```c
+wapi_result_t (*namespace_register)(void* impl, wapi_stringview_t name,
+                                    uint16_t* out_id);
+wapi_result_t (*namespace_name)(void* impl, uint16_t id,
+                                char* buf, wapi_size_t buf_len,
+                                wapi_size_t* name_len);
+```
+
+Modules call `namespace_register` at init with a DNS-style name (`"com.acme.ml"`), cache the returned id, and compose opcodes with `WAPI_NS(id, method)`. The id is stable for the lifetime of the vtable impl: registering the same name twice returns the same id. Two modules loaded against the same host vtable and registering the same name receive the same id — the host's registry is the single source of truth.
+
+**Modules never hardcode vendor namespace ids.** They agree on **names**. A vendor publishes a namespace-name plus per-method contract (method number, op-descriptor field semantics, result shape), the same way the core spec documents namespace `0x0000`. No central coordination, no allocation policy, no registry operator — the DNS name is the identifier, and two companies owning the same name is as impossible as two companies owning `acme.com`.
+
+**Sandbox isolation.** Sandbox vtables (§7.8) MUST return `WAPI_ERR_NOTCAPABLE` from `namespace_register` and `namespace_name`. A child module gains vendor-opcode access only via a caller-supplied wrapped vtable its parent explicitly hands in (§10.7).
+
+### 9.8 Inline Result Payload
+
+The I/O completion event `wapi_io_event_t` reserves 96 bytes after the correlation fields for **inline result payload**. When a host sets `WAPI_IO_CQE_F_INLINE` in `flags`, the full operation result has been written to `payload[0..95]` — the module does not need to pre-allocate an output buffer or dereference `result_ptr` for that op.
+
+Inlineability is decided per-opcode at spec time. Results that fit (up to 96 bytes) inline; larger results (HTTP bodies, file reads) still flow through `result_ptr`.
+
+Known inline payload layouts:
+
+| Opcode                                | `payload` bytes                                     |
+|---------------------------------------|-----------------------------------------------------|
+| `WAPI_IO_OP_CAP_REQUEST`              | `0..3` = `wapi_cap_state_t` (u32)                   |
+| `WAPI_IO_OP_EYEDROPPER_PICK`          | `0..3` = RGBA u32                                   |
+| `WAPI_IO_OP_DIALOG_PICK_COLOR`        | `0..3` = RGBA u32                                   |
+| `WAPI_IO_OP_DIALOG_MESSAGEBOX`        | `0..3` = button id (u32)                            |
+| `WAPI_IO_OP_GEO_POSITION_GET`         | `0..47` = `wapi_geo_position_t`                     |
+| `WAPI_IO_OP_CRYPTO_HASH`              | `0..(digest_len-1)` = digest bytes; `result` = len  |
+| `WAPI_IO_OP_CRYPTO_SIGN`              | up to 64B = signature; `result` = len               |
+| `WAPI_IO_OP_CRYPTO_VERIFY`            | `result` = 1 valid / 0 invalid; no payload          |
+| `WAPI_IO_OP_XR_HIT_TEST`              | `0..27` = `wapi_xr_pose_t`                          |
+| `WAPI_IO_OP_POWER_INFO_GET`           | `0..15` = `wapi_power_info_t`                       |
+
+### 9.9 Presets
 
 Presets are convenience arrays of capability name strings that give developers a stable target. A host claims conformance to a preset by supporting all capabilities in the array. Presets are not exclusive; a host may support additional capabilities beyond its preset.
 
@@ -1006,7 +1093,7 @@ static const char* const WAPI_PRESET_GRAPHICAL[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
-    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.transfer",
     "wapi.font", "wapi.dialog",
     "wapi.thread", "wapi.process", "wapi.module", NULL
 };
@@ -1015,7 +1102,7 @@ static const char* const WAPI_PRESET_MOBILE[] = {
     "wapi.env", "wapi.clock", "wapi.filesystem", "wapi.network",
     "wapi.sysinfo", "wapi.crypto",
     "wapi.gpu", "wapi.surface", "wapi.window", "wapi.display",
-    "wapi.input", "wapi.audio", "wapi.content", "wapi.clipboard",
+    "wapi.input", "wapi.audio", "wapi.content", "wapi.transfer",
     "wapi.font",
     "wapi.thread",
     "wapi.geolocation", "wapi.camera", "wapi.notifications",
@@ -1031,8 +1118,8 @@ static const char* const WAPI_PRESET_MOBILE[] = {
 | **Headless** | env, clock, filesystem, network, sysinfo, crypto, thread, sync, process, module | Servers, CLI tools, edge functions |
 | **Compute**  | Headless + gpu                                | ML inference, video transcoding, simulations |
 | **Audio**    | env, clock, filesystem, audio, thread, sync, module | VST plugins, audio processing, voice |
-| **Graphical**| Headless + gpu, surface, window, display, input, audio, content, clipboard, font, dialog | Apps, games, creative tools |
-| **Mobile**   | Headless + gpu, surface, window, display, input, audio, content, clipboard, font, geolocation, camera, notifications, sensors, biometric | Mobile apps |
+| **Graphical**| Headless + gpu, surface, window, display, input, audio, content, transfer, font, dialog | Apps, games, creative tools |
+| **Mobile**   | Headless + gpu, surface, window, display, input, audio, content, transfer, font, geolocation, camera, notifications, sensors, biometric | Mobile apps |
 
 **Checking preset conformance:**
 
@@ -1042,7 +1129,7 @@ The `wapi_preset_supported` inline helper iterates the preset array and checks e
 static inline wapi_bool_t wapi_preset_supported(const wapi_io_t* io,
                                                  const char* const* preset) {
     for (int i = 0; preset[i] != NULL; i++) {
-        if (!io->capability_supported(io->impl, WAPI_STR(preset[i]))) return 0;
+        if (!wapi_cap_supported(io, WAPI_STR(preset[i]))) return 0;
     }
     return 1;
 }
@@ -1061,7 +1148,7 @@ if (wapi_preset_supported(io, WAPI_PRESET_GRAPHICAL)) {
 
 ## 10. Module Linking
 
-Runtime module linking is a capability (`wapi.module`). Query availability via `io->capability_supported(io->impl, WAPI_STR("wapi.module"))` before using any `wapi_module_*` imports. Not all hosts support runtime linking — minimal or embedded runtimes may omit it.
+Runtime module linking is a capability (`wapi.module`). Query availability via `wapi_cap_supported(io, WAPI_STR("wapi.module"))` before using any `wapi_module_*` imports. Not all hosts support runtime linking — minimal or embedded runtimes may omit it.
 
 ### 10.1 Hybrid Memory Model
 
@@ -1282,7 +1369,8 @@ In the browser, a JavaScript shim implements the WAPI against Web APIs. The shim
 | `wapi_input`        | DOM events (`keydown`, `mousemove`, `pointerdown`, `gamepadconnected`) |
 | `wapi_audio`        | Web Audio API (`AudioContext`, `AudioWorklet`)               |
 | `wapi_content`      | DOM overlay elements, Canvas 2D, `OffscreenCanvas`           |
-| `wapi_clipboard`    | Clipboard API (`navigator.clipboard`)                        |
+| `wapi_transfer`     | Clipboard API + DataTransfer + Web Share API                 |
+| `wapi_seat`         | (browser is single-seat: `count==1`, `name=="default"`)      |
 | `wapi_font`         | CSS Font Loading API, `document.fonts`                       |
 | `wapi_video`        | `<video>` element, Media Source Extensions                   |
 | `wapi_geolocation`  | Geolocation API (`navigator.geolocation`)                    |

@@ -48,6 +48,7 @@
     const WAPI_ERR_AGAIN      = -11;
     const WAPI_ERR_OVERFLOW   = -12;
     const WAPI_ERR_IO         = -5;
+    const WAPI_ERR_NOTCAPABLE = -24;  // §7.8: sandbox vtables deny capability extension
     const WAPI_ERR_RANGE      = -14;
 
     const WAPI_STRLEN         = 0xFFFFFFFF;
@@ -518,11 +519,11 @@
         // ---- Import modules -----------------------------------------------
 
         const wapi = {
-            capability_supported(svPtr) {
+            cap_supported(svPtr) {
                 const name = readStringView(svPtr);
                 return name && supportedCaps.includes(name) ? 1 : 0;
             },
-            capability_version(svPtr, versionPtr) {
+            cap_version(svPtr, versionPtr) {
                 const name = readStringView(svPtr);
                 if (!name || !supportedCaps.includes(name)) {
                     writeU32(versionPtr, 0);
@@ -535,10 +536,10 @@
                 state._dv.setUint16(versionPtr + 6, 0, true);
                 return WAPI_OK;
             },
-            capability_count() {
+            cap_count() {
                 return supportedCaps.length;
             },
-            capability_name(index, bufPtr, bufLen, nameLenPtr) {
+            cap_name(index, bufPtr, bufLen, nameLenPtr) {
                 if (index < 0 || index >= supportedCaps.length) return WAPI_ERR_OVERFLOW;
                 refreshViews();
                 const written = writeString(bufPtr, Number(bufLen), supportedCaps[index]);
@@ -569,7 +570,7 @@
                     return 0;
                 }
                 const base = table.length;
-                table.grow(8);
+                table.grow(10);
                 table.set(base + 0, makeWasmFunc(['i32', 'i32', 'i64'], ['i32'],
                     (_impl, opsPtr, count) => wapi_io.submit(opsPtr, Number(count))));
                 table.set(base + 1, makeWasmFunc(['i32', 'i64'], ['i32'],
@@ -581,13 +582,21 @@
                 table.set(base + 4, makeWasmFunc(['i32', 'i32'], [],
                     (_impl, et) => wapi_io.flush(et)));
                 table.set(base + 5, makeWasmFunc(['i32', 'i32'], ['i32'],
-                    (_impl, svPtr) => wapi.capability_supported(svPtr)));
+                    (_impl, svPtr) => wapi.cap_supported(svPtr)));
                 table.set(base + 6, makeWasmFunc(['i32', 'i32', 'i32'], ['i32'],
-                    (_impl, svPtr, vp) => wapi.capability_version(svPtr, vp)));
+                    (_impl, svPtr, vp) => wapi.cap_version(svPtr, vp)));
                 table.set(base + 7, makeWasmFunc(['i32', 'i32', 'i32'], ['i32'],
                     (_impl, _sv, sp) => { writeU32(sp, 0); return WAPI_ERR_NOTSUP; }));
+                // namespace_register — sandbox vtable DENIES by spec §7.8.
+                // Services in the SW host cannot extend the opcode surface;
+                // vendor opcode access is a parent-module decision.
+                table.set(base + 8, makeWasmFunc(['i32', 'i32', 'i32'], ['i32'],
+                    (_impl, _sv, _outId) => WAPI_ERR_NOTCAPABLE));
+                // namespace_name — same: no registry, nothing to look up.
+                table.set(base + 9, makeWasmFunc(['i32', 'i32', 'i32', 'i64', 'i32'], ['i32'],
+                    (_impl, _id, _buf, _len, _outLen) => WAPI_ERR_NOTCAPABLE));
 
-                const ptr = hostAlloc(36, 4);
+                const ptr = hostAlloc(44, 4);
                 if (!ptr) return 0;
                 refreshViews();
                 state._dv.setUint32(ptr + 0,  0,        true);
@@ -599,6 +608,8 @@
                 state._dv.setUint32(ptr + 24, base + 5, true);
                 state._dv.setUint32(ptr + 28, base + 6, true);
                 state._dv.setUint32(ptr + 32, base + 7, true);
+                state._dv.setUint32(ptr + 36, base + 8, true);
+                state._dv.setUint32(ptr + 40, base + 9, true);
                 state._ioVtablePtr = ptr;
                 return ptr;
             },

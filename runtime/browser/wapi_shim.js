@@ -8,10 +8,10 @@
  *
  * This file implements every import module defined by the WAPI ABI headers:
  *   wapi, wapi_env, wapi_memory, wapi_io, wapi_clock, wapi_fs,
- *   wapi_gpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_clipboard,
- *   wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
+ *   wapi_gpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_transfer,
+ *   wapi_seat, wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
  *   wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
- *   wapi_share, wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr
+ *   wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr
  */
 
 // ---------------------------------------------------------------------------
@@ -55,6 +55,11 @@ const WAPI_STDERR = 3;
 const WAPI_STRLEN = 0xFFFFFFFF;          // 32-bit sentinel for _readString
 const WAPI_STRLEN64 = 0xFFFFFFFFFFFFFFFFn; // 64-bit sentinel in wapi_string_view_t
 
+// Singleton TextDecoder/TextEncoder. Constructing these is non-trivial and
+// they're called many times per frame from the GPU and string-IO paths.
+const WAPI_TEXT_DECODER = new TextDecoder();
+const WAPI_TEXT_ENCODER = new TextEncoder();
+
 // (Capability constants removed -- now using string-based capability names)
 
 // Clock IDs
@@ -78,13 +83,14 @@ const WAPI_WHENCE_CUR = 1;
 const WAPI_WHENCE_END = 2;
 
 // I/O opcodes
-const WAPI_IO_OP_NOP         = 0;
-const WAPI_IO_OP_READ        = 1;
-const WAPI_IO_OP_WRITE       = 2;
-const WAPI_IO_OP_OPEN        = 3;
-const WAPI_IO_OP_CLOSE       = 4;
-const WAPI_IO_OP_STAT        = 5;
-const WAPI_IO_OP_LOG         = 6;
+const WAPI_IO_OP_NOP         = 0x00;
+const WAPI_IO_OP_CAP_REQUEST = 0x01;
+const WAPI_IO_OP_READ        = 0x02;
+const WAPI_IO_OP_WRITE       = 0x03;
+const WAPI_IO_OP_OPEN        = 0x04;
+const WAPI_IO_OP_CLOSE       = 0x05;
+const WAPI_IO_OP_STAT        = 0x06;
+const WAPI_IO_OP_LOG         = 0x07;
 const WAPI_IO_OP_CONNECT     = 10;
 const WAPI_IO_OP_ACCEPT      = 11;
 const WAPI_IO_OP_SEND        = 12;
@@ -94,10 +100,97 @@ const WAPI_IO_OP_TIMEOUT_ABS = 21;
 const WAPI_IO_OP_HTTP_FETCH               = 0x060;
 const WAPI_IO_OP_COMPRESS_PROCESS         = 0x140;
 const WAPI_IO_OP_FONT_GET_BYTES           = 0x150;
-const WAPI_IO_OP_NETWORK_LISTEN           = 0x040;
-const WAPI_IO_OP_NETWORK_CHANNEL_OPEN     = 0x043;
-const WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT   = 0x044;
-const WAPI_IO_OP_NETWORK_RESOLVE          = 0x045;
+const WAPI_IO_OP_NETWORK_LISTEN           = 0x0E;
+const WAPI_IO_OP_NETWORK_CHANNEL_OPEN     = 0x0F;
+const WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT   = 0x10;
+const WAPI_IO_OP_NETWORK_RESOLVE          = 0x11;
+
+// Core opcodes (namespace 0x0000) — mirror wapi.h's enum values.
+const WAPI_IO_OP_SERIAL_PORT_REQUEST      = 0x080;
+const WAPI_IO_OP_SERIAL_OPEN              = 0x081;
+const WAPI_IO_OP_SERIAL_READ              = 0x082;
+const WAPI_IO_OP_SERIAL_WRITE             = 0x083;
+const WAPI_IO_OP_MIDI_ACCESS_REQUEST      = 0x090;
+const WAPI_IO_OP_MIDI_PORT_OPEN           = 0x091;
+const WAPI_IO_OP_MIDI_SEND                = 0x092;
+const WAPI_IO_OP_MIDI_RECV                = 0x093;
+const WAPI_IO_OP_BT_DEVICE_REQUEST        = 0x0A0;
+const WAPI_IO_OP_BT_CONNECT               = 0x0A1;
+const WAPI_IO_OP_BT_VALUE_READ            = 0x0A2;
+const WAPI_IO_OP_BT_VALUE_WRITE           = 0x0A3;
+const WAPI_IO_OP_BT_NOTIFICATIONS_START   = 0x0A4;
+const WAPI_IO_OP_BT_SERVICE_GET           = 0x0A5;
+const WAPI_IO_OP_BT_CHARACTERISTIC_GET    = 0x0A6;
+const WAPI_IO_OP_USB_DEVICE_REQUEST       = 0x0B0;
+const WAPI_IO_OP_USB_OPEN                 = 0x0B1;
+const WAPI_IO_OP_USB_INTERFACE_CLAIM      = 0x0B2;
+const WAPI_IO_OP_USB_TRANSFER_IN          = 0x0B3;
+const WAPI_IO_OP_USB_TRANSFER_OUT         = 0x0B4;
+const WAPI_IO_OP_USB_CONTROL_TRANSFER     = 0x0B5;
+const WAPI_IO_OP_NFC_SCAN_START           = 0x0C0;
+const WAPI_IO_OP_NFC_WRITE                = 0x0C1;
+const WAPI_IO_OP_CAMERA_OPEN              = 0x0D0;
+const WAPI_IO_OP_CAMERA_FRAME_READ        = 0x0D1;
+const WAPI_IO_OP_CODEC_DECODE             = 0x100;
+const WAPI_IO_OP_CODEC_ENCODE             = 0x101;
+const WAPI_IO_OP_CODEC_OUTPUT_GET         = 0x102;
+const WAPI_IO_OP_CODEC_FLUSH              = 0x103;
+const WAPI_IO_OP_VIDEO_CREATE             = 0x110;
+const WAPI_IO_OP_VIDEO_SEEK               = 0x111;
+const WAPI_IO_OP_SPEECH_SPEAK             = 0x120;
+const WAPI_IO_OP_SPEECH_RECOGNIZE_START   = 0x121;
+const WAPI_IO_OP_SPEECH_RECOGNIZE_RESULT  = 0x122;
+const WAPI_IO_OP_CAPTURE_REQUEST          = 0x130;
+const WAPI_IO_OP_CAPTURE_FRAME_GET        = 0x131;
+const WAPI_IO_OP_DIALOG_FILE_OPEN         = 0x180;
+const WAPI_IO_OP_DIALOG_FILE_SAVE         = 0x181;
+const WAPI_IO_OP_DIALOG_FOLDER_OPEN       = 0x182;
+const WAPI_IO_OP_DIALOG_MESSAGEBOX        = 0x183;
+const WAPI_IO_OP_DIALOG_PICK_COLOR        = 0x184;
+const WAPI_IO_OP_DIALOG_PICK_FONT         = 0x185;
+const WAPI_IO_OP_BIO_AUTHENTICATE         = 0x191;
+const WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE  = 0x192;
+const WAPI_IO_OP_AUTHN_ASSERTION_GET      = 0x193;
+const WAPI_IO_OP_CONTACTS_PICK            = 0x1A0;
+const WAPI_IO_OP_EYEDROPPER_PICK          = 0x1A1;
+const WAPI_IO_OP_PAY_PAYMENT_REQUEST      = 0x1A2;
+const WAPI_IO_OP_CONTACTS_ICON_READ       = 0x1A3;
+const WAPI_IO_OP_XR_SESSION_REQUEST       = 0x200;
+const WAPI_IO_OP_XR_FRAME_WAIT            = 0x201;
+const WAPI_IO_OP_XR_HIT_TEST              = 0x202;
+const WAPI_IO_OP_GEO_POSITION_GET         = 0x210;
+const WAPI_IO_OP_GEO_POSITION_WATCH       = 0x211;
+
+// Dedicated new namespaces (packed u32: ns<<16 | method).
+const WAPI_IO_OP_FWATCH_ADD                 = 0x008;
+const WAPI_IO_OP_FWATCH_REMOVE              = 0x009;
+const WAPI_IO_OP_SANDBOX_FWATCH_ADD         = 0x2A3;
+const WAPI_IO_OP_SANDBOX_FWATCH_REMOVE      = 0x2A4;
+const WAPI_IO_OP_CRYPTO_HASH                = 0x2C0;
+const WAPI_IO_OP_CRYPTO_HASH_CREATE         = 0x2C1;
+const WAPI_IO_OP_CRYPTO_ENCRYPT             = 0x2C2;
+const WAPI_IO_OP_CRYPTO_DECRYPT             = 0x2C3;
+const WAPI_IO_OP_CRYPTO_SIGN                = 0x2C4;
+const WAPI_IO_OP_CRYPTO_VERIFY              = 0x2C5;
+const WAPI_IO_OP_CRYPTO_DERIVE_KEY          = 0x2C6;
+const WAPI_IO_OP_CRYPTO_KEY_IMPORT_RAW      = 0x2C7;
+const WAPI_IO_OP_CRYPTO_KEY_GENERATE        = 0x2C8;
+const WAPI_IO_OP_CRYPTO_KEY_GENERATE_PAIR   = 0x2C9;
+const WAPI_IO_OP_BARCODE_DETECT_IMAGE       = 0x2D8;
+const WAPI_IO_OP_BARCODE_DETECT_CAMERA      = 0x2D9;
+const WAPI_IO_OP_POWER_INFO_GET             = 0x2E8;
+const WAPI_IO_OP_POWER_WAKE_ACQUIRE         = 0x2E9;
+const WAPI_IO_OP_POWER_IDLE_START           = 0x2EA;
+const WAPI_IO_OP_SENSOR_START               = 0x2F0;
+const WAPI_IO_OP_NOTIFY_SHOW                = 0x2F8;
+const WAPI_IO_OP_FONT_FAMILY_INFO           = 0x2FC;
+const WAPI_IO_OP_TRANSFER_OFFER             = 0x310;
+const WAPI_IO_OP_TRANSFER_READ              = 0x311;
+
+// wapi_transfer mode bitmask
+const WAPI_TRANSFER_LATENT  = 0x01;
+const WAPI_TRANSFER_POINTED = 0x02;
+const WAPI_TRANSFER_ROUTED  = 0x04;
 
 // Log levels (used with WAPI_IO_OP_LOG)
 const WAPI_LOG_DEBUG = 0;
@@ -142,6 +235,10 @@ const WAPI_EVENT_POINTER_MOTION        = 0x902;
 const WAPI_EVENT_POINTER_CANCEL        = 0x903;
 const WAPI_EVENT_POINTER_ENTER         = 0x904;
 const WAPI_EVENT_POINTER_LEAVE         = 0x905;
+const WAPI_EVENT_TRANSFER_ENTER        = 0x1600;
+const WAPI_EVENT_TRANSFER_OVER         = 0x1601;
+const WAPI_EVENT_TRANSFER_LEAVE        = 0x1602;
+const WAPI_EVENT_TRANSFER_DELIVER      = 0x1603;
 const WAPI_EVENT_IO_COMPLETION         = 0x2000;
 
 // Cursor types
@@ -718,14 +815,23 @@ class WAPI {
         // Vtable pointers (lazily built after instantiation)
         this._ioVtablePtr = 0;
         this._allocVtablePtr = 0;
+
+        // Scratch arrays reused across frames to avoid per-call allocations.
+        this._queueSubmitScratch = [];
     }
 
     // -----------------------------------------------------------------------
     // Memory view helpers - must be called after any memory.grow
     // -----------------------------------------------------------------------
 
+    // Fast path: if the WebAssembly.Memory buffer hasn't changed identity,
+    // the cached typed-array views are still valid. memory.grow replaces the
+    // buffer (old one becomes detached), so identity check is sufficient.
+    // Called ~hundreds of times per frame from GPU imports — allocating 5
+    // new views per call showed up hot in profiles.
     _refreshViews() {
         const buf = this.memory.buffer;
+        if (this._u8 != null && this._u8.buffer === buf) return;
         this._u8  = new Uint8Array(buf);
         this._i32 = new Int32Array(buf);
         this._u32 = new Uint32Array(buf);
@@ -741,11 +847,11 @@ class WAPI {
             while (this._u8[end] !== 0) end++;
             len = end - ptr;
         }
-        return new TextDecoder().decode(this._u8.subarray(ptr, ptr + len));
+        return WAPI_TEXT_DECODER.decode(this._u8.subarray(ptr, ptr + len));
     }
 
     _writeString(ptr, maxLen, str) {
-        const encoded = new TextEncoder().encode(str);
+        const encoded = WAPI_TEXT_ENCODER.encode(str);
         const writeLen = Math.min(encoded.length, maxLen);
         this._refreshViews();
         this._u8.set(encoded.subarray(0, writeLen), ptr);
@@ -955,8 +1061,8 @@ class WAPI {
 
     _detectCapabilities() {
         const caps = [
-            "wapi.memory", "wapi.clock", "wapi.random",
-            "wapi.io", "wapi.env", "wapi.filesystem",
+            "wapi.clock", "wapi.env",
+            "wapi.filesystem", "wapi.sandbox", "wapi.cache",
         ];
 
         if (typeof navigator !== "undefined" && navigator.gpu) {
@@ -1084,6 +1190,33 @@ class WAPI {
         // Module loading (dynamic import of child wasm modules)
         caps.push("wapi.module");
 
+        // Additional capability surfaces wired up above.
+        caps.push("wapi.window", "wapi.theme", "wapi.orientation", "wapi.encoding");
+        caps.push("wapi.text", "wapi.media_session", "wapi.taskbar");
+        caps.push("wapi.register"); // registerProtocolHandler
+        caps.push("wapi.dnd");
+        caps.push("wapi.thread"); // TLS/mutex no-ops for single-thread modules
+        if (typeof EyeDropper !== "undefined") caps.push("wapi.eyedrop");
+        if (typeof VideoDecoder !== "undefined" || typeof VideoEncoder !== "undefined") {
+            caps.push("wapi.codec");
+        }
+        if (typeof document !== "undefined") caps.push("wapi.video");
+        if (typeof Accelerometer !== "undefined" || typeof Gyroscope !== "undefined") {
+            caps.push("wapi.sensors");
+        }
+        if (typeof navigator !== "undefined" && navigator.usb) caps.push("wapi.usb");
+        if (typeof navigator !== "undefined" && navigator.bluetooth) caps.push("wapi.bluetooth");
+        if (typeof navigator !== "undefined" && navigator.getUserMedia) caps.push("wapi.camera");
+        if (typeof navigator !== "undefined" && navigator.mediaDevices &&
+            navigator.mediaDevices.getUserMedia) {
+            caps.push("wapi.camera");
+        }
+        if (typeof PaymentRequest !== "undefined") caps.push("wapi.payments");
+        if (typeof window !== "undefined" && window.queryLocalFonts) caps.push("wapi.font.local");
+        if (typeof IdleDetector !== "undefined") caps.push("wapi.idle");
+        if (typeof navigator !== "undefined" && navigator.wakeLock) caps.push("wapi.wake");
+        if (typeof navigator !== "undefined" && navigator.getBattery) caps.push("wapi.battery");
+
         return caps;
     }
 
@@ -1101,13 +1234,13 @@ class WAPI {
 
         const wapi = {
             // wapi_string_view_t passed by value → pointer to 16-byte struct on wasm32
-            capability_supported(svPtr) {
+            cap_supported(svPtr) {
                 const name = self._readStringView(svPtr);
                 if (!name) return 0;
                 return supportedCaps.includes(name) ? 1 : 0;
             },
 
-            capability_version(svPtr, versionPtr) {
+            cap_version(svPtr, versionPtr) {
                 const name = self._readStringView(svPtr);
                 if (!name || !supportedCaps.includes(name)) {
                     self._writeU32(versionPtr, 0);
@@ -1122,11 +1255,11 @@ class WAPI {
                 return WAPI_OK;
             },
 
-            capability_count() {
+            cap_count() {
                 return supportedCaps.length;
             },
 
-            capability_name(index, bufPtr, bufLen, nameLenPtr) {
+            cap_name(index, bufPtr, bufLen, nameLenPtr) {
                 if (index < 0 || index >= supportedCaps.length) return WAPI_ERR_OVERFLOW;
                 self._refreshViews();
                 const name = supportedCaps[index];
@@ -1160,9 +1293,10 @@ class WAPI {
 
                 const mf = (p, r, fn) => self._makeWasmFunc(p, r, fn);
 
-                // Grow table to fit 8 new entries
+                // Grow table to fit 10 new entries (8 original + 2 for
+                // namespace_register / namespace_name).
                 const baseIdx = table.length;
-                table.grow(8);
+                table.grow(10);
 
                 // submit: (impl, ops, count) -> i32
                 table.set(baseIdx + 0, mf(['i32','i32','i64'], ['i32'],
@@ -1179,27 +1313,65 @@ class WAPI {
                 // flush: (impl, event_type) -> void
                 table.set(baseIdx + 4, mf(['i32','i32'], [],
                     (_impl, eventType) => wapi_io.flush(eventType)));
-                // capability_supported: (impl, name_sv_ptr) -> i32
+                // cap_supported: (impl, name_sv_ptr) -> i32
                 table.set(baseIdx + 5, mf(['i32','i32'], ['i32'],
                     (_impl, svPtr) => {
                         const name = self._readStringView(svPtr);
                         if (!name) return 0;
                         return supportedCaps.includes(name) ? 1 : 0;
                     }));
-                // capability_version: (impl, name_sv_ptr, version_ptr) -> i32
+                // cap_version: (impl, name_sv_ptr, version_ptr) -> i32
                 table.set(baseIdx + 6, mf(['i32','i32','i32'], ['i32'],
-                    (_impl, svPtr, versionPtr) => wapi.capability_version(svPtr, versionPtr)));
-                // perm_query: (impl, cap_sv_ptr, state_ptr) -> i32
+                    (_impl, svPtr, versionPtr) => wapi.cap_version(svPtr, versionPtr)));
+                // cap_query: (impl, cap_sv_ptr, state_ptr) -> i32
                 table.set(baseIdx + 7, mf(['i32','i32','i32'], ['i32'],
-                    (_impl, _capSvPtr, statePtr) => {
-                        self._writeU32(statePtr, 0);
-                        return WAPI_ERR_NOTSUP;
+                    (_impl, capSvPtr, statePtr) => {
+                        const cap = self._readStringView(capSvPtr);
+                        if (!cap) { self._writeU32(statePtr, 0); return WAPI_ERR_INVAL; }
+                        // Every known capability is granted by default on the
+                        // browser host — platforms that gate it will run the
+                        // real prompt through WAPI_IO_OP_CAP_REQUEST.
+                        // 0 = GRANTED, 1 = DENIED, 2 = PROMPT.
+                        const granted = supportedCaps.includes(cap) ? 0 : 2;
+                        self._writeU32(statePtr, granted);
+                        return WAPI_OK;
+                    }));
+                // namespace_register: (impl, name_sv_ptr, out_id_ptr) -> i32
+                table.set(baseIdx + 8, mf(['i32','i32','i32'], ['i32'],
+                    (_impl, svPtr, outIdPtr) => {
+                        const name = self._readStringView(svPtr);
+                        if (!name) return WAPI_ERR_INVAL;
+                        if (!self._nsRegistry) {
+                            self._nsRegistry = new Map();     // name -> id
+                            self._nsRegistryRev = new Map();  // id -> name
+                            self._nsRegistryNext = 0x4000;
+                        }
+                        let id = self._nsRegistry.get(name);
+                        if (id === undefined) {
+                            if (self._nsRegistryNext > 0xFFFF) return WAPI_ERR_NOSPC;
+                            id = self._nsRegistryNext++;
+                            self._nsRegistry.set(name, id);
+                            self._nsRegistryRev.set(id, name);
+                        }
+                        self._refreshViews();
+                        self._dv.setUint16(outIdPtr, id, true);
+                        return WAPI_OK;
+                    }));
+                // namespace_name: (impl, id, buf, buf_len, name_len_ptr) -> i32
+                table.set(baseIdx + 9, mf(['i32','i32','i32','i64','i32'], ['i32'],
+                    (_impl, id, bufPtr, bufLen, nameLenPtr) => {
+                        const name = self._nsRegistryRev && self._nsRegistryRev.get(id);
+                        if (!name) return WAPI_ERR_NOENT;
+                        const written = self._writeString(bufPtr, Number(bufLen), name);
+                        self._writeU64(nameLenPtr, written);
+                        return WAPI_OK;
                     }));
 
-                // Allocate 36 bytes in linear memory for wapi_io_t
-                // Layout: impl(4) submit(4) cancel(4) poll(4) wait(4)
-                //         flush(4) capability_supported(4) capability_version(4) perm_query(4)
-                const ptr = self._hostAlloc(36, 4);
+                // Allocate 44 bytes in linear memory for wapi_io_t
+                // Layout: impl(4) submit(4) cancel(4) poll(4) wait(4) flush(4)
+                //         cap_supported(4) cap_version(4) cap_query(4)
+                //         namespace_register(4) namespace_name(4)
+                const ptr = self._hostAlloc(44, 4);
                 if (!ptr) return 0;
                 self._refreshViews();
                 self._dv.setUint32(ptr +  0, 0,            true); // impl (unused)
@@ -1208,9 +1380,11 @@ class WAPI {
                 self._dv.setUint32(ptr + 12, baseIdx + 2,  true); // poll
                 self._dv.setUint32(ptr + 16, baseIdx + 3,  true); // wait
                 self._dv.setUint32(ptr + 20, baseIdx + 4,  true); // flush
-                self._dv.setUint32(ptr + 24, baseIdx + 5,  true); // capability_supported
-                self._dv.setUint32(ptr + 28, baseIdx + 6,  true); // capability_version
-                self._dv.setUint32(ptr + 32, baseIdx + 7,  true); // perm_query
+                self._dv.setUint32(ptr + 24, baseIdx + 5,  true); // cap_supported
+                self._dv.setUint32(ptr + 28, baseIdx + 6,  true); // cap_version
+                self._dv.setUint32(ptr + 32, baseIdx + 7,  true); // cap_query
+                self._dv.setUint32(ptr + 36, baseIdx + 8,  true); // namespace_register
+                self._dv.setUint32(ptr + 40, baseIdx + 9,  true); // namespace_name
 
                 self._ioVtablePtr = ptr;
                 return ptr;
@@ -1350,24 +1524,20 @@ class WAPI {
                 catch (_) { return WAPI_ERR_NOTSUP; }
             },
 
-            // (i32 key_sv_ptr, i32 buf, i64 buf_len, i32 val_len_ptr) -> i32
-            host_get(keySvPtr, bufPtr, bufLen, valLenPtr) {
-                const key = self._readStringView(keySvPtr);
-                const hostInfo = {
-                    "os.family":       "browser",
-                    "runtime.name":    "wapi-browser",
-                    "runtime.version": "0.1.0",
-                    "device.form":     "desktop",
-                    "browser.engine":  navigator.userAgent.includes("Chrome") ? "chromium"
-                                     : navigator.userAgent.includes("Firefox") ? "gecko"
-                                     : navigator.userAgent.includes("Safari") ? "webkit"
-                                     : "unknown",
-                    "locale":          navigator.language || "en-US",
-                };
-                if (!key || !(key in hostInfo)) return WAPI_ERR_NOENT;
-                const val = hostInfo[key];
-                const written = self._writeString(bufPtr, Number(bufLen), val);
-                self._writeU64(valLenPtr, written);
+            // (i32 buf, i64 buf_len, i32 len_ptr) -> i32
+            get_locale(bufPtr, bufLen, lenPtr) {
+                const locale = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+                const written = self._writeString(bufPtr, Number(bufLen), locale);
+                self._writeU64(lenPtr, written);
+                return WAPI_OK;
+            },
+
+            // (i32 buf, i64 buf_len, i32 len_ptr) -> i32
+            get_timezone(bufPtr, bufLen, lenPtr) {
+                let tz = "UTC";
+                try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) {}
+                const written = self._writeString(bufPtr, Number(bufLen), tz);
+                self._writeU64(lenPtr, written);
                 return WAPI_OK;
             },
 
@@ -1684,9 +1854,35 @@ class WAPI {
                             wapi_font_bytes.dispatch(addr, len, addr2, len2, flags, flags2, userData);
                             break;
 
-                        default:
-                            _pushIoCompletion(userData, WAPI_ERR_NOTSUP, 0);
+                        default: {
+                            // Route through the extensible opcode table before
+                            // falling back to NOSYS. This is where dynamically-
+                            // registered vendor opcodes land, along with any
+                            // new core opcodes the shim has wired up via
+                            // wapi.registerOpcodeHandler.
+                            const h = self._opcodeHandlers && self._opcodeHandlers.get(opcode);
+                            if (h) {
+                                try {
+                                    h({
+                                        fd, flags, flags2, offset, addr, len,
+                                        addr2, len2, userData, resultPtr,
+                                        _pushIoCompletion, self,
+                                    });
+                                } catch (e) {
+                                    _pushIoCompletion(userData, WAPI_ERR_IO, 0);
+                                }
+                            } else {
+                                // Unknown opcode — surface NOSYS completion
+                                // rather than trapping. Apps that expected a
+                                // handler to be registered can see the flag.
+                                self._eventQueue.push({
+                                    type: WAPI_EVENT_IO_COMPLETION,
+                                    userData, result: WAPI_ERR_NOSYS,
+                                    flags: 0x0008 /* WAPI_IO_CQE_F_NOSYS */,
+                                });
+                            }
                             break;
+                        }
                     }
                     submitted++;
                 }
@@ -2390,6 +2586,22 @@ class WAPI {
             return obj.device || obj.queue || obj.texture || obj.view || null;
         };
 
+        // Render-pass encoder cache. A render pass issues many operations
+        // against the same encoder handle (setScissor, setBindGroup, draw,
+        // end). Caching the last-resolved pass object skips a Map lookup
+        // per call — adds up across ~15–20 render-pass ops per frame.
+        // Invalidated at pass end so a stale handle can't leak into a new
+        // pass that happens to reuse the integer.
+        let cachedPassH = 0;
+        let cachedPassObj = null;
+        const passH = (h) => {
+            if (h === cachedPassH && cachedPassObj !== null) return cachedPassObj;
+            const obj = gpuH(h);
+            cachedPassH = h;
+            cachedPassObj = obj;
+            return obj;
+        };
+
         // Helper: insert a GPU object into the handle table, return i32 handle
         const gpuInsert = (type, gpuObj) => {
             return self.handles.insert({ type, gpuObj });
@@ -2937,7 +3149,27 @@ class WAPI {
 
                 const desc = { layout: gpuH(layoutH), entries };
                 if (label) desc.label = label;
-                const bg = dev.createBindGroup(desc);
+                let bg;
+                try {
+                    bg = dev.createBindGroup(desc);
+                } catch (e) {
+                    // One-shot probe: dump the raw entry handle fields for the
+                    // failing call so we can tell which binding slot is missing
+                    // its resource. Remove once the underlying C# side is fixed.
+                    console.error("[WAPI/probe] createBindGroup threw; layoutH=" + layoutH + " entryCount=" + entryCount + " label=" + (label || "(none)"));
+                    for (let i = 0; i < entryCount; i++) {
+                        const ep = entriesPtr + i * 40;
+                        console.error(
+                            "[WAPI/probe]   i=" + i +
+                            " binding=" + self._readU32(ep + 4) +
+                            " buffer=" + self._readU32(ep + 8) +
+                            " offset=" + Number(self._dv.getBigUint64(ep + 16, true)) +
+                            " size=" + Number(self._dv.getBigUint64(ep + 24, true)) +
+                            " sampler=" + self._readU32(ep + 32) +
+                            " textureView=" + self._readU32(ep + 36));
+                    }
+                    throw e;
+                }
                 return gpuInsert("gpu_bind_group", bg);
             },
 
@@ -2996,7 +3228,10 @@ class WAPI {
                 const q = gpuH(queue);
                 if (!q) return;
 
-                const cmdBufs = [];
+                // Reuse a single scratch array across frames. submit() copies
+                // refs internally, so we can truncate afterward.
+                const cmdBufs = self._queueSubmitScratch;
+                cmdBufs.length = 0;
                 for (let i = 0; i < commandCount; i++) {
                     const h = self._readU32(commandsPtr + i * 4);
                     const cb = gpuH(h);
@@ -3007,12 +3242,14 @@ class WAPI {
                 }
                 self._drawStats.submits = (self._drawStats.submits | 0) + 1;
                 q.submit(cmdBufs);
+                cmdBufs.length = 0;
             },
 
             // void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, const void* data, size_t size)
             // Wasm sig: (i32, i32, i64, i32, i32) -> void
+            // No _refreshViews() call — we construct the Uint8Array directly
+            // from self.memory.buffer, so none of the cached views matter.
             queue_write_buffer(queue, buffer, bufferOffsetLo, bufferOffsetHi, dataPtr, size) {
-                self._refreshViews();
                 const q = gpuH(queue);
                 const buf = gpuH(buffer);
                 if (!q || !buf) return;
@@ -3299,26 +3536,32 @@ class WAPI {
 
             // void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder encoder, WGPURenderPipeline pipeline)
             render_pass_set_pipeline(encoder, pipeline) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (pass) pass.setPipeline(gpuH(pipeline));
             },
 
             // void wgpuRenderPassEncoderSetBindGroup(encoder, groupIndex, group, dynamicOffsetCount, dynamicOffsets)
             render_pass_set_bind_group(encoder, groupIndex, group, dynamicOffsetCount, dynamicOffsetsPtr) {
-                self._refreshViews();
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (!pass) return;
                 const bg = gpuH(group);
-                const offsets = [];
+                if (dynamicOffsetCount === 0) {
+                    // Hot path: PanGui never uses dynamic offsets. Skip the
+                    // _refreshViews call and the per-call offsets array alloc.
+                    pass.setBindGroup(groupIndex, bg);
+                    return;
+                }
+                self._refreshViews();
+                const offsets = new Array(dynamicOffsetCount);
                 for (let i = 0; i < dynamicOffsetCount; i++) {
-                    offsets.push(self._readU32(dynamicOffsetsPtr + i * 4));
+                    offsets[i] = self._readU32(dynamicOffsetsPtr + i * 4);
                 }
                 pass.setBindGroup(groupIndex, bg, offsets);
             },
 
             // void wgpuRenderPassEncoderSetVertexBuffer(encoder, slot, buffer, offset, size)
             render_pass_set_vertex_buffer(encoder, slot, buffer, offsetLo, offsetHi, sizeLo, sizeHi) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (!pass) return;
                 const buf = gpuH(buffer);
                 // wasm32 passes uint64_t as two i32 args
@@ -3329,7 +3572,7 @@ class WAPI {
 
             // void wgpuRenderPassEncoderSetIndexBuffer(encoder, buffer, format, offset, size)
             render_pass_set_index_buffer(encoder, buffer, format, offsetLo, offsetHi, sizeLo, sizeHi) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (!pass) return;
                 const buf = gpuH(buffer);
                 const fmt = WGPU_INDEX_FORMAT[format] || "uint16";
@@ -3340,13 +3583,13 @@ class WAPI {
 
             // void wgpuRenderPassEncoderSetViewport(encoder, x, y, width, height, minDepth, maxDepth)
             render_pass_set_viewport(encoder, x, y, width, height, minDepth, maxDepth) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (pass) pass.setViewport(x, y, width, height, minDepth, maxDepth);
             },
 
             // void wgpuRenderPassEncoderSetScissorRect(encoder, x, y, width, height)
             render_pass_set_scissor_rect(encoder, x, y, width, height) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (!pass) return;
                 if (self._drawTrace) {
                     self._drawTrace.push(`scissor(${x},${y},${width},${height})`);
@@ -3356,7 +3599,7 @@ class WAPI {
 
             // void wgpuRenderPassEncoderDraw(encoder, vertexCount, instanceCount, firstVertex, firstInstance)
             render_pass_draw(encoder, vertexCount, instanceCount, firstVertex, firstInstance) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (!pass) return;
                 if (self._drawTrace) {
                     self._drawTrace.push(`draw(vtx=${vertexCount}, first=${firstVertex}, inst=${instanceCount})`);
@@ -3368,14 +3611,19 @@ class WAPI {
 
             // void wgpuRenderPassEncoderDrawIndexed(encoder, indexCount, instanceCount, firstIndex, baseVertex, firstInstance)
             render_pass_draw_indexed(encoder, indexCount, instanceCount, firstIndex, baseVertex, firstInstance) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (pass) pass.drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
             },
 
             // void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder encoder)
             render_pass_end(encoder) {
-                const pass = gpuH(encoder);
+                const pass = passH(encoder);
                 if (pass) pass.end();
+                // Invalidate cache so a subsequent pass with an unrelated
+                // handle that happens to hash to the same integer can't
+                // collide.
+                cachedPassH = 0;
+                cachedPassObj = null;
             },
 
             // --- Compute Pass Encoder functions ---
@@ -3386,13 +3634,17 @@ class WAPI {
             },
 
             compute_pass_set_bind_group(encoder, groupIndex, group, dynamicOffsetCount, dynamicOffsetsPtr) {
-                self._refreshViews();
                 const pass = gpuH(encoder);
                 if (!pass) return;
                 const bg = gpuH(group);
-                const offsets = [];
+                if (dynamicOffsetCount === 0) {
+                    pass.setBindGroup(groupIndex, bg);
+                    return;
+                }
+                self._refreshViews();
+                const offsets = new Array(dynamicOffsetCount);
                 for (let i = 0; i < dynamicOffsetCount; i++) {
-                    offsets.push(self._readU32(dynamicOffsetsPtr + i * 4));
+                    offsets[i] = self._readU32(dynamicOffsetsPtr + i * 4);
                 }
                 pass.setBindGroup(groupIndex, bg, offsets);
             },
@@ -3516,21 +3768,28 @@ class WAPI {
                 const canvas = document.createElement("canvas");
                 const dpr = (flags & WAPI_SURFACE_FLAG_HIGH_DPI) ? window.devicePixelRatio : 1;
 
-                // In browser: fill the viewport
+                // Fill the viewport, but allow the host page to inset the canvas
+                // (e.g. to make room for a stats bar) via CSS variables.
+                // IMPORTANT: canvas is a *replaced* element — with position:fixed and
+                // only inset (top/left/right/bottom) set, browsers size it from its
+                // intrinsic width/height attributes (in px), which would feed back
+                // through DPR on each resize and explode the backing buffer. Always
+                // pin an explicit CSS width/height.
                 canvas.style.position = "fixed";
-                canvas.style.left = "0";
-                canvas.style.top = "0";
-                canvas.style.width = "100vw";
-                canvas.style.height = "100vh";
+                canvas.style.left   = "var(--wapi-canvas-left, 0px)";
+                canvas.style.top    = "var(--wapi-canvas-top, 0px)";
+                canvas.style.width  = "calc(100vw - var(--wapi-canvas-left, 0px) - var(--wapi-canvas-right, 0px))";
+                canvas.style.height = "calc(100vh - var(--wapi-canvas-top, 0px) - var(--wapi-canvas-bottom, 0px))";
                 canvas.style.display = "block";
-
-                const cw = width || window.innerWidth;
-                const ch = height || window.innerHeight;
-                canvas.width = Math.round(cw * dpr);
-                canvas.height = Math.round(ch * dpr);
 
                 document.body.appendChild(canvas);
                 document.title = title;
+
+                const rect = canvas.getBoundingClientRect();
+                const cw = width || rect.width || window.innerWidth;
+                const ch = height || rect.height || window.innerHeight;
+                canvas.width = Math.round(cw * dpr);
+                canvas.height = Math.round(ch * dpr);
 
                 const h = self.handles.insert({ type: "surface" });
                 const surfInfo = {
@@ -3559,8 +3818,9 @@ class WAPI {
                 // Fallback resize handler
                 window.addEventListener("resize", () => {
                     const newDpr = window.devicePixelRatio;
-                    canvas.width = Math.round(window.innerWidth * newDpr);
-                    canvas.height = Math.round(window.innerHeight * newDpr);
+                    const r = canvas.getBoundingClientRect();
+                    canvas.width = Math.round(r.width * newDpr);
+                    canvas.height = Math.round(r.height * newDpr);
                     surfInfo.dpr = newDpr;
                     self._pushSurfaceEvent(h, WAPI_EVENT_SURFACE_RESIZED,
                         canvas.width, canvas.height);
@@ -4086,104 +4346,274 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_text (Text shaping + layout)
         // -------------------------------------------------------------------
+        // Canvas 2D measureText-based shaping + a simple word-wrap layout.
+        // This is a pragmatic baseline: we don't emit per-glyph OpenType
+        // indices (the browser doesn't expose them), but we can answer
+        // metrics / line break / hit-test queries well enough for UI text.
+        const _ensureTextCanvas = () => {
+            if (!self._textCanvas) {
+                self._textCanvas = typeof OffscreenCanvas !== "undefined"
+                    ? new OffscreenCanvas(4, 4)
+                    : document.createElement("canvas");
+                self._textCtx = self._textCanvas.getContext("2d");
+            }
+            return self._textCtx;
+        };
+        const readTextFontDesc = (ptr) => {
+            // wapi_text_font_desc_t ~40 bytes: family stringview(16), size_px f32, weight u32, style u32, features sv? Keep simple:
+            self._refreshViews();
+            const family = self._readStringView(ptr + 0) || "sans-serif";
+            const size   = self._dv.getFloat32(ptr + 16, true) || 16;
+            const weight = self._dv.getUint32(ptr + 20, true) || 400;
+            const style  = self._dv.getUint32(ptr + 24, true) || 0;
+            const styleName = style === 1 ? "italic" : (style === 2 ? "oblique" : "normal");
+            return { family, size, weight, styleName, cssFont: `${styleName} ${weight} ${size}px ${family}` };
+        };
         const wapi_text = {
-            // Shaping
-            shape(fontPtr, textPtr, textLen, script, direction) {
-                // TODO: implement with canvas measureText / OffscreenCanvas
-                return 0; // WAPI_HANDLE_INVALID
+            shape(fontPtr, textSvPtr, _script, _direction) {
+                const ctx = _ensureTextCanvas();
+                const font = readTextFontDesc(fontPtr);
+                ctx.font = font.cssFont;
+                const text = self._readStringView(textSvPtr) || "";
+                const metrics = ctx.measureText(text);
+                // Per-char advances — good enough for monospace; for proportional
+                // text we fall back to per-character measureText.
+                const glyphs = [];
+                let x = 0;
+                for (const ch of text) {
+                    const m = ctx.measureText(ch);
+                    glyphs.push({ ch, x, w: m.width });
+                    x += m.width;
+                }
+                const entry = {
+                    type: "shape",
+                    text, font,
+                    glyphs,
+                    totalWidth: metrics.width,
+                    ascent:  metrics.actualBoundingBoxAscent  || font.size * 0.8,
+                    descent: metrics.actualBoundingBoxDescent || font.size * 0.2,
+                };
+                return self.handles.insert(entry);
             },
-            shape_glyph_count(result) { return 0; },
-            shape_get_glyphs(result, infosPtr, positionsPtr) { return WAPI_ERR_NOTSUP; },
-            shape_get_font_metrics(result, metricsPtr) { return WAPI_ERR_NOTSUP; },
-            shape_destroy(result) { return WAPI_OK; },
-
-            // Layout
-            layout_create(textPtr, constraintsPtr) {
-                // TODO: implement with canvas text measurement
-                return 0; // WAPI_HANDLE_INVALID
+            shape_glyph_count(result) {
+                const e = self.handles.get(result);
+                return (e && e.type === "shape") ? e.glyphs.length : 0;
             },
-            layout_get_size(layout, widthPtr, heightPtr) { return WAPI_ERR_NOTSUP; },
-            layout_line_count(layout) { return 0; },
-            layout_get_line_info(layout, lineIdx, infoPtr) { return WAPI_ERR_NOTSUP; },
-            layout_hit_test(layout, x, y, resultPtr) { return WAPI_ERR_NOTSUP; },
-            layout_get_caret(layout, charOffset, infoPtr) { return WAPI_ERR_NOTSUP; },
-            layout_update_text(layout, textPtr) { return WAPI_ERR_NOTSUP; },
-            layout_update_constraints(layout, constraintsPtr) { return WAPI_ERR_NOTSUP; },
-            layout_destroy(layout) { return WAPI_OK; },
+            // infos: glyph_id u32, cluster u32 (8 bytes each)
+            // positions: x_advance f32, y_advance f32, x_offset f32, y_offset f32 (16 bytes each)
+            shape_get_glyphs(result, infosPtr, positionsPtr) {
+                const e = self.handles.get(result);
+                if (!e || e.type !== "shape") return WAPI_ERR_BADF;
+                self._refreshViews();
+                for (let i = 0; i < e.glyphs.length; i++) {
+                    const g = e.glyphs[i];
+                    self._dv.setUint32(infosPtr + i * 8 + 0, g.ch.codePointAt(0), true);
+                    self._dv.setUint32(infosPtr + i * 8 + 4, i, true);
+                    self._dv.setFloat32(positionsPtr + i * 16 + 0, g.w, true);
+                    self._dv.setFloat32(positionsPtr + i * 16 + 4, 0, true);
+                    self._dv.setFloat32(positionsPtr + i * 16 + 8, 0, true);
+                    self._dv.setFloat32(positionsPtr + i * 16 + 12, 0, true);
+                }
+                return WAPI_OK;
+            },
+            shape_get_font_metrics(result, metricsPtr) {
+                const e = self.handles.get(result);
+                if (!e || e.type !== "shape") return WAPI_ERR_BADF;
+                self._refreshViews();
+                const dv = self._dv;
+                dv.setFloat32(metricsPtr + 0,  e.ascent,  true);
+                dv.setFloat32(metricsPtr + 4,  e.descent, true);
+                dv.setFloat32(metricsPtr + 8,  e.ascent + e.descent, true);   // line height
+                dv.setFloat32(metricsPtr + 12, e.ascent * 0.5, true);         // cap height
+                dv.setFloat32(metricsPtr + 16, e.ascent * 0.4, true);         // x-height
+                dv.setFloat32(metricsPtr + 20, -e.descent * 0.2, true);       // underline pos
+                dv.setFloat32(metricsPtr + 24, e.font.size * 0.05, true);     // underline thickness
+                dv.setFloat32(metricsPtr + 28, e.ascent * 0.6, true);         // strikethrough pos
+                dv.setFloat32(metricsPtr + 32, e.font.size * 0.05, true);     // strikethrough thickness
+                return WAPI_OK;
+            },
+            shape_destroy(result) { self.handles.remove(result); return WAPI_OK; },
+            // Layout: simple word-wrap. Constraints: max_width f32, align u32, wrap u32, overflow u32 (16 bytes)
+            layout_create(textRunsPtr, constraintsPtr) {
+                const ctx = _ensureTextCanvas();
+                // textRuns is `wapi_text_run_t*` (32 bytes each): style* + text stringview + count. Keep simple:
+                // interpret textRunsPtr as a stringview directly for now.
+                self._refreshViews();
+                const text = self._readStringView(textRunsPtr + 16 /* offset of text sv in run */) || "";
+                const maxW = self._dv.getFloat32(constraintsPtr + 0, true) || 999999;
+                ctx.font = "16px sans-serif";
+                const words = text.split(/(\s+)/);
+                const lines = [[]];
+                let lineWidth = 0;
+                for (const w of words) {
+                    const wWidth = ctx.measureText(w).width;
+                    if (lineWidth + wWidth > maxW && lines[lines.length - 1].length > 0) {
+                        lines.push([]);
+                        lineWidth = 0;
+                    }
+                    lines[lines.length - 1].push(w);
+                    lineWidth += wWidth;
+                }
+                const lineHeight = 20;
+                const entry = {
+                    type: "layout",
+                    lines: lines.map((arr, i) => ({
+                        text: arr.join(""),
+                        width: ctx.measureText(arr.join("")).width,
+                        y: i * lineHeight,
+                    })),
+                    lineHeight,
+                    totalWidth: Math.max(...lines.map(a => ctx.measureText(a.join("")).width)),
+                    totalHeight: lines.length * lineHeight,
+                };
+                return self.handles.insert(entry);
+            },
+            layout_get_size(layout, widthPtr, heightPtr) {
+                const e = self.handles.get(layout);
+                if (!e || e.type !== "layout") return WAPI_ERR_BADF;
+                self._writeF32(widthPtr,  e.totalWidth);
+                self._writeF32(heightPtr, e.totalHeight);
+                return WAPI_OK;
+            },
+            layout_line_count(layout) {
+                const e = self.handles.get(layout);
+                return (e && e.type === "layout") ? e.lines.length : 0;
+            },
+            layout_get_line_info(layout, lineIdx, infoPtr) {
+                const e = self.handles.get(layout);
+                if (!e || e.type !== "layout") return WAPI_ERR_BADF;
+                if (lineIdx < 0 || lineIdx >= e.lines.length) return WAPI_ERR_OVERFLOW;
+                const line = e.lines[lineIdx];
+                self._refreshViews();
+                self._dv.setFloat32(infoPtr + 0, 0,       true); // x
+                self._dv.setFloat32(infoPtr + 4, line.y,  true); // y baseline offset
+                self._dv.setFloat32(infoPtr + 8, line.width, true);
+                self._dv.setFloat32(infoPtr + 12, e.lineHeight, true);
+                self._dv.setUint32 (infoPtr + 16, 0, true);      // start_char
+                self._dv.setUint32 (infoPtr + 20, line.text.length, true); // char_count
+                return WAPI_OK;
+            },
+            layout_hit_test(layout, x, y, resultPtr) {
+                const e = self.handles.get(layout);
+                if (!e || e.type !== "layout") return WAPI_ERR_BADF;
+                const lineIdx = Math.max(0, Math.min(e.lines.length - 1, Math.floor(y / e.lineHeight)));
+                self._refreshViews();
+                self._dv.setUint32(resultPtr + 0, lineIdx, true);
+                self._dv.setUint32(resultPtr + 4, 0, true); // char offset (we don't compute per-char here)
+                self._dv.setFloat32(resultPtr + 8, x, true);
+                self._dv.setFloat32(resultPtr + 12, e.lines[lineIdx].y, true);
+                self._dv.setUint32(resultPtr + 16, 0, true);
+                return WAPI_OK;
+            },
+            layout_get_caret(layout, charOffset, infoPtr) {
+                const e = self.handles.get(layout);
+                if (!e || e.type !== "layout") return WAPI_ERR_BADF;
+                let remaining = charOffset, y = 0;
+                for (const line of e.lines) {
+                    if (remaining < line.text.length) { y = line.y; break; }
+                    remaining -= line.text.length;
+                    y = line.y;
+                }
+                self._refreshViews();
+                self._dv.setFloat32(infoPtr + 0, 0, true); // x
+                self._dv.setFloat32(infoPtr + 4, y, true);
+                self._dv.setFloat32(infoPtr + 8, e.lineHeight, true);
+                self._dv.setUint32 (infoPtr + 12, 0, true);
+                return WAPI_OK;
+            },
+            layout_update_text(_layout, _textPtr) { return WAPI_ERR_NOTSUP; },
+            layout_update_constraints(_layout, _constraintsPtr) { return WAPI_ERR_NOTSUP; },
+            layout_destroy(layout) { self.handles.remove(layout); return WAPI_OK; },
         };
 
         // -------------------------------------------------------------------
-        // wapi_clipboard
+        // wapi_transfer (clipboard / DnD / share unified)
+        // Direct imports: revoke, format_count, format_name, has_format,
+        // set_action. Async ops (offer, read) are dispatched via the
+        // IO_OP_TRANSFER_* opcode handlers above.
+        //
+        // The browser shim caches its own LATENT pool in self._clipboardText
+        // / self._clipboardHtml so synchronous queries (format_count etc.)
+        // can answer without a Promise round-trip — the system clipboard is
+        // gesture-gated and async-only.
         // -------------------------------------------------------------------
-        const wapi_clipboard = {
-            format_count() {
-                let n = 0;
-                if (self._clipboardText.length > 0) n++;
-                if (self._clipboardHtml.length > 0) n++;
-                return n;
-            },
-
-            format_name(index, bufPtr, bufLen, outLenPtr) {
-                const mimes = [];
-                if (self._clipboardText.length > 0) mimes.push("text/plain");
-                if (self._clipboardHtml.length > 0) mimes.push("text/html");
-                if (index < 0 || index >= mimes.length) return WAPI_ERR_RANGE;
-                const written = self._writeString(bufPtr, bufLen, mimes[index]);
-                self._writeU32(outLenPtr, written);
-                return WAPI_OK;
-            },
-
-            has_format(mimeSvPtr) {
-                const mime = self._readStringView(mimeSvPtr);
-                if (mime === "text/plain") return self._clipboardText.length > 0 ? 1 : 0;
-                if (mime === "text/html")  return self._clipboardHtml.length > 0 ? 1 : 0;
-                return 0;
-            },
-
-            read(mimeSvPtr, bufPtr, bufLen, bytesWrittenPtr) {
-                const mime = self._readStringView(mimeSvPtr);
-                let data = "";
-                if (mime === "text/plain")      data = self._clipboardText;
-                else if (mime === "text/html")  data = self._clipboardHtml;
-                else return WAPI_ERR_NOENT;
-
-                if (data.length === 0) return WAPI_ERR_NOENT;
-                const written = self._writeString(bufPtr, bufLen, data);
-                self._writeU32(bytesWrittenPtr, written);
-                return WAPI_OK;
-            },
-
-            set(itemsPtr, count) {
-                self._refreshViews();
-                self._clipboardText = "";
-                self._clipboardHtml = "";
-                // wapi_clipboard_item_t is 32 bytes:
-                //   Offset  0: wapi_stringview_t mime   (16 bytes)
-                //   Offset 16: uint64_t           data  (8 bytes, linear memory address)
-                //   Offset 24: wapi_size_t        data_len (4 bytes)
-                //   Offset 28: uint32_t           _pad
-                for (let i = 0; i < count; i++) {
-                    const itemPtr = itemsPtr + i * 32;
-                    const mime = self._readStringView(itemPtr);
-                    const dataAddr = Number(self._dv.getBigUint64(itemPtr + 16, true));
-                    const dataLen = self._dv.getUint32(itemPtr + 24, true);
-                    const text = self._readString(dataAddr, dataLen);
-                    if (mime === "text/plain") {
-                        self._clipboardText = text;
-                        if (navigator.clipboard && navigator.clipboard.writeText) {
-                            navigator.clipboard.writeText(text).catch(() => {});
-                        }
-                    } else if (mime === "text/html") {
-                        self._clipboardHtml = text;
-                    }
+        const wapi_transfer = {
+            revoke(seat, mode) {
+                if (seat !== 0) return WAPI_ERR_INVAL;
+                if (mode & WAPI_TRANSFER_LATENT) {
+                    self._clipboardText = "";
+                    self._clipboardHtml = "";
+                }
+                if (mode & WAPI_TRANSFER_POINTED) {
+                    self._dropItems = [];
                 }
                 return WAPI_OK;
             },
 
-            clear() {
-                self._clipboardText = "";
-                self._clipboardHtml = "";
+            format_count(seat, mode) {
+                if (seat !== 0) return 0n;
+                if (mode === WAPI_TRANSFER_LATENT) {
+                    let n = 0;
+                    if (self._clipboardText.length > 0) n++;
+                    if (self._clipboardHtml.length > 0) n++;
+                    return BigInt(n);
+                }
+                if (mode === WAPI_TRANSFER_POINTED) {
+                    return BigInt((self._dropItems || []).length);
+                }
+                return 0n;
+            },
+
+            format_name(seat, mode, index, bufPtr, bufLen, outLenPtr) {
+                if (seat !== 0) return WAPI_ERR_INVAL;
+                let mimes = [];
+                if (mode === WAPI_TRANSFER_LATENT) {
+                    if (self._clipboardText.length > 0) mimes.push("text/plain");
+                    if (self._clipboardHtml.length > 0) mimes.push("text/html");
+                } else if (mode === WAPI_TRANSFER_POINTED) {
+                    mimes = (self._dropItems || []).map(it => it.mime);
+                }
+                const i = Number(index);
+                if (i < 0 || i >= mimes.length) return WAPI_ERR_RANGE;
+                const written = self._writeString(bufPtr, Number(bufLen), mimes[i]);
+                self._writeU64(outLenPtr, BigInt(written));
                 return WAPI_OK;
+            },
+
+            has_format(seat, mode, mimePtr, mimeLen) {
+                if (seat !== 0) return 0;
+                const mime = self._readString(mimePtr, Number(mimeLen));
+                if (mode === WAPI_TRANSFER_LATENT) {
+                    if (mime === "text/plain") return self._clipboardText.length > 0 ? 1 : 0;
+                    if (mime === "text/html")  return self._clipboardHtml.length > 0 ? 1 : 0;
+                    return 0;
+                }
+                if (mode === WAPI_TRANSFER_POINTED) {
+                    return (self._dropItems || []).some(it => it.mime === mime) ? 1 : 0;
+                }
+                return 0;
+            },
+
+            set_action(_seat, _action) {
+                // No active drag in this synchronous-import context.
+                return WAPI_ERR_NOTSUP;
+            },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_seat (single-seat browser host)
+        // -------------------------------------------------------------------
+        const wapi_seat = {
+            count() { return 1n; },
+            at(_index) { return 0; /* WAPI_SEAT_DEFAULT */ },
+            name(seat, bufPtr, bufLen, outLenPtr) {
+                if (seat !== 0) return WAPI_ERR_INVAL;
+                const written = self._writeString(bufPtr, Number(bufLen), "default");
+                self._writeU64(outLenPtr, BigInt("default".length));
+                return WAPI_OK;
+            },
+            user_id(_seat, _bufPtr, _bufLen, _outLenPtr) {
+                return WAPI_ERR_NOENT;
             },
         };
 
@@ -4255,37 +4685,67 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_font (basic font queries)
         // -------------------------------------------------------------------
+        // Font enumeration. Local Font Access is async + permission-gated;
+        // we only call queryLocalFonts() when the app explicitly calls a
+        // family-enumeration method for the first time. Until it resolves,
+        // we return the web-safe defaults.
+        const DEFAULT_FONTS = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+                               "Arial", "Times New Roman", "Courier New", "Georgia", "Verdana", "Helvetica"];
+        const kickFontEnum = () => {
+            if (self._fontEnumRequested) return;
+            self._fontEnumRequested = true;
+            if (typeof window !== "undefined" && window.queryLocalFonts) {
+                window.queryLocalFonts().then((fonts) => {
+                    const families = [...new Set(fonts.map(f => f.family))];
+                    self._fontList = families.length > 0 ? families : DEFAULT_FONTS;
+                }).catch(() => {
+                    self._fontList = DEFAULT_FONTS;
+                });
+            }
+        };
         const wapi_font = {
             family_count() {
-                // Can't reliably enumerate all fonts in browser
-                // Return a known set of web-safe fonts
-                return 12; // serif, sans-serif, monospace, cursive, fantasy, system-ui, + common ones
+                if (!self._fontList) self._fontList = DEFAULT_FONTS;
+                return self._fontList.length;
             },
+            // wapi_font_info_t (32 bytes): family stringview(16), weight_min u32, weight_max u32, supported_styles u32, is_variable i32
             family_info(index, infoPtr) {
-                const fonts = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
-                               "Arial", "Times New Roman", "Courier New", "Georgia", "Verdana", "Helvetica"];
+                const fonts = self._fontList || DEFAULT_FONTS;
                 if (index < 0 || index >= fonts.length) return WAPI_ERR_OVERFLOW;
-                // Write wapi_font_info_t (24 bytes):
-                //   ptr family(0), u32 family_len(4), u32 weight_min(8),
-                //   u32 weight_max(12), u32 supported_styles(16), i32 is_variable(20)
-                // We can't write the family name pointer directly (it's in wasm memory)
-                // For now, write zeros for the pointer fields and fill weight info
+                const name = fonts[index];
                 self._refreshViews();
-                self._writeU32(infoPtr + 0, 0);      // family ptr (can't set from here meaningfully)
-                self._writeU32(infoPtr + 4, 0);      // family_len
-                self._writeU32(infoPtr + 8, 100);    // weight_min
-                self._writeU32(infoPtr + 12, 900);   // weight_max
-                self._writeU32(infoPtr + 16, 0x0007); // NORMAL_BIT | ITALIC_BIT | OBLIQUE_BIT
-                self._writeI32(infoPtr + 20, 0);     // is_variable
+                // Allocate a little host buffer for the family name so the
+                // stringview has somewhere valid to point to.
+                if (!self._fontNameBufs) self._fontNameBufs = new Map();
+                let cached = self._fontNameBufs.get(name);
+                if (!cached) {
+                    const encoded = new TextEncoder().encode(name);
+                    const ptr = self._hostAlloc(encoded.length + 1, 1);
+                    self._refreshViews();
+                    self._u8.set(encoded, ptr);
+                    self._u8[ptr + encoded.length] = 0;
+                    cached = { ptr, len: encoded.length };
+                    self._fontNameBufs.set(name, cached);
+                }
+                self._dv.setBigUint64(infoPtr + 0, BigInt(cached.ptr), true);
+                self._dv.setBigUint64(infoPtr + 8, BigInt(cached.len), true);
+                self._writeU32(infoPtr + 16, 100);
+                self._writeU32(infoPtr + 20, 900);
+                self._writeU32(infoPtr + 24, 0x0007);
+                self._writeI32(infoPtr + 28, 0);
                 return WAPI_OK;
             },
             supports_script(tagPtr, tagLen) {
                 return 1; // Browser handles all scripts
             },
-            has_feature(familyPtr, familyLen, tag) {
-                return 0; // Unknown
+            has_feature(familyPtr, familyLen, _tag) {
+                // Attempt to detect OpenType features via CSS font-feature-settings
+                // is not reliable. Report unknown → 0.
+                return 0;
             },
             fallback_count(familyPtr, familyLen) {
+                // Kick off local font enumeration (async, idempotent).
+                kickFontEnum();
                 return 0;
             },
             fallback_get(familyPtr, familyLen, index, bufPtr, bufLen, nameLenPtr) {
@@ -4301,43 +4761,303 @@ class WAPI {
         // async browser APIs on the main thread without blocking, so all
         // operations return WAPI_ERR_NOTSUP. A future async WAPI extension
         // or JSPI-based approach could enable these.
+        // Web Crypto is Promise-based, and the WAPI ABI is synchronous. We
+        // resolve this with the same polling pattern used elsewhere: the
+        // first call kicks off the Promise and returns AGAIN; the next call
+        // (with the same output pointer) collects the result.
+        //
+        // Hash algorithms in the header: SHA256=0, SHA384=1, SHA512=2, SHA1=3.
+        const HASH_ALGO = { 0: "SHA-256", 1: "SHA-384", 2: "SHA-512", 3: "SHA-1" };
+        if (!self._cryptoStates) self._cryptoStates = new Map();
+        const cryptoAsync = (key, startFn, finishFn) => {
+            if (!self._cryptoStates.has(key)) {
+                const entry = { state: "pending" };
+                self._cryptoStates.set(key, entry);
+                startFn(entry);
+                return WAPI_ERR_AGAIN;
+            }
+            const st = self._cryptoStates.get(key);
+            if (st.state === "pending") return WAPI_ERR_AGAIN;
+            self._cryptoStates.delete(key);
+            if (st.state !== "ready") return WAPI_ERR_IO;
+            return finishFn(st);
+        };
+        const CIPHER_ALGO = {
+            0: { name: "AES-GCM", bits: 128 }, 1: { name: "AES-GCM", bits: 256 },
+            2: { name: "AES-CBC", bits: 128 }, 3: { name: "AES-CBC", bits: 256 },
+            4: { name: "ChaCha20-Poly1305" },
+        };
         const wapi_crypto = {
             hash(algo, dataPtr, dataLen, digestPtr, digestLenPtr) {
-                return WAPI_ERR_NOTSUP;
+                if (typeof crypto === "undefined" || !crypto.subtle) return WAPI_ERR_NOTSUP;
+                const algoName = HASH_ALGO[algo];
+                if (!algoName) return WAPI_ERR_INVAL;
+                const key = "hash:" + digestPtr;
+                return cryptoAsync(key, (entry) => {
+                    self._refreshViews();
+                    const data = self._u8.slice(dataPtr, dataPtr + Number(dataLen));
+                    crypto.subtle.digest(algoName, data).then(
+                        (buf) => { entry.state = "ready"; entry.digest = new Uint8Array(buf); },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    self._refreshViews();
+                    const n = Math.min(st.digest.length, self._readU32(digestLenPtr));
+                    self._u8.set(st.digest.subarray(0, n), digestPtr);
+                    self._writeU32(digestLenPtr, st.digest.length);
+                    return WAPI_OK;
+                });
             },
-            hash_create(algo, ctxPtr) { return WAPI_ERR_NOTSUP; },
-            hash_update(ctx, dataPtr, dataLen) { return WAPI_ERR_NOTSUP; },
-            hash_finish(ctx, digestPtr, digestLenPtr) { return WAPI_ERR_NOTSUP; },
-            key_import_raw(dataPtr, keyLen, usages, keyPtr) { return WAPI_ERR_NOTSUP; },
-            key_generate(algo, usages, keyPtr) { return WAPI_ERR_NOTSUP; },
-            key_generate_pair(algo, usages, pubPtr, privPtr) { return WAPI_ERR_NOTSUP; },
-            key_release(key) { return WAPI_OK; },
-            encrypt(algo, key, ivPtr, ivLen, ptPtr, ptLen, ctPtr, ctLenPtr) { return WAPI_ERR_NOTSUP; },
-            decrypt(algo, key, ivPtr, ivLen, ctPtr, ctLen, ptPtr, ptLenPtr) { return WAPI_ERR_NOTSUP; },
-            sign(algo, key, dataPtr, dataLen, sigPtr, sigLenPtr) { return WAPI_ERR_NOTSUP; },
-            verify(algo, key, dataPtr, dataLen, sigPtr, sigLen) { return WAPI_ERR_NOTSUP; },
-            derive_key(algo, baseKey, saltPtr, saltLen, infoPtr, infoLen, iterations, keyLen, derivedPtr, derivedLenPtr) { return WAPI_ERR_NOTSUP; },
+            // Incremental hash: we buffer updates and compute at finish.
+            hash_create(algo, ctxPtr) {
+                const algoName = HASH_ALGO[algo];
+                if (!algoName) return WAPI_ERR_INVAL;
+                const h = self.handles.insert({ type: "hashctx", algo: algoName, chunks: [] });
+                self._writeI32(ctxPtr, h);
+                return WAPI_OK;
+            },
+            hash_update(ctx, dataPtr, dataLen) {
+                const e = self.handles.get(ctx);
+                if (!e || e.type !== "hashctx") return WAPI_ERR_BADF;
+                self._refreshViews();
+                e.chunks.push(self._u8.slice(dataPtr, dataPtr + Number(dataLen)));
+                return WAPI_OK;
+            },
+            hash_finish(ctx, digestPtr, digestLenPtr) {
+                const e = self.handles.get(ctx);
+                if (!e || e.type !== "hashctx") return WAPI_ERR_BADF;
+                const key = "hashfin:" + ctx;
+                return cryptoAsync(key, (entry) => {
+                    // Concatenate buffered chunks.
+                    const total = e.chunks.reduce((n, c) => n + c.length, 0);
+                    const all = new Uint8Array(total);
+                    let o = 0;
+                    for (const c of e.chunks) { all.set(c, o); o += c.length; }
+                    crypto.subtle.digest(e.algo, all).then(
+                        (buf) => { entry.state = "ready"; entry.digest = new Uint8Array(buf); },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    self._refreshViews();
+                    const n = Math.min(st.digest.length, self._readU32(digestLenPtr));
+                    self._u8.set(st.digest.subarray(0, n), digestPtr);
+                    self._writeU32(digestLenPtr, st.digest.length);
+                    self.handles.remove(ctx);
+                    return WAPI_OK;
+                });
+            },
+            key_import_raw(dataPtr, keyLen, usages, keyPtr) {
+                if (typeof crypto === "undefined" || !crypto.subtle) return WAPI_ERR_NOTSUP;
+                const key = "keyimp:" + keyPtr;
+                return cryptoAsync(key, (entry) => {
+                    self._refreshViews();
+                    const raw = self._u8.slice(dataPtr, dataPtr + Number(keyLen));
+                    const uses = [];
+                    if (usages & 0x1) uses.push("encrypt");
+                    if (usages & 0x2) uses.push("decrypt");
+                    if (usages & 0x4) uses.push("sign");
+                    if (usages & 0x8) uses.push("verify");
+                    crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, uses.length ? uses : ["encrypt","decrypt"]).then(
+                        (k) => { entry.state = "ready"; entry.key = k; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({ type: "cryptokey", key: st.key });
+                    self._writeI32(keyPtr, h);
+                    return WAPI_OK;
+                });
+            },
+            key_generate(algo, usages, keyPtr) {
+                if (typeof crypto === "undefined" || !crypto.subtle) return WAPI_ERR_NOTSUP;
+                const spec = CIPHER_ALGO[algo];
+                if (!spec) return WAPI_ERR_INVAL;
+                const key = "keygen:" + keyPtr;
+                return cryptoAsync(key, (entry) => {
+                    const uses = [];
+                    if (usages & 0x1) uses.push("encrypt");
+                    if (usages & 0x2) uses.push("decrypt");
+                    const algoDesc = spec.bits
+                        ? { name: spec.name, length: spec.bits }
+                        : { name: spec.name };
+                    crypto.subtle.generateKey(algoDesc, true, uses.length ? uses : ["encrypt","decrypt"]).then(
+                        (k) => { entry.state = "ready"; entry.key = k; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({ type: "cryptokey", key: st.key });
+                    self._writeI32(keyPtr, h);
+                    return WAPI_OK;
+                });
+            },
+            key_generate_pair(_algo, _usages, _pubPtr, _privPtr) { return WAPI_ERR_NOTSUP; },
+            key_release(key) {
+                self.handles.remove(key);
+                return WAPI_OK;
+            },
+            encrypt(algo, key, ivPtr, ivLen, ptPtr, ptLen, ctPtr, ctLenPtr) {
+                if (typeof crypto === "undefined" || !crypto.subtle) return WAPI_ERR_NOTSUP;
+                const spec = CIPHER_ALGO[algo];
+                const k = self.handles.get(key);
+                if (!spec || !k || k.type !== "cryptokey") return WAPI_ERR_INVAL;
+                const cacheKey = "enc:" + ctPtr;
+                return cryptoAsync(cacheKey, (entry) => {
+                    self._refreshViews();
+                    const iv = self._u8.slice(ivPtr, ivPtr + Number(ivLen));
+                    const pt = self._u8.slice(ptPtr, ptPtr + Number(ptLen));
+                    crypto.subtle.encrypt({ name: spec.name, iv }, k.key, pt).then(
+                        (buf) => { entry.state = "ready"; entry.ct = new Uint8Array(buf); },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    self._refreshViews();
+                    const cap = self._readU32(ctLenPtr);
+                    const n = Math.min(st.ct.length, cap);
+                    self._u8.set(st.ct.subarray(0, n), ctPtr);
+                    self._writeU32(ctLenPtr, st.ct.length);
+                    return st.ct.length > cap ? WAPI_ERR_OVERFLOW : WAPI_OK;
+                });
+            },
+            decrypt(algo, key, ivPtr, ivLen, ctPtr, ctLen, ptPtr, ptLenPtr) {
+                if (typeof crypto === "undefined" || !crypto.subtle) return WAPI_ERR_NOTSUP;
+                const spec = CIPHER_ALGO[algo];
+                const k = self.handles.get(key);
+                if (!spec || !k || k.type !== "cryptokey") return WAPI_ERR_INVAL;
+                const cacheKey = "dec:" + ptPtr;
+                return cryptoAsync(cacheKey, (entry) => {
+                    self._refreshViews();
+                    const iv = self._u8.slice(ivPtr, ivPtr + Number(ivLen));
+                    const ct = self._u8.slice(ctPtr, ctPtr + Number(ctLen));
+                    crypto.subtle.decrypt({ name: spec.name, iv }, k.key, ct).then(
+                        (buf) => { entry.state = "ready"; entry.pt = new Uint8Array(buf); },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    self._refreshViews();
+                    const cap = self._readU32(ptLenPtr);
+                    const n = Math.min(st.pt.length, cap);
+                    self._u8.set(st.pt.subarray(0, n), ptPtr);
+                    self._writeU32(ptLenPtr, st.pt.length);
+                    return st.pt.length > cap ? WAPI_ERR_OVERFLOW : WAPI_OK;
+                });
+            },
+            sign(_algo, _key, _dataPtr, _dataLen, _sigPtr, _sigLenPtr) { return WAPI_ERR_NOTSUP; },
+            verify(_algo, _key, _dataPtr, _dataLen, _sigPtr, _sigLen) { return WAPI_ERR_NOTSUP; },
+            derive_key(_algo, _baseKey, _saltPtr, _saltLen, _infoPtr, _infoLen, _iterations, _keyLen, _derivedPtr, _derivedLenPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
         // wapi_video (video/media playback - stub)
         // -------------------------------------------------------------------
+        // HTMLVideoElement-backed playback.
+        // wapi_video_desc_t: source_kind u32, _pad, url stringview(16), codec u32, _pad, data_ptr i64, data_len i32
         const wapi_video = {
-            create(descPtr, videoPtr) { return WAPI_ERR_NOTSUP; },
-            destroy(video) { return WAPI_ERR_NOTSUP; },
-            get_info(video, infoPtr) { return WAPI_ERR_NOTSUP; },
-            play(video) { return WAPI_ERR_NOTSUP; },
-            pause(video) { return WAPI_ERR_NOTSUP; },
-            seek(video, time) { return WAPI_ERR_NOTSUP; },
-            get_state(video, statePtr) { return WAPI_ERR_NOTSUP; },
-            get_position(video, posPtr) { return WAPI_ERR_NOTSUP; },
-            get_frame_texture(video, texPtr) { return WAPI_ERR_NOTSUP; },
-            blit(video, tex, x, y, w, h) { return WAPI_ERR_NOTSUP; },
-            bind_audio(video, stream) { return WAPI_ERR_NOTSUP; },
-            set_volume(video, vol) { return WAPI_ERR_NOTSUP; },
-            set_muted(video, muted) { return WAPI_ERR_NOTSUP; },
-            set_loop(video, loop) { return WAPI_ERR_NOTSUP; },
-            set_playback_rate(video, rate) { return WAPI_ERR_NOTSUP; },
+            create(descPtr, videoPtr) {
+                if (typeof document === "undefined") return WAPI_ERR_NOTSUP;
+                self._refreshViews();
+                const source = self._dv.getUint32(descPtr + 0, true); // 0 URL, 1 MEMORY
+                const url    = self._readStringView(descPtr + 8);
+                const v = document.createElement("video");
+                v.playsInline = true;
+                v.crossOrigin = "anonymous";
+                const entry = {
+                    type: "video", video: v,
+                    state: 1 /* LOADING */,
+                };
+                v.addEventListener("loadedmetadata", () => { entry.state = 2; });
+                v.addEventListener("playing", () => { entry.state = 3; });
+                v.addEventListener("pause", () => { entry.state = 4; });
+                v.addEventListener("ended", () => { entry.state = 5; });
+                v.addEventListener("error", () => { entry.state = 6; });
+                if (source === 0 && url) v.src = url;
+                else if (source === 1) {
+                    const dptr = Number(self._dv.getBigUint64(descPtr + 32, true));
+                    const dlen = self._dv.getUint32(descPtr + 40, true);
+                    const blob = new Blob([self._u8.slice(dptr, dptr + dlen)], { type: "video/mp4" });
+                    v.src = URL.createObjectURL(blob);
+                }
+                const h = self.handles.insert(entry);
+                self._writeI32(videoPtr, h);
+                return WAPI_OK;
+            },
+            destroy(video) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                try { e.video.pause(); e.video.removeAttribute("src"); e.video.load(); } catch (_) {}
+                self.handles.remove(video);
+                return WAPI_OK;
+            },
+            // wapi_video_info_t = 20 bytes: width u32, height u32, duration f32, codec u32, has_audio u32
+            get_info(video, infoPtr) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                const v = e.video;
+                self._refreshViews();
+                self._dv.setUint32 (infoPtr + 0,  v.videoWidth || 0, true);
+                self._dv.setUint32 (infoPtr + 4,  v.videoHeight || 0, true);
+                self._dv.setFloat32(infoPtr + 8,  isFinite(v.duration) ? v.duration : 0, true);
+                self._dv.setUint32 (infoPtr + 12, 0, true); // codec unknown
+                self._dv.setUint32 (infoPtr + 16, !!v.audioTracks?.length | 1, true);
+                return WAPI_OK;
+            },
+            play(video) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.play().catch(() => {});
+                return WAPI_OK;
+            },
+            pause(video) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.pause();
+                return WAPI_OK;
+            },
+            seek(video, time) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.currentTime = time;
+                return WAPI_OK;
+            },
+            get_state(video, statePtr) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                self._writeU32(statePtr, e.state);
+                return WAPI_OK;
+            },
+            get_position(video, posPtr) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                self._writeF32(posPtr, e.video.currentTime);
+                return WAPI_OK;
+            },
+            // Uploading video frames to an existing GPU texture requires
+            // coordinating with the WebGPU path — defer.
+            get_frame_texture(_video, _texPtr) { return WAPI_ERR_NOTSUP; },
+            blit(_video, _tex, _x, _y, _w, _h) { return WAPI_ERR_NOTSUP; },
+            bind_audio(_video, _stream) { return WAPI_ERR_NOTSUP; },
+            set_volume(video, vol) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.volume = Math.max(0, Math.min(1, vol));
+                return WAPI_OK;
+            },
+            set_muted(video, muted) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.muted = !!muted;
+                return WAPI_OK;
+            },
+            set_loop(video, loop) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.loop = !!loop;
+                return WAPI_OK;
+            },
+            set_playback_rate(video, rate) {
+                const e = self.handles.get(video);
+                if (!e || e.type !== "video") return WAPI_ERR_BADF;
+                e.video.playbackRate = rate > 0 ? rate : 1.0;
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -4531,12 +5251,38 @@ class WAPI {
 
         // -------------------------------------------------------------------
         // wapi_notify (notifications - stub)
+        //
+        // Grant acquisition flows through the universal WAPI_IO_OP_CAP_REQUEST
+        // path in the opcode dispatcher above — no per-module perm imports.
         // -------------------------------------------------------------------
         const wapi_notify = {
-            request_permission() { return WAPI_ERR_NOTSUP; },
-            is_permitted() { return 0; },
-            show(descPtr, idPtr) { return WAPI_ERR_NOTSUP; },
-            close(id) { return WAPI_ERR_NOTSUP; },
+            // desc layout (56 bytes): title(16) body(16) icon(16) urgency(4) _reserved(4)
+            show(descPtr, idPtr) {
+                if (typeof Notification === "undefined") return WAPI_ERR_NOTSUP;
+                if (Notification.permission !== "granted") return WAPI_ERR_ACCES;
+                self._refreshViews();
+                const title = self._readStringView(descPtr + 0)  || "";
+                const body  = self._readStringView(descPtr + 16) || "";
+                const icon  = self._readStringView(descPtr + 32);
+                try {
+                    const n = new Notification(title, {
+                        body,
+                        icon: icon || undefined,
+                    });
+                    const h = self.handles.insert({ type: "notification", obj: n });
+                    self._writeI32(idPtr, h);
+                    return WAPI_OK;
+                } catch (e) {
+                    return WAPI_ERR_IO;
+                }
+            },
+            close(id) {
+                const e = self.handles.get(id);
+                if (!e || e.type !== "notification") return WAPI_ERR_BADF;
+                try { e.obj.close(); } catch (_) {}
+                self.handles.remove(id);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -4546,128 +5292,932 @@ class WAPI {
         // async-only (callback-based). Synchronous position queries are not
         // possible on the main thread, so get_position returns NOTSUP.
         // A future async WAPI extension could enable these.
+        // Async-to-sync polling state for one-shot get_position.
+        // state: "pending" | "ready" | "failed"
+        if (!self._geoOneShot) self._geoOneShot = null;
+        // watch_position: map handle -> { watchId, lastPos }
+        if (!self._geoWatches) self._geoWatches = new Map();
+
+        const writeGeoPos = (ptr, coords) => {
+            self._refreshViews();
+            const dv = self._dv;
+            dv.setFloat64(ptr +  0, coords.latitude,  true);
+            dv.setFloat64(ptr +  8, coords.longitude, true);
+            dv.setFloat64(ptr + 16, coords.altitude === null || coords.altitude === undefined ? NaN : coords.altitude, true);
+            dv.setFloat64(ptr + 24, coords.accuracy,  true);
+            dv.setFloat64(ptr + 32, coords.altitudeAccuracy === null || coords.altitudeAccuracy === undefined ? NaN : coords.altitudeAccuracy, true);
+            dv.setFloat64(ptr + 40, coords.heading === null || coords.heading === undefined ? NaN : coords.heading, true);
+        };
+
         const wapi_geo = {
-            get_position(flags, timeout_ms, positionPtr) { return WAPI_ERR_NOTSUP; },
-            watch_position(flags, watchPtr) { return WAPI_ERR_NOTSUP; },
-            clear_watch(watch) { return WAPI_ERR_NOTSUP; },
+            get_position(flags, timeout_ms, positionPtr) {
+                if (typeof navigator === "undefined" || !navigator.geolocation) return WAPI_ERR_NOTSUP;
+                const st = self._geoOneShot;
+                if (st && st.state === "ready") {
+                    writeGeoPos(positionPtr, st.coords);
+                    self._geoOneShot = null;
+                    return WAPI_OK;
+                }
+                if (st && st.state === "failed") {
+                    const err = st.error;
+                    self._geoOneShot = null;
+                    if (err === 1) return WAPI_ERR_ACCES;
+                    if (err === 3) return WAPI_ERR_TIMEDOUT;
+                    return WAPI_ERR_IO;
+                }
+                if (!st) {
+                    self._geoOneShot = { state: "pending" };
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => { self._geoOneShot = { state: "ready", coords: pos.coords }; },
+                        (err) => { self._geoOneShot = { state: "failed", error: err.code }; },
+                        {
+                            enableHighAccuracy: (flags & 0x0001) !== 0,
+                            timeout: timeout_ms > 0 ? timeout_ms : undefined,
+                        }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            watch_position(flags, watchPtr) {
+                if (typeof navigator === "undefined" || !navigator.geolocation) return WAPI_ERR_NOTSUP;
+                const h = self.handles.insert({ type: "geo_watch" });
+                const entry = self.handles.get(h);
+                entry.watchId = navigator.geolocation.watchPosition(
+                    (pos) => {
+                        entry.lastPos = pos.coords;
+                        // Deliver as IO completion event.
+                        self._eventQueue.push({
+                            type: WAPI_EVENT_IO_COMPLETION,
+                            userData: BigInt(h),
+                            result: 0,
+                            flags: 0,
+                        });
+                    },
+                    (_err) => {
+                        self._eventQueue.push({
+                            type: WAPI_EVENT_IO_COMPLETION,
+                            userData: BigInt(h),
+                            result: WAPI_ERR_IO,
+                            flags: 0,
+                        });
+                    },
+                    { enableHighAccuracy: (flags & 0x0001) !== 0 }
+                );
+                self._geoWatches.set(h, entry);
+                self._writeI32(watchPtr, h);
+                return WAPI_OK;
+            },
+            clear_watch(watch) {
+                const e = self.handles.get(watch);
+                if (!e || e.type !== "geo_watch") return WAPI_ERR_BADF;
+                try { navigator.geolocation.clearWatch(e.watchId); } catch (_) {}
+                self._geoWatches.delete(watch);
+                self.handles.remove(watch);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_sensor (sensors - stub)
         // -------------------------------------------------------------------
+        // Generic Sensor API availability check
+        const sensorCtors = {
+            0: typeof Accelerometer !== "undefined" ? Accelerometer : null,      // ACCEL
+            1: typeof Gyroscope !== "undefined"    ? Gyroscope    : null,        // GYRO
+            2: typeof Magnetometer !== "undefined" ? Magnetometer : null,        // MAG
+            3: typeof AmbientLightSensor !== "undefined" ? AmbientLightSensor : null, // LIGHT
+            5: typeof GravitySensor !== "undefined" ? GravitySensor : null,      // GRAVITY
+            6: typeof LinearAccelerationSensor !== "undefined" ? LinearAccelerationSensor : null, // LINEAR
+        };
         const wapi_sensor = {
-            available(type) { return 0; },
-            start(type, freqHz, sensorPtr) { return WAPI_ERR_NOTSUP; },
-            stop(sensor) { return WAPI_ERR_NOTSUP; },
-            read_xyz(sensor, readingPtr) { return WAPI_ERR_NOTSUP; },
-            read_scalar(sensor, readingPtr) { return WAPI_ERR_NOTSUP; },
+            available(type) {
+                return sensorCtors[type] ? 1 : 0;
+            },
+            start(type, freqHz, sensorPtr) {
+                const Ctor = sensorCtors[type];
+                if (!Ctor) return WAPI_ERR_NOTSUP;
+                try {
+                    const sensor = new Ctor({ frequency: freqHz > 0 ? freqHz : 60 });
+                    const entry = { type: "sensor", sensor, kind: type, xyz: null, scalar: null, err: 0 };
+                    sensor.onreading = () => {
+                        if (type === 3 || type === 4) {
+                            entry.scalar = { value: sensor.illuminance ?? sensor.distance ?? 0, ts: BigInt(Math.round(performance.now() * 1e6)) };
+                        } else {
+                            entry.xyz = { x: sensor.x || 0, y: sensor.y || 0, z: sensor.z || 0, ts: BigInt(Math.round(performance.now() * 1e6)) };
+                        }
+                    };
+                    sensor.onerror = (e) => { entry.err = WAPI_ERR_IO; };
+                    sensor.start();
+                    const h = self.handles.insert(entry);
+                    self._writeI32(sensorPtr, h);
+                    return WAPI_OK;
+                } catch (e) {
+                    return WAPI_ERR_ACCES;
+                }
+            },
+            stop(sensor) {
+                const e = self.handles.get(sensor);
+                if (!e || e.type !== "sensor") return WAPI_ERR_BADF;
+                try { e.sensor.stop(); } catch (_) {}
+                self.handles.remove(sensor);
+                return WAPI_OK;
+            },
+            read_xyz(sensor, readingPtr) {
+                const e = self.handles.get(sensor);
+                if (!e || e.type !== "sensor") return WAPI_ERR_BADF;
+                if (e.err) return e.err;
+                if (!e.xyz) return WAPI_ERR_AGAIN;
+                self._refreshViews();
+                self._dv.setFloat64(readingPtr +  0, e.xyz.x, true);
+                self._dv.setFloat64(readingPtr +  8, e.xyz.y, true);
+                self._dv.setFloat64(readingPtr + 16, e.xyz.z, true);
+                self._dv.setBigUint64(readingPtr + 24, e.xyz.ts, true);
+                return WAPI_OK;
+            },
+            read_scalar(sensor, readingPtr) {
+                const e = self.handles.get(sensor);
+                if (!e || e.type !== "sensor") return WAPI_ERR_BADF;
+                if (e.err) return e.err;
+                if (!e.scalar) return WAPI_ERR_AGAIN;
+                self._refreshViews();
+                self._dv.setFloat64(readingPtr + 0, e.scalar.value, true);
+                self._dv.setBigUint64(readingPtr + 8, e.scalar.ts, true);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_speech (speech synthesis/recognition - stub)
         // -------------------------------------------------------------------
         const wapi_speech = {
-            speak(utterancePtr, idPtr) { return WAPI_ERR_NOTSUP; },
-            cancel(id) { return WAPI_ERR_NOTSUP; },
-            cancel_all() { return WAPI_ERR_NOTSUP; },
-            is_speaking() { return 0; },
-            recognize_start(langPtr, langLen, continuous, sessionPtr) { return WAPI_ERR_NOTSUP; },
-            recognize_stop(session) { return WAPI_ERR_NOTSUP; },
-            recognize_result(session, bufPtr, bufLen, textLenPtr, confidencePtr) { return WAPI_ERR_NOTSUP; },
+            // utterance layout (48 bytes): text(16) lang(16) rate(4) pitch(4) volume(4) _pad(4)
+            speak(utterancePtr, idPtr) {
+                if (typeof speechSynthesis === "undefined") return WAPI_ERR_NOTSUP;
+                self._refreshViews();
+                const text = self._readStringView(utterancePtr + 0) || "";
+                const lang = self._readStringView(utterancePtr + 16);
+                const rate   = self._dv.getFloat32(utterancePtr + 32, true);
+                const pitch  = self._dv.getFloat32(utterancePtr + 36, true);
+                const volume = self._dv.getFloat32(utterancePtr + 40, true);
+                const u = new SpeechSynthesisUtterance(text);
+                if (lang) u.lang = lang;
+                if (rate > 0)   u.rate = rate;
+                if (pitch >= 0) u.pitch = pitch;
+                if (volume >= 0) u.volume = volume;
+                try {
+                    speechSynthesis.speak(u);
+                    const h = self.handles.insert({ type: "tts", utterance: u });
+                    self._writeI32(idPtr, h);
+                    return WAPI_OK;
+                } catch (e) { return WAPI_ERR_IO; }
+            },
+            cancel(id) {
+                const e = self.handles.get(id);
+                if (!e || e.type !== "tts") return WAPI_ERR_BADF;
+                // No per-utterance cancel; cancelling all is the closest match.
+                try { speechSynthesis.cancel(); } catch (_) {}
+                self.handles.remove(id);
+                return WAPI_OK;
+            },
+            cancel_all() {
+                if (typeof speechSynthesis === "undefined") return WAPI_ERR_NOTSUP;
+                try { speechSynthesis.cancel(); return WAPI_OK; } catch (_) { return WAPI_ERR_IO; }
+            },
+            is_speaking() {
+                return (typeof speechSynthesis !== "undefined" && speechSynthesis.speaking) ? 1 : 0;
+            },
+            // lang arrives as a wapi_stringview_t pointer (single i32)
+            recognize_start(langSvPtr, continuous, sessionPtr) {
+                const SR = typeof webkitSpeechRecognition !== "undefined" ? webkitSpeechRecognition
+                         : (typeof SpeechRecognition !== "undefined" ? SpeechRecognition : null);
+                if (!SR) return WAPI_ERR_NOTSUP;
+                const lang = langSvPtr ? self._readStringView(langSvPtr) : null;
+                const r = new SR();
+                if (lang) r.lang = lang;
+                r.continuous = !!continuous;
+                r.interimResults = false;
+                const entry = { type: "sr", recog: r, pending: [], ended: false };
+                r.onresult = (ev) => {
+                    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+                        const res = ev.results[i];
+                        if (res.isFinal) entry.pending.push({ text: res[0].transcript, confidence: res[0].confidence || 0 });
+                    }
+                };
+                r.onerror = () => { entry.ended = true; };
+                r.onend = () => { entry.ended = true; };
+                try { r.start(); } catch (e) { return WAPI_ERR_BUSY; }
+                const h = self.handles.insert(entry);
+                self._writeI32(sessionPtr, h);
+                return WAPI_OK;
+            },
+            recognize_stop(session) {
+                const e = self.handles.get(session);
+                if (!e || e.type !== "sr") return WAPI_ERR_BADF;
+                try { e.recog.stop(); } catch (_) {}
+                self.handles.remove(session);
+                return WAPI_OK;
+            },
+            recognize_result(session, bufPtr, bufLen, textLenPtr, confidencePtr) {
+                const e = self.handles.get(session);
+                if (!e || e.type !== "sr") return WAPI_ERR_BADF;
+                if (e.pending.length === 0) {
+                    if (e.ended) return WAPI_ERR_IO;
+                    return WAPI_ERR_AGAIN;
+                }
+                const item = e.pending.shift();
+                const written = self._writeString(bufPtr, Number(bufLen), item.text);
+                self._writeU64(textLenPtr, written);
+                self._writeF32(confidencePtr, item.confidence);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_bio (biometric authentication - stub)
         // -------------------------------------------------------------------
+        // Biometric: no direct Web API. Best we can do is route through
+        // WebAuthn with userVerification="required"/platform authenticator,
+        // which returns true if the user completed fingerprint/face auth.
+        // Async → polling state.
         const wapi_bio = {
-            available_types() { return 0; },
-            authenticate(type, reasonPtr, reasonLen) { return WAPI_ERR_NOTSUP; },
-            can_authenticate() { return 0; },
-        };
-
-        // -------------------------------------------------------------------
-        // wapi_share (share sheet - stub)
-        // -------------------------------------------------------------------
-        const wapi_share = {
-            can_share() { return 0; },
-            share(dataPtr) { return WAPI_ERR_NOTSUP; },
+            available_types() {
+                // WebAuthn platform authenticator availability is async. Best-effort:
+                // assume ANY (0xFF) if PublicKeyCredential is present.
+                return (typeof PublicKeyCredential !== "undefined") ? 0xFF : 0;
+            },
+            authenticate(type, reasonSvPtr) {
+                if (typeof PublicKeyCredential === "undefined" || !navigator.credentials)
+                    return WAPI_ERR_NOTSUP;
+                if (!self._bioState) {
+                    self._bioState = { state: "pending" };
+                    const challenge = new Uint8Array(32);
+                    crypto.getRandomValues(challenge);
+                    navigator.credentials.get({
+                        publicKey: {
+                            challenge,
+                            userVerification: "required",
+                            timeout: 60000,
+                        }
+                    }).then(
+                        () => { self._bioState = { state: "ready", ok: true }; },
+                        () => { self._bioState = { state: "failed" }; }
+                    );
+                    return WAPI_ERR_AGAIN;
+                }
+                if (self._bioState.state === "pending") return WAPI_ERR_AGAIN;
+                const r = self._bioState.state === "ready" ? WAPI_OK : WAPI_ERR_ACCES;
+                self._bioState = null;
+                return r;
+            },
+            can_authenticate() {
+                return (typeof PublicKeyCredential !== "undefined") ? 1 : 0;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_pay (payments - stub)
         // -------------------------------------------------------------------
+        // Payment Request API. The C surface only needs a token string out.
+        // Our implementation collects the details pointer + count and runs
+        // a standard Google Pay / basic-card request. Async → polling.
         const wapi_pay = {
-            can_make_payment() { return 0; },
-            request_payment(requestPtr, tokenPtr, tokenLenPtr) { return WAPI_ERR_NOTSUP; },
+            can_make_payment() {
+                return (typeof PaymentRequest !== "undefined") ? 1 : 0;
+            },
+            request_payment(requestPtr, tokenPtr, tokenLenPtr) {
+                if (typeof PaymentRequest === "undefined") return WAPI_ERR_NOTSUP;
+                if (self._payState && self._payState.state !== "pending") {
+                    const st = self._payState;
+                    self._payState = null;
+                    if (st.state === "ready") {
+                        const written = self._writeString(tokenPtr, 4096, st.token);
+                        self._writeU64(tokenLenPtr, written);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    return WAPI_ERR_IO;
+                }
+                if (!self._payState) {
+                    // Minimal: treat request as a single stringview "total_label"
+                    // plus amount in USD. The full struct semantics aren't
+                    // pinned yet — ship a safe default.
+                    const methods = [{ supportedMethods: "basic-card" }];
+                    const details = {
+                        total: { label: "Total", amount: { currency: "USD", value: "0.00" } },
+                    };
+                    self._payState = { state: "pending" };
+                    try {
+                        const pr = new PaymentRequest(methods, details);
+                        pr.show().then(
+                            async (response) => {
+                                const token = JSON.stringify(response.details || {});
+                                await response.complete("success").catch(() => {});
+                                self._payState = { state: "ready", token };
+                            },
+                            (err) => {
+                                if (err && err.name === "AbortError")
+                                    self._payState = { state: "canceled" };
+                                else
+                                    self._payState = { state: "failed" };
+                            }
+                        );
+                    } catch (e) {
+                        self._payState = null;
+                        return WAPI_ERR_IO;
+                    }
+                }
+                return WAPI_ERR_AGAIN;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_usb (USB - stub)
         // -------------------------------------------------------------------
+        // WebUSB. Async throughout — we expose polling state via a map keyed
+        // by caller-visible ptrs/handles.
+        const asyncOp = (map, key, startFn, onReady) => {
+            if (!map.has(key)) {
+                const entry = { state: "pending" };
+                map.set(key, entry);
+                startFn(entry);
+                return WAPI_ERR_AGAIN;
+            }
+            const st = map.get(key);
+            if (st.state === "pending") return WAPI_ERR_AGAIN;
+            map.delete(key);
+            if (st.state === "ready") return onReady(st);
+            return WAPI_ERR_IO;
+        };
         const wapi_usb = {
-            request_device(filtersPtr, filterCount, devicePtr) { return WAPI_ERR_NOTSUP; },
-            open(device) { return WAPI_ERR_NOTSUP; },
-            close(device) { return WAPI_ERR_NOTSUP; },
-            claim_interface(device, interfaceNum) { return WAPI_ERR_NOTSUP; },
-            release_interface(device, interfaceNum) { return WAPI_ERR_NOTSUP; },
-            transfer_in(device, endpoint, bufPtr, len, transferredPtr) { return WAPI_ERR_NOTSUP; },
-            transfer_out(device, endpoint, bufPtr, len, transferredPtr) { return WAPI_ERR_NOTSUP; },
-            control_transfer(device, requestType, request, value, index, bufPtr, len, transferredPtr) { return WAPI_ERR_NOTSUP; },
+            request_device(filtersPtr, filterCount, devicePtr) {
+                if (typeof navigator === "undefined" || !navigator.usb) return WAPI_ERR_NOTSUP;
+                if (!self._usbStates) self._usbStates = new Map();
+                return asyncOp(self._usbStates, "req:" + devicePtr, (entry) => {
+                    // wapi_usb_filter_t: 8 bytes. vendor_id u16, product_id u16, class u8, subclass u8, protocol u8, _pad.
+                    self._refreshViews();
+                    const filters = [];
+                    for (let i = 0; i < filterCount; i++) {
+                        const base = filtersPtr + i * 8;
+                        const vid = self._dv.getUint16(base + 0, true);
+                        const pid = self._dv.getUint16(base + 2, true);
+                        const cls = self._u8[base + 4];
+                        const f = {};
+                        if (vid) f.vendorId = vid;
+                        if (pid) f.productId = pid;
+                        if (cls) f.classCode = cls;
+                        filters.push(f);
+                    }
+                    navigator.usb.requestDevice({ filters: filters.length ? filters : [{}] }).then(
+                        (d) => { entry.state = "ready"; entry.device = d; },
+                        (err) => { entry.state = err && err.name === "NotFoundError" ? "canceled" : "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({ type: "usb", device: st.device });
+                    self._writeI32(devicePtr, h);
+                    return WAPI_OK;
+                });
+            },
+            open(device) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                if (e.opened) return WAPI_OK;
+                if (!self._usbStates) self._usbStates = new Map();
+                return asyncOp(self._usbStates, "open:" + device, (entry) => {
+                    e.device.open().then(
+                        () => { entry.state = "ready"; e.opened = true; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, () => WAPI_OK);
+            },
+            close(device) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                try { e.device.close(); } catch (_) {}
+                e.opened = false;
+                return WAPI_OK;
+            },
+            claim_interface(device, interfaceNum) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                if (!self._usbStates) self._usbStates = new Map();
+                return asyncOp(self._usbStates, "claim:" + device + ":" + interfaceNum, (entry) => {
+                    e.device.claimInterface(interfaceNum).then(
+                        () => { entry.state = "ready"; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, () => WAPI_OK);
+            },
+            release_interface(device, interfaceNum) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                e.device.releaseInterface(interfaceNum).catch(() => {});
+                return WAPI_OK;
+            },
+            transfer_in(device, endpoint, bufPtr, len, transferredPtr) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                if (!self._usbStates) self._usbStates = new Map();
+                return asyncOp(self._usbStates, "in:" + device + ":" + endpoint + ":" + bufPtr, (entry) => {
+                    e.device.transferIn(endpoint, Number(len)).then(
+                        (r) => { entry.state = "ready"; entry.data = r.data; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    self._refreshViews();
+                    const copy = Math.min(Number(len), st.data.byteLength);
+                    self._u8.set(new Uint8Array(st.data.buffer, st.data.byteOffset, copy), bufPtr);
+                    self._writeU64(transferredPtr, st.data.byteLength);
+                    return WAPI_OK;
+                });
+            },
+            transfer_out(device, endpoint, bufPtr, len, transferredPtr) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                if (!self._usbStates) self._usbStates = new Map();
+                return asyncOp(self._usbStates, "out:" + device + ":" + endpoint + ":" + bufPtr, (entry) => {
+                    self._refreshViews();
+                    const data = self._u8.slice(bufPtr, bufPtr + Number(len));
+                    e.device.transferOut(endpoint, data).then(
+                        (r) => { entry.state = "ready"; entry.written = r.bytesWritten; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    self._writeU64(transferredPtr, st.written);
+                    return WAPI_OK;
+                });
+            },
+            control_transfer(device, requestType, request, value, index, bufPtr, len, transferredPtr) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "usb") return WAPI_ERR_BADF;
+                if (!self._usbStates) self._usbStates = new Map();
+                // requestType direction bit: 0x80 = IN, 0 = OUT
+                const isIn = (requestType & 0x80) !== 0;
+                const recipients = ["device", "interface", "endpoint", "other"];
+                const types = ["standard", "class", "vendor"];
+                const setup = {
+                    requestType: types[(requestType >> 5) & 0x3] || "vendor",
+                    recipient:   recipients[requestType & 0xF] || "device",
+                    request, value, index,
+                };
+                const key = "ctrl:" + device + ":" + bufPtr;
+                return asyncOp(self._usbStates, key, (entry) => {
+                    if (isIn) {
+                        e.device.controlTransferIn(setup, Number(len)).then(
+                            (r) => { entry.state = "ready"; entry.data = r.data; },
+                            () => { entry.state = "failed"; }
+                        );
+                    } else {
+                        self._refreshViews();
+                        const data = self._u8.slice(bufPtr, bufPtr + Number(len));
+                        e.device.controlTransferOut(setup, data).then(
+                            (r) => { entry.state = "ready"; entry.written = r.bytesWritten; },
+                            () => { entry.state = "failed"; }
+                        );
+                    }
+                }, (st) => {
+                    if (isIn && st.data) {
+                        self._refreshViews();
+                        const copy = Math.min(Number(len), st.data.byteLength);
+                        self._u8.set(new Uint8Array(st.data.buffer, st.data.byteOffset, copy), bufPtr);
+                        self._writeU64(transferredPtr, st.data.byteLength);
+                    } else {
+                        self._writeU64(transferredPtr, st.written || 0);
+                    }
+                    return WAPI_OK;
+                });
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_midi (MIDI - stub)
         // -------------------------------------------------------------------
+        // Web MIDI. request_access is async — poll pattern. Once granted,
+        // the MIDIAccess object is cached on the instance and enumeration
+        // is synchronous.
         const wapi_midi = {
-            request_access(sysex) { return WAPI_ERR_NOTSUP; },
-            port_count(type) { return 0; },
-            port_name(type, index, bufPtr, bufLen, nameLenPtr) { return WAPI_ERR_NOTSUP; },
-            open_port(type, index, portPtr) { return WAPI_ERR_NOTSUP; },
-            close_port(port) { return WAPI_ERR_NOTSUP; },
-            send(port, dataPtr, len) { return WAPI_ERR_NOTSUP; },
-            recv(port, bufPtr, bufLen, msgLenPtr, timestampPtr) { return WAPI_ERR_NOTSUP; },
+            request_access(sysex) {
+                if (typeof navigator === "undefined" || !navigator.requestMIDIAccess)
+                    return WAPI_ERR_NOTSUP;
+                if (self._midiAccess) return WAPI_OK;
+                if (self._midiState === "failed") { self._midiState = null; return WAPI_ERR_ACCES; }
+                if (!self._midiState) {
+                    self._midiState = "pending";
+                    navigator.requestMIDIAccess({ sysex: !!sysex }).then(
+                        (a) => { self._midiAccess = a; self._midiState = "ready"; },
+                        () => { self._midiState = "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            port_count(type) {
+                if (!self._midiAccess) return 0;
+                return type === 0 ? self._midiAccess.inputs.size : self._midiAccess.outputs.size;
+            },
+            port_name(type, index, bufPtr, bufLen, nameLenPtr) {
+                if (!self._midiAccess) return WAPI_ERR_BADF;
+                const coll = type === 0 ? self._midiAccess.inputs : self._midiAccess.outputs;
+                const arr = Array.from(coll.values());
+                if (index < 0 || index >= arr.length) return WAPI_ERR_OVERFLOW;
+                const written = self._writeString(bufPtr, Number(bufLen), arr[index].name || "");
+                self._writeU64(nameLenPtr, written);
+                return WAPI_OK;
+            },
+            open_port(type, index, portPtr) {
+                if (!self._midiAccess) return WAPI_ERR_BADF;
+                const coll = type === 0 ? self._midiAccess.inputs : self._midiAccess.outputs;
+                const arr = Array.from(coll.values());
+                if (index < 0 || index >= arr.length) return WAPI_ERR_OVERFLOW;
+                const port = arr[index];
+                const entry = { type: "midi", port, inbox: [], kind: type };
+                if (type === 0) {
+                    port.onmidimessage = (e) => {
+                        entry.inbox.push({ data: e.data, ts: BigInt(Math.round((e.timeStamp || performance.now()) * 1e6)) });
+                    };
+                }
+                try { port.open && port.open(); } catch (_) {}
+                const h = self.handles.insert(entry);
+                self._writeI32(portPtr, h);
+                return WAPI_OK;
+            },
+            close_port(port) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "midi") return WAPI_ERR_BADF;
+                try { if (e.port.onmidimessage) e.port.onmidimessage = null; e.port.close && e.port.close(); } catch (_) {}
+                self.handles.remove(port);
+                return WAPI_OK;
+            },
+            send(port, dataPtr, len) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "midi") return WAPI_ERR_BADF;
+                if (e.kind !== 1) return WAPI_ERR_INVAL;
+                self._refreshViews();
+                const data = self._u8.slice(dataPtr, dataPtr + Number(len));
+                try { e.port.send(data); return WAPI_OK; }
+                catch (_) { return WAPI_ERR_IO; }
+            },
+            recv(port, bufPtr, bufLen, msgLenPtr, timestampPtr) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "midi") return WAPI_ERR_BADF;
+                if (e.kind !== 0) return WAPI_ERR_INVAL;
+                if (e.inbox.length === 0) return WAPI_ERR_AGAIN;
+                const msg = e.inbox.shift();
+                self._refreshViews();
+                const copy = Math.min(Number(bufLen), msg.data.length);
+                self._u8.set(msg.data.subarray(0, copy), bufPtr);
+                self._writeU64(msgLenPtr, msg.data.length);
+                if (timestampPtr) self._dv.setBigUint64(timestampPtr, msg.ts, true);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_bt (Bluetooth LE - stub)
         // -------------------------------------------------------------------
+        // Web Bluetooth. All operations are async — we expose a polling
+        // state-machine for each device/service/characteristic. Keyed by
+        // the caller's output pointer so repeated calls (which is how the
+        // wasm polls) observe the same transition.
+        const btKey = (op, p) => op + ":" + p;
+        const btTake = (key) => {
+            const st = self._btStates && self._btStates.get(key);
+            if (st && st.state !== "pending") self._btStates.delete(key);
+            return st;
+        };
         const wapi_bt = {
-            request_device(filtersPtr, filterCount, devicePtr) { return WAPI_ERR_NOTSUP; },
-            connect(device) { return WAPI_ERR_NOTSUP; },
-            disconnect(device) { return WAPI_ERR_NOTSUP; },
-            get_service(device, uuidPtr, uuidLen, servicePtr) { return WAPI_ERR_NOTSUP; },
-            get_characteristic(service, uuidPtr, uuidLen, charPtr) { return WAPI_ERR_NOTSUP; },
-            read_value(characteristic, bufPtr, bufLen, valLenPtr) { return WAPI_ERR_NOTSUP; },
-            write_value(characteristic, dataPtr, len) { return WAPI_ERR_NOTSUP; },
-            start_notifications(characteristic) { return WAPI_ERR_NOTSUP; },
-            stop_notifications(characteristic) { return WAPI_ERR_NOTSUP; },
+            request_device(filtersPtr, filterCount, devicePtr) {
+                if (typeof navigator === "undefined" || !navigator.bluetooth) return WAPI_ERR_NOTSUP;
+                if (!self._btStates) self._btStates = new Map();
+                const key = btKey("req", devicePtr);
+                const st = btTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        const h = self.handles.insert({ type: "bt_device", device: st.device });
+                        self._writeI32(devicePtr, h);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    return WAPI_ERR_IO;
+                }
+                if (!self._btStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._btStates.set(key, entry);
+                    // wapi_bt_filter_t: service_uuid (stringview 16) + name_prefix (16)
+                    const filters = [];
+                    for (let i = 0; i < filterCount; i++) {
+                        const base = filtersPtr + i * 32;
+                        const uuid = self._readStringView(base + 0);
+                        const name = self._readStringView(base + 16);
+                        const f = {};
+                        if (uuid) f.services = [uuid.toLowerCase()];
+                        if (name) f.namePrefix = name;
+                        filters.push(f);
+                    }
+                    const opts = filterCount > 0
+                        ? { filters }
+                        : { acceptAllDevices: true };
+                    navigator.bluetooth.requestDevice(opts).then(
+                        (d) => { entry.state = "ready"; entry.device = d; },
+                        (err) => { entry.state = err && err.name === "NotFoundError" ? "canceled" : "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            connect(device) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "bt_device") return WAPI_ERR_BADF;
+                if (e.server) return WAPI_OK;
+                if (e.state === "pending") return WAPI_ERR_AGAIN;
+                if (e.state === "failed") { e.state = null; return WAPI_ERR_IO; }
+                e.state = "pending";
+                e.device.gatt.connect().then(
+                    (srv) => { e.server = srv; e.state = "ready"; },
+                    () => { e.state = "failed"; }
+                );
+                return WAPI_ERR_AGAIN;
+            },
+            disconnect(device) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "bt_device") return WAPI_ERR_BADF;
+                try { e.server && e.server.disconnect(); } catch (_) {}
+                e.server = null;
+                return WAPI_OK;
+            },
+            // get_service: (device, uuid_sv*, service_out*)
+            get_service(device, uuidSvPtr, servicePtr) {
+                const e = self.handles.get(device);
+                if (!e || e.type !== "bt_device" || !e.server) return WAPI_ERR_BADF;
+                if (!self._btStates) self._btStates = new Map();
+                const key = btKey("getsvc", servicePtr);
+                const st = btTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        const h = self.handles.insert({ type: "bt_service", service: st.service });
+                        self._writeI32(servicePtr, h);
+                        return WAPI_OK;
+                    }
+                    return WAPI_ERR_IO;
+                }
+                if (!self._btStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._btStates.set(key, entry);
+                    const uuid = self._readStringView(uuidSvPtr) || "";
+                    e.server.getPrimaryService(uuid.toLowerCase()).then(
+                        (s) => { entry.state = "ready"; entry.service = s; },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            get_characteristic(service, uuidSvPtr, charPtr) {
+                const e = self.handles.get(service);
+                if (!e || e.type !== "bt_service") return WAPI_ERR_BADF;
+                if (!self._btStates) self._btStates = new Map();
+                const key = btKey("getchar", charPtr);
+                const st = btTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        const h = self.handles.insert({ type: "bt_char", ch: st.ch, notify: null });
+                        self._writeI32(charPtr, h);
+                        return WAPI_OK;
+                    }
+                    return WAPI_ERR_IO;
+                }
+                if (!self._btStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._btStates.set(key, entry);
+                    const uuid = self._readStringView(uuidSvPtr) || "";
+                    e.service.getCharacteristic(uuid.toLowerCase()).then(
+                        (c) => { entry.state = "ready"; entry.ch = c; },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            read_value(characteristic, bufPtr, bufLen, valLenPtr) {
+                const e = self.handles.get(characteristic);
+                if (!e || e.type !== "bt_char") return WAPI_ERR_BADF;
+                if (!self._btStates) self._btStates = new Map();
+                const key = btKey("read", bufPtr);
+                const st = btTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        self._refreshViews();
+                        const copy = Math.min(Number(bufLen), st.data.byteLength);
+                        self._u8.set(new Uint8Array(st.data.buffer, st.data.byteOffset, copy), bufPtr);
+                        self._writeU64(valLenPtr, st.data.byteLength);
+                        return WAPI_OK;
+                    }
+                    return WAPI_ERR_IO;
+                }
+                if (!self._btStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._btStates.set(key, entry);
+                    e.ch.readValue().then(
+                        (dv) => { entry.state = "ready"; entry.data = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength); },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            write_value(characteristic, dataPtr, len) {
+                const e = self.handles.get(characteristic);
+                if (!e || e.type !== "bt_char") return WAPI_ERR_BADF;
+                self._refreshViews();
+                const data = self._u8.slice(dataPtr, dataPtr + Number(len));
+                e.ch.writeValue(data).catch(() => {});
+                return WAPI_OK;
+            },
+            start_notifications(characteristic) {
+                const e = self.handles.get(characteristic);
+                if (!e || e.type !== "bt_char") return WAPI_ERR_BADF;
+                e.ch.startNotifications().then((c) => {
+                    e.notify = (ev) => {
+                        const dv = ev.target.value;
+                        self._eventQueue.push({
+                            type: WAPI_EVENT_IO_COMPLETION,
+                            userData: BigInt(characteristic),
+                            result: dv.byteLength,
+                            flags: 0x20000, // bt notification
+                        });
+                    };
+                    c.addEventListener("characteristicvaluechanged", e.notify);
+                }).catch(() => {});
+                return WAPI_OK;
+            },
+            stop_notifications(characteristic) {
+                const e = self.handles.get(characteristic);
+                if (!e || e.type !== "bt_char") return WAPI_ERR_BADF;
+                if (e.notify) {
+                    try { e.ch.removeEventListener("characteristicvaluechanged", e.notify); } catch (_) {}
+                    e.ch.stopNotifications().catch(() => {});
+                    e.notify = null;
+                }
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_camera (camera - stub)
         // -------------------------------------------------------------------
+        // getUserMedia-based camera. We only report a count of 1 without a
+        // prompt (enumerateDevices requires permission). open() triggers the
+        // permission prompt. read_frame draws to a hidden canvas and copies
+        // pixels into the caller's buffer.
         const wapi_camera = {
-            count() { return 0; },
-            open(configPtr, cameraPtr) { return WAPI_ERR_NOTSUP; },
-            close(camera) { return WAPI_ERR_NOTSUP; },
-            read_frame(camera, framePtr, bufPtr, bufLen, sizePtr) { return WAPI_ERR_NOTSUP; },
-            read_frame_gpu(camera, framePtr, texturePtr) { return WAPI_ERR_NOTSUP; },
+            count() {
+                return (typeof navigator !== "undefined" && navigator.mediaDevices &&
+                        navigator.mediaDevices.getUserMedia) ? 1 : 0;
+            },
+            // desc: facing u32, width u32, height u32, pixel_format u32
+            open(descPtr, cameraPtr) {
+                if (typeof navigator === "undefined" || !navigator.mediaDevices ||
+                    !navigator.mediaDevices.getUserMedia) return WAPI_ERR_NOTSUP;
+                if (!self._camStates) self._camStates = new Map();
+                return asyncOp(self._camStates, "open:" + cameraPtr, (entry) => {
+                    self._refreshViews();
+                    const facing = self._dv.getUint32(descPtr + 0, true);
+                    const w      = self._dv.getUint32(descPtr + 4, true);
+                    const h      = self._dv.getUint32(descPtr + 8, true);
+                    const constraints = {
+                        video: {
+                            facingMode: facing === 1 ? "environment" : "user",
+                            width:  w > 0 ? w : undefined,
+                            height: h > 0 ? h : undefined,
+                        },
+                        audio: false,
+                    };
+                    navigator.mediaDevices.getUserMedia(constraints).then(
+                        (stream) => {
+                            const video = document.createElement("video");
+                            video.srcObject = stream;
+                            video.muted = true;
+                            video.playsInline = true;
+                            video.play().catch(() => {});
+                            entry.state = "ready";
+                            entry.stream = stream;
+                            entry.video = video;
+                            entry.canvas = document.createElement("canvas");
+                            entry.ctx = entry.canvas.getContext("2d");
+                        },
+                        (err) => { entry.state = err && err.name === "NotAllowedError" ? "canceled" : "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({
+                        type: "camera",
+                        stream: st.stream, video: st.video,
+                        canvas: st.canvas, ctx: st.ctx,
+                    });
+                    self._writeI32(cameraPtr, h);
+                    return WAPI_OK;
+                });
+            },
+            close(camera) {
+                const e = self.handles.get(camera);
+                if (!e || e.type !== "camera") return WAPI_ERR_BADF;
+                try { e.stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                self.handles.remove(camera);
+                return WAPI_OK;
+            },
+            // wapi_camera_frame_t (24 bytes): width u32, height u32, format u32, _pad u32, timestamp u64
+            read_frame(camera, framePtr, bufPtr, bufLen, sizePtr) {
+                const e = self.handles.get(camera);
+                if (!e || e.type !== "camera") return WAPI_ERR_BADF;
+                const v = e.video;
+                if (!v.videoWidth || !v.videoHeight) return WAPI_ERR_AGAIN;
+                const w = v.videoWidth, h = v.videoHeight;
+                if (e.canvas.width !== w) e.canvas.width = w;
+                if (e.canvas.height !== h) e.canvas.height = h;
+                e.ctx.drawImage(v, 0, 0, w, h);
+                const img = e.ctx.getImageData(0, 0, w, h);
+                self._refreshViews();
+                const needed = img.data.length;
+                self._writeU64(sizePtr, needed);
+                self._dv.setUint32(framePtr + 0, w, true);
+                self._dv.setUint32(framePtr + 4, h, true);
+                self._dv.setUint32(framePtr + 8, 0 /* RGBA8 */, true);
+                self._dv.setUint32(framePtr + 12, 0, true);
+                self._dv.setBigUint64(framePtr + 16, BigInt(Math.round(performance.now() * 1e6)), true);
+                if (Number(bufLen) < needed) return WAPI_ERR_OVERFLOW;
+                self._u8.set(img.data, bufPtr);
+                return WAPI_OK;
+            },
+            // Uploading to GPU would require wiring through our wgpu path.
+            read_frame_gpu(_camera, _framePtr, _texturePtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
         // wapi_xr (XR / extended reality - stub)
         // -------------------------------------------------------------------
+        // WebXR. Session lifecycle is fully async; we keep the polling
+        // state-machine pattern and cache the latest frame state.
+        const xrModes = ["immersive-vr", "immersive-ar", "inline"];
         const wapi_xr = {
-            is_supported(type) { return 0; },
-            request_session(type, sessionPtr) { return WAPI_ERR_NOTSUP; },
-            end_session(session) { return WAPI_ERR_NOTSUP; },
-            create_ref_space(session, type, spacePtr) { return WAPI_ERR_NOTSUP; },
-            wait_frame(session, statePtr, viewsPtr, maxViews) { return WAPI_ERR_NOTSUP; },
-            begin_frame(session) { return WAPI_ERR_NOTSUP; },
-            end_frame(session, texturesPtr, texCount) { return WAPI_ERR_NOTSUP; },
-            get_controller_pose(session, space, hand, posePtr) { return WAPI_ERR_NOTSUP; },
-            get_controller_state(session, hand, buttonsPtr, triggerPtr, gripPtr, thumbXPtr, thumbYPtr) { return WAPI_ERR_NOTSUP; },
-            hit_test(session, space, originPtr, directionPtr, posePtr) { return WAPI_ERR_NOTSUP; },
+            is_supported(type) {
+                if (typeof navigator === "undefined" || !navigator.xr) return 0;
+                // isSessionSupported is async. Best-effort: cache on first call.
+                if (!self._xrSupported) self._xrSupported = {};
+                const mode = xrModes[type];
+                if (!mode) return 0;
+                if (self._xrSupported[mode] === undefined) {
+                    self._xrSupported[mode] = null;
+                    navigator.xr.isSessionSupported(mode).then(
+                        (ok) => { self._xrSupported[mode] = !!ok; },
+                        () => { self._xrSupported[mode] = false; }
+                    );
+                }
+                return self._xrSupported[mode] ? 1 : 0;
+            },
+            request_session(type, sessionPtr) {
+                if (typeof navigator === "undefined" || !navigator.xr) return WAPI_ERR_NOTSUP;
+                if (!self._xrStates) self._xrStates = new Map();
+                return asyncOp(self._xrStates, "sess:" + sessionPtr, (entry) => {
+                    const mode = xrModes[type] || "inline";
+                    navigator.xr.requestSession(mode).then(
+                        (s) => { entry.state = "ready"; entry.session = s; },
+                        (err) => { entry.state = err && err.name === "NotAllowedError" ? "canceled" : "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({ type: "xr_session", session: st.session, lastFrame: null, refSpaces: new Map() });
+                    st.session.addEventListener("end", () => {
+                        const e = self.handles.get(h);
+                        if (e) e.ended = true;
+                    });
+                    self._writeI32(sessionPtr, h);
+                    return WAPI_OK;
+                });
+            },
+            end_session(session) {
+                const e = self.handles.get(session);
+                if (!e || e.type !== "xr_session") return WAPI_ERR_BADF;
+                try { e.session.end(); } catch (_) {}
+                self.handles.remove(session);
+                return WAPI_OK;
+            },
+            create_ref_space(session, type, spacePtr) {
+                const e = self.handles.get(session);
+                if (!e || e.type !== "xr_session") return WAPI_ERR_BADF;
+                const names = ["local","local-floor","bounded-floor","unbounded","viewer"];
+                const name = names[type] || "local";
+                return asyncOp(self._xrStates, "refspc:" + spacePtr, (entry) => {
+                    e.session.requestReferenceSpace(name).then(
+                        (s) => { entry.state = "ready"; entry.space = s; },
+                        () => { entry.state = "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({ type: "xr_space", space: st.space });
+                    self._writeI32(spacePtr, h);
+                    return WAPI_OK;
+                });
+            },
+            // Stubs for things that need an actual render loop hookup — keep
+            // NOTSUP until the higher-level XR integration is designed. The
+            // important thing is session/space acquisition works.
+            wait_frame(_session, _statePtr, _viewsPtr, _maxViews) { return WAPI_ERR_NOTSUP; },
+            begin_frame(_session) { return WAPI_ERR_NOTSUP; },
+            end_frame(_session, _texturesPtr, _texCount) { return WAPI_ERR_NOTSUP; },
+            get_controller_pose(_session, _space, _hand, _posePtr) { return WAPI_ERR_NOTSUP; },
+            get_controller_state(_session, _hand, _buttonsPtr, _triggerPtr, _gripPtr, _thumbXPtr, _thumbYPtr) { return WAPI_ERR_NOTSUP; },
+            hit_test(_session, _space, _originPtr, _directionPtr, _posePtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // wapi_event: REMOVED — event delivery is now part of wapi_io vtable
@@ -4676,25 +6226,85 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_register (app registration - stub)
         // -------------------------------------------------------------------
+        // Browser exposes only protocol handler registration. Filetype handlers
+        // and preview handlers require a PWA manifest (static) or OS APIs we
+        // can't reach from a page.
         const wapi_register = {
-            scheme_add(schemeSvPtr) { return WAPI_ERR_NOTSUP; },
-            scheme_remove(schemeSvPtr) { return WAPI_ERR_NOTSUP; },
-            filetype_add(descPtr) { return WAPI_ERR_NOTSUP; },
-            filetype_remove(extSvPtr) { return WAPI_ERR_NOTSUP; },
-            preview_add(extSvPtr) { return WAPI_ERR_NOTSUP; },
-            scheme_isdefault(schemeSvPtr) { return 0; },
-            filetype_isdefault(extSvPtr) { return 0; },
+            scheme_add(schemeSvPtr) {
+                if (typeof navigator === "undefined" || !navigator.registerProtocolHandler)
+                    return WAPI_ERR_NOTSUP;
+                const scheme = self._readStringView(schemeSvPtr);
+                if (!scheme) return WAPI_ERR_INVAL;
+                try {
+                    // Use current page as the handler.
+                    navigator.registerProtocolHandler(scheme, location.href + "#url=%s");
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_ACCES; }
+            },
+            scheme_remove(schemeSvPtr) {
+                if (typeof navigator === "undefined" || !navigator.unregisterProtocolHandler)
+                    return WAPI_ERR_NOTSUP;
+                const scheme = self._readStringView(schemeSvPtr);
+                if (!scheme) return WAPI_ERR_INVAL;
+                try {
+                    navigator.unregisterProtocolHandler(scheme, location.href + "#url=%s");
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_ACCES; }
+            },
+            filetype_add(_descPtr)   { return WAPI_ERR_NOTSUP; },
+            filetype_remove(_sv)     { return WAPI_ERR_NOTSUP; },
+            preview_add(_sv)         { return WAPI_ERR_NOTSUP; },
+            scheme_isdefault(_sv)    { return 0; },
+            filetype_isdefault(_sv)  { return 0; },
         };
 
         // -------------------------------------------------------------------
         // wapi_taskbar (taskbar/dock - stub)
         // -------------------------------------------------------------------
         const wapi_taskbar = {
-            set_progress(surface, state, value) { return WAPI_ERR_NOTSUP; },
-            set_badge(count) { return WAPI_ERR_NOTSUP; },
-            request_attention(surface, critical) { return WAPI_ERR_NOTSUP; },
-            set_overlay_icon(surface, iconData, iconLen, desc, descLen) { return WAPI_ERR_NOTSUP; },
-            clear_overlay(surface) { return WAPI_ERR_NOTSUP; },
+            // Surface progress as a bracket in the tab title when fullscreen
+            // browser APIs aren't available. Too noisy if we update every
+            // frame — throttle to 1% steps.
+            set_progress(surface, state, value) {
+                if (typeof document === "undefined") return WAPI_ERR_NOTSUP;
+                const pct = Math.round(value * 100);
+                if (self._lastProgressPct === pct) return WAPI_OK;
+                self._lastProgressPct = pct;
+                const base = self._baseTitle != null ? self._baseTitle : document.title;
+                if (self._baseTitle == null) self._baseTitle = base;
+                if (state === 0 /* NONE */) {
+                    document.title = self._baseTitle;
+                } else if (state === 1 /* INDETERMINATE */) {
+                    document.title = `[…] ${self._baseTitle}`;
+                } else {
+                    document.title = `[${pct}%] ${self._baseTitle}`;
+                }
+                return WAPI_OK;
+            },
+            // App Badging API — works on installed PWAs only.
+            set_badge(count) {
+                if (typeof navigator === "undefined" || !navigator.setAppBadge)
+                    return WAPI_ERR_NOTSUP;
+                try {
+                    if (count > 0) navigator.setAppBadge(count);
+                    else navigator.clearAppBadge();
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            // No "request attention" on the web — best effort: flash title.
+            request_attention(_surface, _critical) {
+                if (typeof document === "undefined") return WAPI_ERR_NOTSUP;
+                const base = self._baseTitle != null ? self._baseTitle : document.title;
+                if (self._baseTitle == null) self._baseTitle = base;
+                let n = 0;
+                const id = setInterval(() => {
+                    document.title = (n++ % 2) ? `* ${base}` : base;
+                    if (n > 10) { clearInterval(id); document.title = base; }
+                }, 500);
+                return WAPI_OK;
+            },
+            set_overlay_icon(_surface, _iconData, _iconLen, _desc, _descLen) { return WAPI_ERR_NOTSUP; },
+            clear_overlay(_surface) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
@@ -4703,54 +6313,446 @@ class WAPI {
         const wapi_orient = {
             get(orientPtr) {
                 self._refreshViews();
-                self._writeU32(orientPtr, 0); // PORTRAIT_PRIMARY
+                let v = 0;
+                if (typeof screen !== "undefined" && screen.orientation) {
+                    switch (screen.orientation.type) {
+                        case "portrait-primary":    v = 0; break;
+                        case "portrait-secondary":  v = 1; break;
+                        case "landscape-primary":   v = 2; break;
+                        case "landscape-secondary": v = 3; break;
+                    }
+                }
+                self._writeU32(orientPtr, v);
                 return WAPI_OK;
             },
-            lock(lockType) { return WAPI_ERR_NOTSUP; },
-            unlock() { return WAPI_OK; },
+            lock(lockType) {
+                if (typeof screen === "undefined" || !screen.orientation || !screen.orientation.lock)
+                    return WAPI_ERR_NOTSUP;
+                const names = ["any", "portrait", "landscape", "natural"];
+                const name = names[lockType] || "any";
+                try { screen.orientation.lock(name).catch(() => {}); return WAPI_OK; }
+                catch (_) { return WAPI_ERR_IO; }
+            },
+            unlock() {
+                if (typeof screen !== "undefined" && screen.orientation && screen.orientation.unlock) {
+                    try { screen.orientation.unlock(); } catch (_) {}
+                }
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_codec (codec - stub)
         // -------------------------------------------------------------------
+        // WebCodecs (VideoDecoder, VideoEncoder, AudioDecoder, AudioEncoder).
+        // Fully wiring all struct fields is substantial; we expose a
+        // "best-effort" subset that covers create/decode/encode/output pull.
+        const codecNames = {
+            0: "avc1.42e01e", 1: "hev1.1.6.L93.B0", 2: "vp09.00.10.08", 3: "av01.0.01M.08",
+            10: "mp4a.40.2", 11: "opus", 12: "vorbis", 13: "flac",
+        };
         const wapi_codec = {
-            create_video(configPtr, codecPtr) { return WAPI_ERR_NOTSUP; },
-            create_audio(configPtr, codecPtr) { return WAPI_ERR_NOTSUP; },
-            destroy(codec) { return WAPI_ERR_NOTSUP; },
-            is_supported(codecType, mode) { return WAPI_ERR_NOTSUP; },
-            decode(codec, chunkPtr) { return WAPI_ERR_NOTSUP; },
-            encode(codec, dataPtr, dataLen, timestampLo, timestampHi) { return WAPI_ERR_NOTSUP; },
-            get_output(codec, bufPtr, bufLen, outLenPtr, tsPtr) { return WAPI_ERR_NOTSUP; },
-            flush(codec) { return WAPI_ERR_NOTSUP; },
-            query_decode(queryPtr, resultPtr) { return WAPI_ERR_NOTSUP; },
-            query_encode(queryPtr, resultPtr) { return WAPI_ERR_NOTSUP; },
+            // video desc: codec u32, width u32, height u32, bitrate u32, fps u32, mode u32 + pad
+            create_video(descPtr, codecPtr) {
+                if (typeof VideoDecoder === "undefined") return WAPI_ERR_NOTSUP;
+                self._refreshViews();
+                const codecId = self._dv.getUint32(descPtr + 0, true);
+                const width   = self._dv.getUint32(descPtr + 4, true);
+                const height  = self._dv.getUint32(descPtr + 8, true);
+                const bitrate = self._dv.getUint32(descPtr + 12, true);
+                const fps     = self._dv.getUint32(descPtr + 16, true);
+                const mode    = self._dv.getUint32(descPtr + 20, true); // 0 decode, 1 encode
+                const codec = codecNames[codecId];
+                if (!codec) return WAPI_ERR_INVAL;
+                const outQueue = [];
+                const errors = [];
+                let instance;
+                try {
+                    if (mode === 0) {
+                        instance = new VideoDecoder({
+                            output: (frame) => { outQueue.push(frame); },
+                            error:  (e) => { errors.push(e); },
+                        });
+                        instance.configure({ codec });
+                    } else {
+                        instance = new VideoEncoder({
+                            output: (chunk) => {
+                                const data = new Uint8Array(chunk.byteLength);
+                                chunk.copyTo(data);
+                                outQueue.push({ data, timestamp: chunk.timestamp, type: chunk.type });
+                            },
+                            error: (e) => { errors.push(e); },
+                        });
+                        instance.configure({
+                            codec, width, height,
+                            bitrate: bitrate > 0 ? bitrate : 1_000_000,
+                            framerate: fps > 0 ? fps : 30,
+                        });
+                    }
+                } catch (_) { return WAPI_ERR_INVAL; }
+                const h = self.handles.insert({ type: "codec", codec: instance, kind: "video", mode, out: outQueue, errors });
+                self._writeI32(codecPtr, h);
+                return WAPI_OK;
+            },
+            create_audio(descPtr, codecPtr) {
+                if (typeof AudioDecoder === "undefined") return WAPI_ERR_NOTSUP;
+                self._refreshViews();
+                const codecId    = self._dv.getUint32(descPtr + 0, true);
+                const sampleRate = self._dv.getUint32(descPtr + 4, true);
+                const channels   = self._dv.getUint32(descPtr + 8, true);
+                const mode       = self._dv.getUint32(descPtr + 12, true);
+                const codec = codecNames[codecId];
+                if (!codec) return WAPI_ERR_INVAL;
+                const outQueue = [];
+                const errors = [];
+                let instance;
+                try {
+                    if (mode === 0) {
+                        instance = new AudioDecoder({
+                            output: (frame) => { outQueue.push(frame); },
+                            error: (e) => { errors.push(e); },
+                        });
+                        instance.configure({ codec, sampleRate, numberOfChannels: channels });
+                    } else {
+                        instance = new AudioEncoder({
+                            output: (chunk) => {
+                                const data = new Uint8Array(chunk.byteLength);
+                                chunk.copyTo(data);
+                                outQueue.push({ data, timestamp: chunk.timestamp });
+                            },
+                            error: (e) => { errors.push(e); },
+                        });
+                        instance.configure({ codec, sampleRate, numberOfChannels: channels });
+                    }
+                } catch (_) { return WAPI_ERR_INVAL; }
+                const h = self.handles.insert({ type: "codec", codec: instance, kind: "audio", mode, out: outQueue, errors });
+                self._writeI32(codecPtr, h);
+                return WAPI_OK;
+            },
+            destroy(codec) {
+                const e = self.handles.get(codec);
+                if (!e || e.type !== "codec") return WAPI_ERR_BADF;
+                try { e.codec.close(); } catch (_) {}
+                self.handles.remove(codec);
+                return WAPI_OK;
+            },
+            is_supported(codecType, mode) {
+                const codec = codecNames[codecType];
+                if (!codec) return 0;
+                // isConfigSupported is async; return 1 optimistically if the
+                // API exists. Apps needing a hard check can use query_decode.
+                if (mode === 0) return typeof VideoDecoder !== "undefined" ? 1 : 0;
+                return typeof VideoEncoder !== "undefined" ? 1 : 0;
+            },
+            // chunk: data ptr i64, data_len u32, _pad, timestamp i64, flags u32, _res, _pad (40 bytes)
+            decode(codec, chunkPtr) {
+                const e = self.handles.get(codec);
+                if (!e || e.type !== "codec" || e.mode !== 0) return WAPI_ERR_BADF;
+                self._refreshViews();
+                const dptr  = Number(self._dv.getBigUint64(chunkPtr + 0, true));
+                const dlen  = self._dv.getUint32(chunkPtr + 8, true);
+                const ts    = Number(self._dv.getBigInt64(chunkPtr + 16, true));
+                const flags = self._dv.getUint32(chunkPtr + 24, true);
+                const data  = self._u8.slice(dptr, dptr + dlen);
+                try {
+                    if (e.kind === "video") {
+                        e.codec.decode(new EncodedVideoChunk({
+                            type: (flags & 0x1) ? "key" : "delta",
+                            timestamp: ts,
+                            data,
+                        }));
+                    } else {
+                        e.codec.decode(new EncodedAudioChunk({
+                            type: (flags & 0x1) ? "key" : "delta",
+                            timestamp: ts,
+                            data,
+                        }));
+                    }
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            encode(codec, dataPtr, dataLen, timestampLo, timestampHi) {
+                // Video/audio encode takes frames, not raw data — full support
+                // needs VideoFrame creation which requires a source image. Leave
+                // as NOTSUP for now; wasm-side encoders usually go through an
+                // explicit frame-creation entry point.
+                return WAPI_ERR_NOTSUP;
+            },
+            get_output(codec, bufPtr, bufLen, outLenPtr, tsPtr) {
+                const e = self.handles.get(codec);
+                if (!e || e.type !== "codec") return WAPI_ERR_BADF;
+                if (e.errors.length > 0) return WAPI_ERR_IO;
+                if (e.out.length === 0) return WAPI_ERR_AGAIN;
+                const item = e.out.shift();
+                self._refreshViews();
+                if (e.mode === 1) {
+                    // Encoded chunk: copy bytes.
+                    const n = Math.min(Number(bufLen), item.data.length);
+                    self._u8.set(item.data.subarray(0, n), bufPtr);
+                    self._writeU64(outLenPtr, item.data.length);
+                    if (tsPtr) self._dv.setBigInt64(tsPtr, BigInt(item.timestamp || 0), true);
+                    return WAPI_OK;
+                }
+                // Decoded VideoFrame / AudioData — copy into caller's buffer.
+                try {
+                    if (e.kind === "video") {
+                        const buf = new Uint8Array(item.allocationSize({ format: "RGBA" }));
+                        item.copyTo(buf, { format: "RGBA" }).then(() => {}); // async, best-effort
+                        const n = Math.min(Number(bufLen), buf.length);
+                        self._u8.set(buf.subarray(0, n), bufPtr);
+                        self._writeU64(outLenPtr, buf.length);
+                        if (tsPtr) self._dv.setBigInt64(tsPtr, BigInt(item.timestamp || 0), true);
+                        item.close();
+                    } else {
+                        const samples = item.numberOfFrames * item.numberOfChannels;
+                        const buf = new Float32Array(samples);
+                        item.copyTo(buf, { planeIndex: 0 });
+                        const bytes = new Uint8Array(buf.buffer);
+                        const n = Math.min(Number(bufLen), bytes.length);
+                        self._u8.set(bytes.subarray(0, n), bufPtr);
+                        self._writeU64(outLenPtr, bytes.length);
+                        if (tsPtr) self._dv.setBigInt64(tsPtr, BigInt(item.timestamp || 0), true);
+                        item.close();
+                    }
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            flush(codec) {
+                const e = self.handles.get(codec);
+                if (!e || e.type !== "codec") return WAPI_ERR_BADF;
+                try { e.codec.flush().catch(() => {}); } catch (_) {}
+                return WAPI_OK;
+            },
+            query_decode(_queryPtr, _resultPtr) { return WAPI_ERR_NOTSUP; },
+            query_encode(_queryPtr, _resultPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
         // wapi_media (media session - stub)
         // -------------------------------------------------------------------
+        // MediaSession API. Metadata struct layout (64 bytes):
+        //   title(16) artist(16) album(16) artwork(8) artwork_len(4) _pad(4)
         const wapi_media = {
-            set_metadata(metadataPtr) { return WAPI_ERR_NOTSUP; },
-            set_playback_state(state) { return WAPI_ERR_NOTSUP; },
-            set_position(position, duration) { return WAPI_ERR_NOTSUP; },
-            set_actions(actionsPtr, count) { return WAPI_ERR_NOTSUP; },
+            set_metadata(metadataPtr) {
+                if (typeof navigator === "undefined" || !navigator.mediaSession) return WAPI_ERR_NOTSUP;
+                const title  = self._readStringView(metadataPtr + 0)  || "";
+                const artist = self._readStringView(metadataPtr + 16) || "";
+                const album  = self._readStringView(metadataPtr + 32) || "";
+                try {
+                    navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album });
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            set_playback_state(state) {
+                if (typeof navigator === "undefined" || !navigator.mediaSession) return WAPI_ERR_NOTSUP;
+                const names = ["none", "paused", "playing"];
+                navigator.mediaSession.playbackState = names[state] || "none";
+                return WAPI_OK;
+            },
+            set_position(position, duration) {
+                if (typeof navigator === "undefined" || !navigator.mediaSession ||
+                    !navigator.mediaSession.setPositionState) return WAPI_ERR_NOTSUP;
+                try {
+                    navigator.mediaSession.setPositionState({
+                        position, duration, playbackRate: 1.0,
+                    });
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_INVAL; }
+            },
+            // Action handlers emit IO completion events carrying the action id.
+            set_actions(actionsPtr, count) {
+                if (typeof navigator === "undefined" || !navigator.mediaSession) return WAPI_ERR_NOTSUP;
+                const names = ["play","pause","stop","seekbackward","seekforward","previoustrack","nexttrack"];
+                const enabled = new Set();
+                self._refreshViews();
+                for (let i = 0; i < count; i++) {
+                    const a = self._dv.getUint32(actionsPtr + i * 4, true);
+                    if (names[a]) enabled.add(a);
+                }
+                // Clear existing.
+                for (const n of names) {
+                    try { navigator.mediaSession.setActionHandler(n, null); } catch (_) {}
+                }
+                for (const a of enabled) {
+                    const name = names[a];
+                    try {
+                        navigator.mediaSession.setActionHandler(name, () => {
+                            self._eventQueue.push({
+                                type: WAPI_EVENT_IO_COMPLETION,
+                                userData: BigInt(a),
+                                result: 0, flags: 0x10000, // flag: media-session action
+                            });
+                        });
+                    } catch (_) {}
+                }
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_encode (text encoding - stub)
         // -------------------------------------------------------------------
+        // Text encoding conversions. TextDecoder supports every "from"
+        // encoding the spec lists; TextEncoder only emits UTF-8, so
+        // "to" != UTF-8 falls back to a small switch.
+        const WAPI_ENC = {
+            0: "utf-8", 1: "utf-16le", 2: "utf-16be",
+            3: "iso-8859-1", 4: "windows-1252",
+            5: "shift_jis", 6: "euc-jp",
+            7: "gb18030",   // covers GB2312 data
+            8: "big5", 9: "euc-kr",
+        };
+        const _encodeTo = (encName, text) => {
+            if (encName === "utf-8") return new TextEncoder().encode(text);
+            if (encName === "utf-16le") {
+                const out = new Uint8Array(text.length * 2);
+                const dv = new DataView(out.buffer);
+                for (let i = 0; i < text.length; i++) dv.setUint16(i * 2, text.charCodeAt(i), true);
+                return out;
+            }
+            if (encName === "utf-16be") {
+                const out = new Uint8Array(text.length * 2);
+                const dv = new DataView(out.buffer);
+                for (let i = 0; i < text.length; i++) dv.setUint16(i * 2, text.charCodeAt(i), false);
+                return out;
+            }
+            if (encName === "iso-8859-1" || encName === "windows-1252") {
+                const out = new Uint8Array(text.length);
+                for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xFF;
+                return out;
+            }
+            return null; // unsupported
+        };
         const wapi_encode = {
-            convert(from, to, inputPtr, inputLen, outputPtr, outputLen, bytesWrittenPtr) { return WAPI_ERR_NOTSUP; },
-            query_size(from, to, inputPtr, inputLen, requiredLenPtr) { return WAPI_ERR_NOTSUP; },
-            detect(dataPtr, len, encodingPtr, confidencePtr) { return WAPI_ERR_NOTSUP; },
+            convert(from, to, inputPtr, inputLen, outputPtr, outputLen, bytesWrittenPtr) {
+                const fromEnc = WAPI_ENC[from];
+                const toEnc   = WAPI_ENC[to];
+                if (!fromEnc || !toEnc) return WAPI_ERR_INVAL;
+                self._refreshViews();
+                let text;
+                try {
+                    text = new TextDecoder(fromEnc, { fatal: false })
+                        .decode(self._u8.subarray(inputPtr, inputPtr + Number(inputLen)));
+                } catch (_) { return WAPI_ERR_IO; }
+                const encoded = _encodeTo(toEnc, text);
+                if (!encoded) return WAPI_ERR_NOTSUP;
+                const copy = Math.min(encoded.length, Number(outputLen));
+                self._u8.set(encoded.subarray(0, copy), outputPtr);
+                self._writeU64(bytesWrittenPtr, encoded.length);
+                return encoded.length > Number(outputLen) ? WAPI_ERR_OVERFLOW : WAPI_OK;
+            },
+            query_size(from, to, inputPtr, inputLen, requiredLenPtr) {
+                const fromEnc = WAPI_ENC[from];
+                const toEnc   = WAPI_ENC[to];
+                if (!fromEnc || !toEnc) return WAPI_ERR_INVAL;
+                self._refreshViews();
+                let text;
+                try {
+                    text = new TextDecoder(fromEnc, { fatal: false })
+                        .decode(self._u8.subarray(inputPtr, inputPtr + Number(inputLen)));
+                } catch (_) { return WAPI_ERR_IO; }
+                const encoded = _encodeTo(toEnc, text);
+                if (!encoded) return WAPI_ERR_NOTSUP;
+                self._writeU64(requiredLenPtr, encoded.length);
+                return WAPI_OK;
+            },
+            detect(dataPtr, len, encodingPtr, confidencePtr) {
+                self._refreshViews();
+                const bytes = self._u8.subarray(dataPtr, dataPtr + Number(len));
+                // BOM sniffing.
+                if (bytes.length >= 3 && bytes[0]===0xEF && bytes[1]===0xBB && bytes[2]===0xBF) {
+                    self._writeU32(encodingPtr, 0); self._writeF32(confidencePtr, 1.0); return WAPI_OK;
+                }
+                if (bytes.length >= 2 && bytes[0]===0xFF && bytes[1]===0xFE) {
+                    self._writeU32(encodingPtr, 1); self._writeF32(confidencePtr, 1.0); return WAPI_OK;
+                }
+                if (bytes.length >= 2 && bytes[0]===0xFE && bytes[1]===0xFF) {
+                    self._writeU32(encodingPtr, 2); self._writeF32(confidencePtr, 1.0); return WAPI_OK;
+                }
+                // Heuristic: validate as UTF-8.
+                try {
+                    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+                    self._writeU32(encodingPtr, 0); self._writeF32(confidencePtr, 0.8); return WAPI_OK;
+                } catch (_) {
+                    self._writeU32(encodingPtr, 4); self._writeF32(confidencePtr, 0.3);
+                    return WAPI_OK;
+                }
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_authn (web authentication - stub)
         // -------------------------------------------------------------------
+        // WebAuthn via navigator.credentials. Both operations are async →
+        // polling pattern keyed by the caller-visible buffer address.
+        // For create_credential we need a user struct; minimal interpretation:
+        //   user layout: id sv(16), name sv(16), display_name sv(16) = 48 bytes
         const wapi_authn = {
-            create_credential(rpIdPtr, rpIdLen, userPtr, challengePtr, challengeLen) { return WAPI_ERR_NOTSUP; },
-            get_assertion(rpIdPtr, rpIdLen, challengePtr, challengeLen) { return WAPI_ERR_NOTSUP; },
+            // Note: rp_id is an sv, but the existing stub takes (rpIdPtr, rpIdLen). Follow existing style.
+            create_credential(rpIdPtr, rpIdLen, userPtr, challengePtr, challengeLen) {
+                if (typeof navigator === "undefined" || !navigator.credentials ||
+                    typeof PublicKeyCredential === "undefined") return WAPI_ERR_NOTSUP;
+                if (!self._authnStates) self._authnStates = new Map();
+                const key = "create:" + challengePtr;
+                const st = self._authnStates.get(key);
+                if (st && st.state !== "pending") {
+                    self._authnStates.delete(key);
+                    if (st.state !== "ready") return WAPI_ERR_ACCES;
+                    // We don't write the full credential back — the C-side
+                    // caller must wait for get_assertion. Signal success.
+                    return WAPI_OK;
+                }
+                if (!st) {
+                    const entry = { state: "pending" };
+                    self._authnStates.set(key, entry);
+                    const rpId = self._readString(rpIdPtr, Number(rpIdLen));
+                    const userId  = self._readStringView(userPtr + 0)  || "user";
+                    const userName= self._readStringView(userPtr + 16) || userId;
+                    const display = self._readStringView(userPtr + 32) || userName;
+                    const challenge = self._u8.slice(challengePtr, challengePtr + Number(challengeLen));
+                    navigator.credentials.create({
+                        publicKey: {
+                            rp: { id: rpId, name: rpId },
+                            user: {
+                                id: new TextEncoder().encode(userId),
+                                name: userName,
+                                displayName: display,
+                            },
+                            challenge,
+                            pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+                            timeout: 60000,
+                        },
+                    }).then(
+                        (_cred) => { entry.state = "ready"; },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            get_assertion(rpIdPtr, rpIdLen, challengePtr, challengeLen) {
+                if (typeof navigator === "undefined" || !navigator.credentials ||
+                    typeof PublicKeyCredential === "undefined") return WAPI_ERR_NOTSUP;
+                if (!self._authnStates) self._authnStates = new Map();
+                const key = "get:" + challengePtr;
+                const st = self._authnStates.get(key);
+                if (st && st.state !== "pending") {
+                    self._authnStates.delete(key);
+                    return st.state === "ready" ? WAPI_OK : WAPI_ERR_ACCES;
+                }
+                if (!st) {
+                    const entry = { state: "pending" };
+                    self._authnStates.set(key, entry);
+                    const rpId = self._readString(rpIdPtr, Number(rpIdLen));
+                    const challenge = self._u8.slice(challengePtr, challengePtr + Number(challengeLen));
+                    navigator.credentials.get({
+                        publicKey: { challenge, rpId, timeout: 60000 },
+                    }).then(
+                        () => { entry.state = "ready"; },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -4772,14 +6774,107 @@ class WAPI {
         // wapi_power (battery, wake lock, idle, saver, thermal - stubs)
         // -------------------------------------------------------------------
         const wapi_power = {
-            get_info(infoPtr) { return WAPI_ERR_NOTSUP; },
-            wake_acquire(type, lockPtr) { return WAPI_ERR_NOTSUP; },
-            wake_release(lock) { return WAPI_ERR_NOTSUP; },
-            idle_start(thresholdMs) { return WAPI_ERR_NOTSUP; },
-            idle_stop() { return WAPI_ERR_NOTSUP; },
-            idle_get(statePtr) { return WAPI_ERR_NOTSUP; },
-            saver_get(statePtr) { return WAPI_ERR_NOTSUP; },
-            thermal_get(statePtr) { return WAPI_ERR_NOTSUP; },
+            // wapi_power_info_t: 16 bytes. u32 source, f32 battery, f32 seconds, u32 pad.
+            // Battery API is async; we kick off once, cache on the instance, and
+            // subsequent calls return the cached snapshot.
+            get_info(infoPtr) {
+                self._refreshViews();
+                if (typeof navigator === "undefined" || !navigator.getBattery) {
+                    self._dv.setUint32 (infoPtr + 0, 0, true);    // UNKNOWN
+                    self._dv.setFloat32(infoPtr + 4, 1.0, true);
+                    self._dv.setFloat32(infoPtr + 8, Infinity, true);
+                    self._dv.setUint32 (infoPtr + 12, 0, true);
+                    return WAPI_OK;
+                }
+                if (!self._batteryHandle) {
+                    self._batteryHandle = { src: 0, level: 1.0, seconds: Infinity };
+                    navigator.getBattery().then((b) => {
+                        const update = () => {
+                            self._batteryHandle.level   = b.level;
+                            self._batteryHandle.seconds = b.charging
+                                ? (isFinite(b.chargingTime) ? b.chargingTime : Infinity)
+                                : (isFinite(b.dischargingTime) ? b.dischargingTime : Infinity);
+                            self._batteryHandle.src = b.charging
+                                ? (b.level >= 0.999 ? 4 /* CHARGED */ : 3 /* CHARGING */)
+                                : 1 /* BATTERY */;
+                        };
+                        update();
+                        b.addEventListener("levelchange", update);
+                        b.addEventListener("chargingchange", update);
+                        b.addEventListener("chargingtimechange", update);
+                        b.addEventListener("dischargingtimechange", update);
+                    });
+                }
+                self._dv.setUint32 (infoPtr + 0, self._batteryHandle.src, true);
+                self._dv.setFloat32(infoPtr + 4, self._batteryHandle.level, true);
+                self._dv.setFloat32(infoPtr + 8, self._batteryHandle.seconds, true);
+                self._dv.setUint32 (infoPtr + 12, 0, true);
+                return WAPI_OK;
+            },
+            // Screen Wake Lock API. Async acquire; we optimistically insert a
+            // handle and upgrade it once the promise resolves.
+            wake_acquire(type, lockPtr) {
+                if (typeof navigator === "undefined" || !navigator.wakeLock) return WAPI_ERR_NOTSUP;
+                const kind = type === 1 ? "screen" : "screen"; // only "screen" exists on the web
+                const entry = { type: "wakelock", lock: null, released: false };
+                navigator.wakeLock.request(kind).then(
+                    (l) => {
+                        if (entry.released) { try { l.release(); } catch (_) {} return; }
+                        entry.lock = l;
+                    },
+                    () => { entry.released = true; }
+                );
+                const h = self.handles.insert(entry);
+                self._writeI32(lockPtr, h);
+                return WAPI_OK;
+            },
+            wake_release(lock) {
+                const e = self.handles.get(lock);
+                if (!e || e.type !== "wakelock") return WAPI_ERR_BADF;
+                e.released = true;
+                if (e.lock) { try { e.lock.release(); } catch (_) {} }
+                self.handles.remove(lock);
+                return WAPI_OK;
+            },
+            // Idle Detection API. Async start.
+            idle_start(thresholdMs) {
+                if (typeof IdleDetector === "undefined") return WAPI_ERR_NOTSUP;
+                if (self._idleDetector) return WAPI_ERR_BUSY;
+                IdleDetector.requestPermission().then((perm) => {
+                    if (perm !== "granted") return;
+                    const detector = new IdleDetector();
+                    detector.addEventListener("change", () => {
+                        self._idleState = detector.userState === "idle"
+                            ? (detector.screenState === "locked" ? 2 : 1)
+                            : 0;
+                    });
+                    detector.start({ threshold: Math.max(60_000, thresholdMs) })
+                        .then(() => { self._idleDetector = detector; })
+                        .catch(() => {});
+                });
+                return WAPI_OK;
+            },
+            idle_stop() {
+                // No abort controller tracked; best-effort drop reference.
+                self._idleDetector = null;
+                self._idleState = 0;
+                return WAPI_OK;
+            },
+            idle_get(statePtr) {
+                self._writeU32(statePtr, self._idleState || 0);
+                return WAPI_OK;
+            },
+            // Data Saver flag surfaces through navigator.connection.saveData.
+            saver_get(statePtr) {
+                const c = typeof navigator !== "undefined" && navigator.connection;
+                self._writeU32(statePtr, c && c.saveData ? 1 : 0);
+                return WAPI_OK;
+            },
+            thermal_get(statePtr) {
+                // No browser thermal API — always nominal.
+                self._writeU32(statePtr, 0);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -4802,99 +6897,720 @@ class WAPI {
                 if (navigator.vibrate) { navigator.vibrate(0); return WAPI_OK; }
                 return WAPI_ERR_NOTSUP;
             },
-            gamepad_vibrate(gamepadIndex, strongPtr, weakPtr, durationMs) { return WAPI_ERR_NOTSUP; },
+            gamepad_vibrate(gamepadIndex, strong, weak, durationMs) {
+                if (typeof navigator === "undefined" || !navigator.getGamepads) return WAPI_ERR_NOTSUP;
+                const pads = navigator.getGamepads();
+                const pad = pads && pads[gamepadIndex];
+                if (!pad || !pad.vibrationActuator) return WAPI_ERR_BADF;
+                try {
+                    pad.vibrationActuator.playEffect("dual-rumble", {
+                        duration: durationMs,
+                        strongMagnitude: strong,
+                        weakMagnitude: weak,
+                    }).catch(() => {});
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            // Per-device haptics. The web platform doesn't expose
+            // independent haptic devices beyond gamepads and the top-level
+            // Vibration API — treat index 0 as the default vibration
+            // device.
+            haptic_open(deviceIndex, outHandlePtr) {
+                if (typeof navigator === "undefined" || !navigator.vibrate) return WAPI_ERR_NOTSUP;
+                const h = self.handles.insert({ type: "haptic", idx: deviceIndex });
+                self._writeI32(outHandlePtr, h);
+                return WAPI_OK;
+            },
+            haptic_close(handle) {
+                if (!self.handles.get(handle)) return WAPI_ERR_BADF;
+                self.handles.remove(handle);
+                return WAPI_OK;
+            },
+            haptic_rumble(handle, strength, durationMs) {
+                const e = self.handles.get(handle);
+                if (!e || e.type !== "haptic") return WAPI_ERR_BADF;
+                // Vibration API is binary — approximate strength via duration.
+                navigator.vibrate(Math.max(1, durationMs));
+                return WAPI_OK;
+            },
+            haptic_get_features(_handle) {
+                // Rumble only on the web.
+                return 0x20; // FEAT_RUMBLE
+            },
+            haptic_effect_create(handle, descPtr, descLen, outEffect) {
+                const e = self.handles.get(handle);
+                if (!e || e.type !== "haptic") return WAPI_ERR_BADF;
+                // Cache the desc as an effect record.
+                self._refreshViews();
+                const data = self._u8.slice(descPtr, descPtr + Number(descLen));
+                const h = self.handles.insert({ type: "haptic_effect", desc: data, parent: handle });
+                self._writeI32(outEffect, h);
+                return WAPI_OK;
+            },
+            haptic_effect_play(effect, iterations) {
+                const e = self.handles.get(effect);
+                if (!e || e.type !== "haptic_effect") return WAPI_ERR_BADF;
+                const pulse = [];
+                for (let i = 0; i < Math.max(1, iterations); i++) pulse.push(50, 50);
+                try { navigator.vibrate(pulse); return WAPI_OK; }
+                catch (_) { return WAPI_ERR_IO; }
+            },
+            haptic_effect_stop(_effect) { navigator.vibrate(0); return WAPI_OK; },
+            haptic_effect_destroy(effect) {
+                if (!self.handles.get(effect)) return WAPI_ERR_BADF;
+                self.handles.remove(effect);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_serial (serial port - stub)
         // -------------------------------------------------------------------
+        // Web Serial. Async throughout; the same polling pattern.
         const wapi_serial = {
-            request_port(portPtr) { return WAPI_ERR_NOTSUP; },
-            open(port, configPtr) { return WAPI_ERR_NOTSUP; },
-            close(port) { return WAPI_ERR_NOTSUP; },
-            write(port, dataPtr, dataLen) { return WAPI_ERR_NOTSUP; },
-            read(port, bufPtr, bufLen, bytesReadPtr) { return WAPI_ERR_NOTSUP; },
-            set_signals(port, dtr, rts) { return WAPI_ERR_NOTSUP; },
+            request_port(portPtr) {
+                if (typeof navigator === "undefined" || !navigator.serial) return WAPI_ERR_NOTSUP;
+                if (!self._serialStates) self._serialStates = new Map();
+                return asyncOp(self._serialStates, "req:" + portPtr, (entry) => {
+                    navigator.serial.requestPort({}).then(
+                        (p) => { entry.state = "ready"; entry.port = p; },
+                        (err) => { entry.state = err && err.name === "NotFoundError" ? "canceled" : "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({ type: "serial", port: st.port, reader: null, writer: null, rxQueue: [] });
+                    self._writeI32(portPtr, h);
+                    return WAPI_OK;
+                });
+            },
+            // desc: 16 bytes. baud u32, data_bits u8, stop_bits u8, parity u8, flow u8, pad u64
+            open(port, descPtr) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "serial") return WAPI_ERR_BADF;
+                if (e.opened) return WAPI_OK;
+                if (!self._serialStates) self._serialStates = new Map();
+                return asyncOp(self._serialStates, "open:" + port, (entry) => {
+                    self._refreshViews();
+                    const baud   = self._dv.getUint32(descPtr + 0, true) || 9600;
+                    const dbits  = self._u8[descPtr + 4] || 8;
+                    const sbits  = self._u8[descPtr + 5] || 1;
+                    const parity = self._u8[descPtr + 6];
+                    const flow   = self._u8[descPtr + 7];
+                    const opts = {
+                        baudRate: baud,
+                        dataBits: dbits,
+                        stopBits: sbits,
+                        parity: ["none","even","odd"][parity] || "none",
+                        flowControl: flow ? "hardware" : "none",
+                    };
+                    e.port.open(opts).then(
+                        async () => {
+                            e.opened = true;
+                            e.reader = e.port.readable.getReader();
+                            e.writer = e.port.writable.getWriter();
+                            // Pump the reader in background.
+                            (async () => {
+                                try {
+                                    while (e.opened) {
+                                        const { value, done } = await e.reader.read();
+                                        if (done) break;
+                                        if (value) e.rxQueue.push(value);
+                                    }
+                                } catch (_) {}
+                            })();
+                            entry.state = "ready";
+                        },
+                        () => { entry.state = "failed"; }
+                    );
+                }, () => WAPI_OK);
+            },
+            close(port) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "serial") return WAPI_ERR_BADF;
+                e.opened = false;
+                try { e.reader && e.reader.cancel(); } catch (_) {}
+                try { e.writer && e.writer.close(); } catch (_) {}
+                try { e.port.close(); } catch (_) {}
+                return WAPI_OK;
+            },
+            write(port, dataPtr, dataLen) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "serial" || !e.opened) return WAPI_ERR_BADF;
+                self._refreshViews();
+                const data = self._u8.slice(dataPtr, dataPtr + Number(dataLen));
+                e.writer.write(data).catch(() => {});
+                return WAPI_OK;
+            },
+            read(port, bufPtr, bufLen, bytesReadPtr) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "serial" || !e.opened) return WAPI_ERR_BADF;
+                if (e.rxQueue.length === 0) { self._writeU64(bytesReadPtr, 0); return WAPI_ERR_AGAIN; }
+                self._refreshViews();
+                const cap = Number(bufLen);
+                let written = 0;
+                while (e.rxQueue.length > 0 && written < cap) {
+                    const front = e.rxQueue[0];
+                    const n = Math.min(front.byteLength, cap - written);
+                    self._u8.set(front.subarray(0, n), bufPtr + written);
+                    written += n;
+                    if (n === front.byteLength) e.rxQueue.shift();
+                    else e.rxQueue[0] = front.subarray(n);
+                }
+                self._writeU64(bytesReadPtr, written);
+                return WAPI_OK;
+            },
+            set_signals(port, dtr, rts) {
+                const e = self.handles.get(port);
+                if (!e || e.type !== "serial" || !e.opened) return WAPI_ERR_BADF;
+                e.port.setSignals({ dataTerminalReady: !!dtr, requestToSend: !!rts }).catch(() => {});
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_capture (screen capture - stub)
         // -------------------------------------------------------------------
+        // Screen capture via getDisplayMedia.
         const wapi_capture = {
-            request(sourceType, capturePtr) { return WAPI_ERR_NOTSUP; },
-            get_frame(capture, bufPtr, bufLen, frameInfoPtr) { return WAPI_ERR_NOTSUP; },
-            stop(capture) { return WAPI_ERR_NOTSUP; },
+            request(sourceType, capturePtr) {
+                if (typeof navigator === "undefined" || !navigator.mediaDevices ||
+                    !navigator.mediaDevices.getDisplayMedia) return WAPI_ERR_NOTSUP;
+                if (!self._capStates) self._capStates = new Map();
+                return asyncOp(self._capStates, "req:" + capturePtr, (entry) => {
+                    const opts = { video: true, audio: false };
+                    if (sourceType === 2) opts.preferCurrentTab = true;
+                    navigator.mediaDevices.getDisplayMedia(opts).then(
+                        (stream) => {
+                            const video = document.createElement("video");
+                            video.srcObject = stream;
+                            video.muted = true;
+                            video.playsInline = true;
+                            video.play().catch(() => {});
+                            entry.state = "ready";
+                            entry.stream = stream;
+                            entry.video = video;
+                            entry.canvas = document.createElement("canvas");
+                            entry.ctx = entry.canvas.getContext("2d");
+                        },
+                        (err) => { entry.state = err && err.name === "NotAllowedError" ? "canceled" : "failed"; }
+                    );
+                }, (st) => {
+                    const h = self.handles.insert({
+                        type: "screen_cap",
+                        stream: st.stream, video: st.video, canvas: st.canvas, ctx: st.ctx,
+                    });
+                    self._writeI32(capturePtr, h);
+                    return WAPI_OK;
+                });
+            },
+            get_frame(capture, bufPtr, bufLen, frameInfoPtr) {
+                const e = self.handles.get(capture);
+                if (!e || e.type !== "screen_cap") return WAPI_ERR_BADF;
+                const v = e.video;
+                if (!v.videoWidth || !v.videoHeight) return WAPI_ERR_AGAIN;
+                const w = v.videoWidth, h = v.videoHeight;
+                if (e.canvas.width !== w) e.canvas.width = w;
+                if (e.canvas.height !== h) e.canvas.height = h;
+                e.ctx.drawImage(v, 0, 0, w, h);
+                const img = e.ctx.getImageData(0, 0, w, h);
+                self._refreshViews();
+                self._dv.setUint32(frameInfoPtr + 0, w, true);
+                self._dv.setUint32(frameInfoPtr + 4, h, true);
+                self._dv.setUint32(frameInfoPtr + 8, 0, true);
+                self._dv.setUint32(frameInfoPtr + 12, 0, true);
+                self._dv.setBigUint64(frameInfoPtr + 16, BigInt(Math.round(performance.now() * 1e6)), true);
+                if (Number(bufLen) < img.data.length) return WAPI_ERR_OVERFLOW;
+                self._u8.set(img.data, bufPtr);
+                return WAPI_OK;
+            },
+            stop(capture) {
+                const e = self.handles.get(capture);
+                if (!e || e.type !== "screen_cap") return WAPI_ERR_BADF;
+                try { e.stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                self.handles.remove(capture);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_contacts (contact picker - stub)
         // -------------------------------------------------------------------
+        // Contact Picker API. Serializes results into the caller's buffer
+        // as a compact text form:  "name\tphone\temail\turl\n" per contact.
+        // That's a shim decision; a stricter struct-based encoding would
+        // need a specified wire format.
         const wapi_contacts = {
-            pick(propsMask, multiple, resultsBufPtr, resultsBufLen) { return WAPI_ERR_NOTSUP; },
-            icon_read(iconHandle, bufPtr, bufLen, outLenPtr) { return WAPI_ERR_NOTSUP; },
+            pick(propsMask, multiple, resultsBufPtr, resultsBufLen) {
+                if (typeof navigator === "undefined" || !navigator.contacts ||
+                    !navigator.contacts.select) return WAPI_ERR_NOTSUP;
+                if (!self._contactsStates) self._contactsStates = new Map();
+                return asyncOp(self._contactsStates, "pick:" + resultsBufPtr, (entry) => {
+                    const props = [];
+                    if (propsMask & 0x01) props.push("name");
+                    if (propsMask & 0x02) props.push("email");
+                    if (propsMask & 0x04) props.push("tel");
+                    if (propsMask & 0x08) props.push("address");
+                    if (propsMask & 0x10) props.push("icon");
+                    if (props.length === 0) props.push("name", "email", "tel");
+                    navigator.contacts.select(props, { multiple: !!multiple }).then(
+                        (contacts) => {
+                            entry.state = "ready";
+                            entry.text = contacts.map(c => [
+                                (c.name || [""])[0],
+                                (c.tel || [""])[0],
+                                (c.email || [""])[0],
+                                (c.address || [""])[0],
+                            ].join("\t")).join("\n");
+                        },
+                        (err) => { entry.state = err && err.name === "AbortError" ? "canceled" : "failed"; }
+                    );
+                }, (st) => {
+                    return self._writeString(resultsBufPtr, Number(resultsBufLen), st.text);
+                });
+            },
+            icon_read(_iconHandle, _bufPtr, _bufLen, _outLenPtr) { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
         // wapi_barcode (barcode detection - stub)
         // -------------------------------------------------------------------
+        // BarcodeDetector (Chromium). detect() takes raw RGBA and converts to
+        // ImageData then runs the detector.
+        // Result layout (32 bytes each): format u32, value_len u32, value_ptr i64, x/y/w/h f32.
+        const bcFormat = { qr_code:0, ean_13:1, ean_8:2, code_128:3, code_39:4, upc_a:5, upc_e:6, data_matrix:7, pdf417:8, aztec:9 };
+        const writeBarcodeResults = (results, maxResults, resultsBufPtr) => {
+            self._refreshViews();
+            const n = Math.min(results.length, maxResults);
+            for (let i = 0; i < n; i++) {
+                const r = results[i];
+                const base = resultsBufPtr + i * 32;
+                self._dv.setUint32(base + 0, bcFormat[r.format] ?? 0, true);
+                // Encode the value into host-allocated memory and leave a pointer.
+                const encoded = new TextEncoder().encode(r.rawValue || "");
+                const vptr = self._hostAlloc(encoded.length + 1, 1);
+                self._u8.set(encoded, vptr);
+                self._u8[vptr + encoded.length] = 0;
+                self._dv.setUint32(base + 4, encoded.length, true);
+                self._dv.setBigUint64(base + 8, BigInt(vptr), true);
+                const box = r.boundingBox || { x:0, y:0, width:0, height:0 };
+                self._dv.setFloat32(base + 16, box.x, true);
+                self._dv.setFloat32(base + 20, box.y, true);
+                self._dv.setFloat32(base + 24, box.width, true);
+                self._dv.setFloat32(base + 28, box.height, true);
+            }
+            return n;
+        };
         const wapi_barcode = {
-            detect(imageDataPtr, width, height, resultsBufPtr, maxResults) { return WAPI_ERR_NOTSUP; },
-            detect_from_camera(cameraHandle, resultsBufPtr, maxResults) { return WAPI_ERR_NOTSUP; },
+            detect(imageDataPtr, width, height, resultsBufPtr, maxResults) {
+                if (typeof BarcodeDetector === "undefined") return WAPI_ERR_NOTSUP;
+                if (!self._barcodeStates) self._barcodeStates = new Map();
+                const key = "det:" + resultsBufPtr;
+                if (!self._barcodeStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._barcodeStates.set(key, entry);
+                    self._refreshViews();
+                    const px = self._u8.slice(imageDataPtr, imageDataPtr + width * height * 4);
+                    const img = new ImageData(new Uint8ClampedArray(px.buffer), width, height);
+                    const canvas = document.createElement("canvas");
+                    canvas.width = width; canvas.height = height;
+                    canvas.getContext("2d").putImageData(img, 0, 0);
+                    const detector = new BarcodeDetector();
+                    detector.detect(canvas).then(
+                        (r) => { entry.state = "ready"; entry.results = r; },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                const st = self._barcodeStates.get(key);
+                if (st.state === "pending") return WAPI_ERR_AGAIN;
+                self._barcodeStates.delete(key);
+                if (st.state !== "ready") return WAPI_ERR_IO;
+                return writeBarcodeResults(st.results, maxResults, resultsBufPtr);
+            },
+            detect_from_camera(cameraHandle, resultsBufPtr, maxResults) {
+                if (typeof BarcodeDetector === "undefined") return WAPI_ERR_NOTSUP;
+                const cam = self.handles.get(cameraHandle);
+                if (!cam || cam.type !== "camera") return WAPI_ERR_BADF;
+                if (!cam.video.videoWidth) return WAPI_ERR_AGAIN;
+                if (!self._barcodeStates) self._barcodeStates = new Map();
+                const key = "detcam:" + cameraHandle + ":" + resultsBufPtr;
+                if (!self._barcodeStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._barcodeStates.set(key, entry);
+                    const detector = new BarcodeDetector();
+                    detector.detect(cam.video).then(
+                        (r) => { entry.state = "ready"; entry.results = r; },
+                        () => { entry.state = "failed"; }
+                    );
+                }
+                const st = self._barcodeStates.get(key);
+                if (st.state === "pending") return WAPI_ERR_AGAIN;
+                self._barcodeStates.delete(key);
+                if (st.state !== "ready") return WAPI_ERR_IO;
+                return writeBarcodeResults(st.results, maxResults, resultsBufPtr);
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_nfc (NFC - stub)
         // -------------------------------------------------------------------
+        // Web NFC (NDEFReader, Android Chrome only). We stash a single
+        // reader and push scan results into the event queue as IO completions
+        // flagged with bit 0x40000.
         const wapi_nfc = {
-            scan_start() { return WAPI_ERR_NOTSUP; },
-            scan_stop() { return WAPI_ERR_NOTSUP; },
-            write(recordsPtr, recordCount, tagPtr) { return WAPI_ERR_NOTSUP; },
-            make_read_only(tag) { return WAPI_ERR_NOTSUP; },
+            scan_start() {
+                if (typeof NDEFReader === "undefined") return WAPI_ERR_NOTSUP;
+                if (self._nfcReader) return WAPI_OK;
+                try {
+                    const reader = new NDEFReader();
+                    self._nfcReader = reader;
+                    reader.scan().then(() => {
+                        reader.onreading = (ev) => {
+                            for (const rec of ev.message.records) {
+                                const text = rec.data ? new TextDecoder().decode(rec.data) : "";
+                                // Stash in a scan queue the app can drain via IO events
+                                if (!self._nfcInbox) self._nfcInbox = [];
+                                self._nfcInbox.push({ type: rec.recordType, text });
+                                self._eventQueue.push({
+                                    type: WAPI_EVENT_IO_COMPLETION,
+                                    userData: BigInt(self._nfcInbox.length - 1),
+                                    result: 0, flags: 0x40000,
+                                });
+                            }
+                        };
+                    }).catch(() => { self._nfcReader = null; });
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            scan_stop() {
+                self._nfcReader = null;
+                self._nfcInbox = [];
+                return WAPI_OK;
+            },
+            write(recordsPtr, recordCount, tagPtr) {
+                if (typeof NDEFReader === "undefined") return WAPI_ERR_NOTSUP;
+                // NDEFReader write from a static message; we expect one TEXT record at recordsPtr.
+                // Record: record_type u32, payload_len u32, payload_ptr i64, _pad (16 bytes total).
+                try {
+                    const writer = new NDEFReader();
+                    const records = [];
+                    self._refreshViews();
+                    for (let i = 0; i < recordCount; i++) {
+                        const base = recordsPtr + i * 32;
+                        const rt = self._dv.getUint32(base + 0, true);
+                        const plen = self._dv.getUint32(base + 4, true);
+                        const pptr = Number(self._dv.getBigUint64(base + 8, true));
+                        const bytes = self._u8.slice(pptr, pptr + plen);
+                        const text = new TextDecoder().decode(bytes);
+                        records.push({ recordType: ["text","url","mime","absolute-url","empty","unknown"][rt] || "text", data: text });
+                    }
+                    writer.write({ records }).catch(() => {});
+                    return WAPI_OK;
+                } catch (_) { return WAPI_ERR_IO; }
+            },
+            make_read_only(_tag) { return WAPI_ERR_NOTSUP; },
         };
 
-        // -------------------------------------------------------------------
-        // wapi_dnd (drag and drop - stub)
-        // -------------------------------------------------------------------
-        const wapi_dnd = {
-            start_drag(itemsPtr, itemCount, allowedEffects, iconSurface) { return WAPI_ERR_NOTSUP; },
-            set_drop_effect(effect) { return WAPI_ERR_NOTSUP; },
-            get_drop_data(index, bufPtr, bufLen, bytesWrittenPtr) { return WAPI_ERR_NOTSUP; },
-        };
+        // wapi_dnd / wapi_share / wapi_clipboard collapsed into wapi_transfer above.
+        // POINTED reads still go through the IO_OP_TRANSFER_READ handler, which
+        // pulls from self._dropItems populated by the canvas drop listener.
 
         // -------------------------------------------------------------------
         // wapi_window (OS window management - stub)
         // -------------------------------------------------------------------
         const wapi_window = {
-            set_title(surface, titlePtr, titleLen) { return WAPI_ERR_NOTSUP; },
-            get_size_logical(surface, widthPtr, heightPtr) { return WAPI_ERR_NOTSUP; },
-            set_fullscreen(surface, fullscreen) { return WAPI_ERR_NOTSUP; },
-            set_visible(surface, visible) { return WAPI_ERR_NOTSUP; },
-            minimize(surface) { return WAPI_ERR_NOTSUP; },
-            maximize(surface) { return WAPI_ERR_NOTSUP; },
-            restore(surface) { return WAPI_ERR_NOTSUP; },
+            set_title(surface, titlePtr, titleLen) {
+                if (typeof document === "undefined") return WAPI_ERR_NOTSUP;
+                document.title = self._readString(titlePtr, Number(titleLen));
+                return WAPI_OK;
+            },
+            get_size_logical(surface, widthPtr, heightPtr) {
+                const s = self._surfaces.get(surface);
+                if (!s || !s.canvas) return WAPI_ERR_BADF;
+                const rect = s.canvas.getBoundingClientRect();
+                self._writeU32(widthPtr,  Math.round(rect.width));
+                self._writeU32(heightPtr, Math.round(rect.height));
+                return WAPI_OK;
+            },
+            set_fullscreen(surface, fullscreen) {
+                const s = self._surfaces.get(surface);
+                if (!s || !s.canvas) return WAPI_ERR_BADF;
+                if (fullscreen) {
+                    if (s.canvas.requestFullscreen) s.canvas.requestFullscreen().catch(() => {});
+                } else {
+                    if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+                }
+                return WAPI_OK;
+            },
+            set_visible(surface, visible) {
+                const s = self._surfaces.get(surface);
+                if (!s || !s.canvas) return WAPI_ERR_BADF;
+                s.canvas.style.display = visible ? "" : "none";
+                return WAPI_OK;
+            },
+            minimize(_surface) { return WAPI_ERR_NOTSUP; }, // no web API
+            maximize(_surface) { return WAPI_ERR_NOTSUP; },
+            restore(_surface)  { return WAPI_ERR_NOTSUP; },
         };
 
         // -------------------------------------------------------------------
         // wapi_display (display enumeration - stub)
         // -------------------------------------------------------------------
+        // The Window Management API (Screen.getScreenDetails) is gated behind
+        // a permission prompt. Without it we can only surface the current
+        // screen via window.screen. Default: one display, no prompt.
+        // wapi_display_info_t = 56 bytes. Fields (per header):
+        //   rect (i32 x,y,w,h) = 16 bytes
+        //   dpi_x f32 (4), dpi_y f32 (4)
+        //   scale f32 (4), refresh_hz f32 (4)
+        //   color_depth u32 (4), hdr u32 (4)
+        //   primary u32 (4), _pad (4)
+        //   subpixel_layout u32 (4), _pad (4)
         const wapi_display = {
-            display_count() { return 0; },
-            display_get_info(index, infoPtr) { return WAPI_ERR_NOTSUP; },
-            display_get_subpixels(index, subpixelsPtr, maxCount, countPtr) { return WAPI_ERR_NOTSUP; },
-            display_get_usable_bounds(index, xPtr, yPtr, wPtr, hPtr) { return WAPI_ERR_NOTSUP; },
+            display_count() {
+                return (typeof window !== "undefined" && window.screen) ? 1 : 0;
+            },
+            display_get_info(index, infoPtr) {
+                if (index !== 0 || typeof window === "undefined" || !window.screen) return WAPI_ERR_OVERFLOW;
+                const s = window.screen;
+                const dpr = window.devicePixelRatio || 1;
+                self._refreshViews();
+                const dv = self._dv;
+                dv.setInt32(infoPtr +  0, 0, true); // x
+                dv.setInt32(infoPtr +  4, 0, true); // y
+                dv.setInt32(infoPtr +  8, s.width, true);
+                dv.setInt32(infoPtr + 12, s.height, true);
+                dv.setFloat32(infoPtr + 16, 96 * dpr, true);
+                dv.setFloat32(infoPtr + 20, 96 * dpr, true);
+                dv.setFloat32(infoPtr + 24, dpr, true);
+                dv.setFloat32(infoPtr + 28, 60, true); // refresh_hz (unknown; default 60)
+                dv.setUint32(infoPtr + 32, (s.colorDepth || 24), true);
+                dv.setUint32(infoPtr + 36, 0, true); // hdr unknown
+                dv.setUint32(infoPtr + 40, 1, true); // primary
+                dv.setUint32(infoPtr + 44, 0, true);
+                dv.setUint32(infoPtr + 48, 0, true); // subpixel_layout UNKNOWN
+                dv.setUint32(infoPtr + 52, 0, true);
+                return WAPI_OK;
+            },
+            display_get_subpixels(index, subpixelsPtr, maxCount, countPtr) {
+                self._writeU32(countPtr, 0);
+                return WAPI_OK;
+            },
+            display_get_usable_bounds(index, xPtr, yPtr, wPtr, hPtr) {
+                if (index !== 0 || typeof window === "undefined" || !window.screen) return WAPI_ERR_OVERFLOW;
+                const s = window.screen;
+                self._writeI32(xPtr, (s.availLeft | 0) || 0);
+                self._writeI32(yPtr, (s.availTop | 0) || 0);
+                self._writeI32(wPtr, s.availWidth || s.width);
+                self._writeI32(hPtr, s.availHeight || s.height);
+                return WAPI_OK;
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_dialog (native file/message/color/font dialogs - stub)
         // -------------------------------------------------------------------
+        // Dialogs: file pickers route through showOpenFilePicker/showSaveFilePicker
+        // (Chromium) when available, otherwise <input type="file">. All are
+        // async → polling. Message boxes use blocking window.confirm/alert
+        // where it's safe; color picker uses <input type="color"> async.
+        //
+        // Dialog state is keyed per call site by the caller's result-buffer
+        // pointer, so re-calling after AGAIN returns the pending result
+        // deterministically.
+        if (!self._dialogStates) self._dialogStates = new Map();
+        const dlgTake = (key) => {
+            const st = self._dialogStates.get(key);
+            if (st && st.state !== "pending") self._dialogStates.delete(key);
+            return st;
+        };
+        const readFilters = (filtersPtr, filterCount) => {
+            const out = [];
+            for (let i = 0; i < filterCount; i++) {
+                const base = filtersPtr + i * 32;
+                const name = self._readStringView(base + 0)  || "";
+                const pat  = self._readStringView(base + 16) || "";
+                const exts = pat.split(";").map(s => s.replace(/^\*\.?/, "").trim()).filter(Boolean);
+                out.push({ description: name, accept: { "*/*": exts.map(e => "." + e) } });
+            }
+            return out;
+        };
         const wapi_dialog = {
-            open_file(filtersPtr, filterCount, defPathPtr, defPathLen, flags, bufPtr, bufLen, resultLenPtr) { return WAPI_ERR_NOTSUP; },
-            save_file(filtersPtr, filterCount, defPathPtr, defPathLen, bufPtr, bufLen, resultLenPtr) { return WAPI_ERR_NOTSUP; },
-            open_folder(defPathPtr, defPathLen, bufPtr, bufLen, resultLenPtr) { return WAPI_ERR_NOTSUP; },
-            message_box(type, titlePtr, titleLen, msgPtr, msgLen, buttons, resultPtr) { return WAPI_ERR_NOTSUP; },
-            simple_message_box(titlePtr, titleLen, msgPtr, msgLen) { return WAPI_ERR_NOTSUP; },
-            pick_color(titlePtr, titleLen, initialRgba, flags, resultRgbaPtr) { return WAPI_ERR_NOTSUP; },
-            pick_font(titlePtr, titleLen, ioPtr, nameBufPtr, nameCap) { return WAPI_ERR_NOTSUP; },
+            // open_file: (filters*, count, default_path_sv*, flags, buf*, buf_len, result_len*)
+            open_file(filtersPtr, filterCount, defPathSvPtr, flags, bufPtr, bufLen, resultLenPtr) {
+                const key = "openfile:" + bufPtr;
+                const st = dlgTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        const written = self._writeString(bufPtr, Number(bufLen), st.text);
+                        self._writeU64(resultLenPtr, written);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    if (st.state === "failed")   return WAPI_ERR_IO;
+                }
+                if (!self._dialogStates.has(key)) {
+                    const multi = (flags & 0x0001) !== 0;
+                    const entry = { state: "pending" };
+                    self._dialogStates.set(key, entry);
+                    const finish = (paths) => {
+                        // Consecutive NUL-terminated strings, double-NUL at end.
+                        const parts = paths.map(p => p + "\0").join("") + "\0";
+                        entry.state = "ready";
+                        entry.text  = parts;
+                    };
+                    if (typeof window !== "undefined" && window.showOpenFilePicker) {
+                        window.showOpenFilePicker({
+                            multiple: multi,
+                            types: filterCount > 0 ? readFilters(filtersPtr, filterCount) : undefined,
+                        }).then(
+                            (handles) => finish(handles.map(h => h.name)),
+                            (err) => { entry.state = err && err.name === "AbortError" ? "canceled" : "failed"; }
+                        );
+                    } else {
+                        const input = document.createElement("input");
+                        input.type = "file";
+                        if (multi) input.multiple = true;
+                        input.style.display = "none";
+                        input.oncancel = () => { entry.state = "canceled"; input.remove(); };
+                        input.onchange = () => {
+                            const names = Array.from(input.files || []).map(f => f.name);
+                            if (names.length === 0) entry.state = "canceled";
+                            else finish(names);
+                            input.remove();
+                        };
+                        document.body.appendChild(input);
+                        input.click();
+                    }
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            // save_file: (filters*, count, default_path_sv*, buf*, buf_len, result_len*)
+            save_file(filtersPtr, filterCount, defPathSvPtr, bufPtr, bufLen, resultLenPtr) {
+                const key = "savefile:" + bufPtr;
+                const st = dlgTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        const written = self._writeString(bufPtr, Number(bufLen), st.text);
+                        self._writeU64(resultLenPtr, written);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    return WAPI_ERR_IO;
+                }
+                if (typeof window !== "undefined" && window.showSaveFilePicker && !self._dialogStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._dialogStates.set(key, entry);
+                    const def = defPathSvPtr ? self._readStringView(defPathSvPtr) : null;
+                    window.showSaveFilePicker({
+                        suggestedName: def || undefined,
+                        types: filterCount > 0 ? readFilters(filtersPtr, filterCount) : undefined,
+                    }).then(
+                        (h) => { entry.state = "ready"; entry.text = h.name; },
+                        (err) => { entry.state = err && err.name === "AbortError" ? "canceled" : "failed"; }
+                    );
+                    return WAPI_ERR_AGAIN;
+                }
+                return WAPI_ERR_NOTSUP;
+            },
+            open_folder(defPathSvPtr, bufPtr, bufLen, resultLenPtr) {
+                const key = "openfolder:" + bufPtr;
+                const st = dlgTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        const written = self._writeString(bufPtr, Number(bufLen), st.text);
+                        self._writeU64(resultLenPtr, written);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    return WAPI_ERR_IO;
+                }
+                if (typeof window !== "undefined" && window.showDirectoryPicker && !self._dialogStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._dialogStates.set(key, entry);
+                    window.showDirectoryPicker().then(
+                        (h) => { entry.state = "ready"; entry.text = h.name; },
+                        (err) => { entry.state = err && err.name === "AbortError" ? "canceled" : "failed"; }
+                    );
+                    return WAPI_ERR_AGAIN;
+                }
+                return WAPI_ERR_NOTSUP;
+            },
+            // message_box: (type, title_sv*, msg_sv*, buttons, result*)
+            message_box(type, titleSvPtr, msgSvPtr, buttons, resultPtr) {
+                const title = self._readStringView(titleSvPtr) || "";
+                const msg   = self._readStringView(msgSvPtr)   || "";
+                const body  = title ? (title + "\n\n" + msg) : msg;
+                let result = 0;
+                try {
+                    if (buttons === 0) { // OK
+                        window.alert(body); result = 0;
+                    } else { // OK_CANCEL / YES_NO / YES_NO_CANCEL — fall back to confirm
+                        const ok = window.confirm(body);
+                        if (buttons === 1) result = ok ? 0 /*OK*/    : 1 /*CANCEL*/;
+                        else                result = ok ? 2 /*YES*/  : 3 /*NO*/;
+                    }
+                } catch (_) { return WAPI_ERR_IO; }
+                self._writeI32(resultPtr, result);
+                return WAPI_OK;
+            },
+            simple_message_box(titleSvPtr, msgSvPtr) {
+                const title = self._readStringView(titleSvPtr) || "";
+                const msg   = self._readStringView(msgSvPtr)   || "";
+                try { window.alert(title ? (title + "\n\n" + msg) : msg); return WAPI_OK; }
+                catch (_) { return WAPI_ERR_IO; }
+            },
+            pick_color(titleSvPtr, initialRgba, flags, resultRgbaPtr) {
+                const key = "pickcolor:" + resultRgbaPtr;
+                const st = dlgTake(key);
+                if (st) {
+                    if (st.state === "ready") {
+                        self._writeU32(resultRgbaPtr, st.rgba);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    return WAPI_ERR_IO;
+                }
+                if (!self._dialogStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._dialogStates.set(key, entry);
+                    if (typeof EyeDropper !== "undefined") {
+                        // No native picker in the web platform — use color input.
+                    }
+                    const input = document.createElement("input");
+                    input.type = "color";
+                    const r = (initialRgba >>> 24) & 0xFF;
+                    const g = (initialRgba >>> 16) & 0xFF;
+                    const b = (initialRgba >>>  8) & 0xFF;
+                    input.value = "#" + [r, g, b].map(v => v.toString(16).padStart(2, "0")).join("");
+                    input.style.position = "absolute"; input.style.opacity = "0";
+                    let settled = false;
+                    input.addEventListener("change", () => {
+                        settled = true;
+                        const hex = input.value.replace("#", "");
+                        const nr = parseInt(hex.substr(0,2), 16);
+                        const ng = parseInt(hex.substr(2,2), 16);
+                        const nb = parseInt(hex.substr(4,2), 16);
+                        entry.state = "ready";
+                        entry.rgba = ((nr << 24) | (ng << 16) | (nb << 8) | 0xFF) >>> 0;
+                        input.remove();
+                    });
+                    input.addEventListener("cancel", () => {
+                        settled = true;
+                        entry.state = "canceled";
+                        input.remove();
+                    });
+                    // Fallback detection: blur after click without change = cancel.
+                    setTimeout(() => {
+                        if (!settled && !self._dialogStates.has(key)) return;
+                    }, 30_000);
+                    document.body.appendChild(input);
+                    input.click();
+                }
+                return WAPI_ERR_AGAIN;
+            },
+            pick_font(_titleSvPtr, _ioPtr, _nameBufPtr, _nameCap) {
+                // No web font picker exists.
+                return WAPI_ERR_NOTSUP;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -4928,7 +7644,26 @@ class WAPI {
                 return (typeof matchMedia === "function" &&
                         matchMedia("(prefers-color-scheme: dark)").matches) ? 1 : 0;
             },
-            theme_get_accent_color(rgbaPtr) { return WAPI_ERR_NOTSUP; },
+            // CSS accent-color exposes the user's system accent via computed style.
+            // Fall back to #0078D4 if unavailable.
+            theme_get_accent_color(rgbaPtr) {
+                let r = 0x00, g = 0x78, b = 0xD4, a = 0xFF;
+                if (typeof document !== "undefined" && typeof getComputedStyle === "function") {
+                    try {
+                        const el = document.createElement("div");
+                        el.style.accentColor = "AccentColor";
+                        el.style.color = "AccentColor";
+                        el.style.position = "absolute"; el.style.visibility = "hidden";
+                        document.body.appendChild(el);
+                        const c = getComputedStyle(el).color; // "rgb(r, g, b)" or "rgba(...)"
+                        el.remove();
+                        const m = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                        if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
+                    } catch (_) {}
+                }
+                self._writeU32(rgbaPtr, ((r<<24)|(g<<16)|(b<<8)|a) >>> 0);
+                return WAPI_OK;
+            },
             theme_get_contrast_preference() {
                 if (typeof matchMedia !== "function") return 0;
                 if (matchMedia("(prefers-contrast: more)").matches) return 1;
@@ -4950,19 +7685,77 @@ class WAPI {
         // wapi_sysinfo (system/platform information)
         // -------------------------------------------------------------------
         const wapi_sysinfo = {
-            sysinfo_get(infoPtr) { return WAPI_ERR_NOTSUP; },
-            sysinfo_get_locale(bufPtr, bufLen, lenPtr) {
-                const locale = (typeof navigator !== "undefined" && navigator.language) || "en-US";
-                const written = self._writeString(bufPtr, bufLen, locale);
-                self._writeU32(lenPtr, written);
+            // wapi_sysinfo_t = 128 bytes. Layout in include/wapi/wapi_sysinfo.h.
+            sysinfo_get(infoPtr) {
+                self._refreshViews();
+                for (let i = 0; i < 128; i++) self._u8[infoPtr + i] = 0;
+                const dv = self._dv;
+                dv.setUint32(infoPtr + 0, 6, true); // platform = BROWSER
+                let cls = 1; // DESKTOP
+                if (typeof navigator !== "undefined") {
+                    const ua = navigator.userAgent || "";
+                    if (/iPad|Tablet/i.test(ua)) cls = 3;
+                    else if (/Mobile|Android|iPhone/i.test(ua)) cls = 4;
+                }
+                dv.setUint32(infoPtr + 4, cls, true);
+                // cpu_count / physical_cpu_count @ 28, 32
+                const hwc = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 1;
+                dv.setUint32(infoPtr + 28, hwc, true);
+                dv.setUint32(infoPtr + 32, hwc, true);
+                // ram_mb @ 36
+                const ram = (typeof navigator !== "undefined" && navigator.deviceMemory)
+                    ? Math.round(navigator.deviceMemory * 1024) : 0;
+                dv.setUint32(infoPtr + 36, ram, true);
+                // cpu_arch = WASM32 @ 40
+                dv.setUint32(infoPtr + 40, 6, true);
+                // cache_line_size @ 44
+                dv.setUint32(infoPtr + 44, 64, true);
+                // page_size @ 48
+                dv.setUint32(infoPtr + 48, 65536, true);
+                // dark_mode @ 52
+                const dark = (typeof matchMedia === "function" &&
+                              matchMedia("(prefers-color-scheme: dark)").matches) ? 1 : 0;
+                dv.setUint32(infoPtr + 52, dark, true);
+                // accent_color_rgba @ 56 (unknown in browsers without computed style probing)
+                dv.setUint32(infoPtr + 56, 0, true);
+                // sandbox = BROWSER @ 60
+                dv.setUint32(infoPtr + 60, 2, true);
+                // is_remote @ 64 (browsers can't detect cleanly)
+                dv.setUint32(infoPtr + 64, 0, true);
                 return WAPI_OK;
             },
-            sysinfo_get_timezone(bufPtr, bufLen, lenPtr) {
-                let tz = "UTC";
-                try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) {}
-                const written = self._writeString(bufPtr, bufLen, tz);
-                self._writeU32(lenPtr, written);
+            // (i32 key_sv_ptr, i32 buf, i64 buf_len, i32 val_len_ptr) -> i32
+            host_get(keySvPtr, bufPtr, bufLen, valLenPtr) {
+                const key = self._readStringView(keySvPtr);
+                const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+                const hostInfo = {
+                    "os.family":       "browser",
+                    "runtime.name":    "wapi-browser",
+                    "runtime.version": "0.1.0",
+                    "device.form":     "desktop",
+                    "browser.engine":  ua.includes("Chrome") ? "chromium"
+                                     : ua.includes("Firefox") ? "gecko"
+                                     : ua.includes("Safari") ? "webkit"
+                                     : "unknown",
+                };
+                if (!key || !(key in hostInfo)) return WAPI_ERR_NOENT;
+                const val = hostInfo[key];
+                const written = self._writeString(bufPtr, Number(bufLen), val);
+                self._writeU64(valLenPtr, written);
                 return WAPI_OK;
+            },
+        };
+
+        // -------------------------------------------------------------------
+        // wapi_user (identity - browsers have no portable user identity)
+        // -------------------------------------------------------------------
+        const wapi_user = {
+            provider() { return 0; /* WAPI_USER_PROVIDER_UNKNOWN */ },
+            get_field(_field, _bufPtr, _bufLen, _outLenPtr) {
+                return WAPI_ERR_NOENT;
+            },
+            avatar(_maxEdge, _outW, _outH, _bufPtr, _bufLen) {
+                return WAPI_ERR_NOENT;
             },
         };
 
@@ -4985,62 +7778,169 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_thread (threads and sync primitives - stub, needs SAB + workers)
         // -------------------------------------------------------------------
+        // Threading. Real wasm threads need SharedArrayBuffer + Cross-Origin
+        // Isolation, which isn't our current deployment model — create()
+        // stays NOTSUP. But because a single-threaded caller can't observe
+        // contention, mutex/rwlock/sem/cond become legal no-ops that always
+        // "succeed." TLS becomes a plain per-instance map. This lets ports
+        // of stdlib code (pthreads, std::mutex) link and run correctly.
+        const tlsMap = new Map();
+        let nextTlsSlot = 1;
+        const lockMap = new Map();
+        let nextLockId = 1;
         const wapi_thread = {
-            create(descPtr, threadPtr) { return WAPI_ERR_NOTSUP; },
-            join(thread, exitCodePtr) { return WAPI_ERR_NOTSUP; },
-            detach(thread) { return WAPI_ERR_NOTSUP; },
-            get_state(thread, statePtr) { return WAPI_ERR_NOTSUP; },
+            create(_descPtr, _threadPtr) { return WAPI_ERR_NOTSUP; },
+            join(_thread, _exitCodePtr) { return WAPI_ERR_NOTSUP; },
+            detach(_thread) { return WAPI_ERR_NOTSUP; },
+            get_state(_thread, statePtr) {
+                self._writeU32(statePtr, 2 /* COMPLETE */);
+                return WAPI_OK;
+            },
             current_id() { return 1n; },
-            get_id(thread) { return 0n; },
-            set_qos(qos) { return WAPI_ERR_NOTSUP; },
-            tls_create(destructor, slotPtr) { return WAPI_ERR_NOTSUP; },
-            tls_destroy(slot) { return WAPI_ERR_NOTSUP; },
-            tls_set(slot, value) { return WAPI_ERR_NOTSUP; },
-            tls_get(slot) { return 0; },
-            mutex_create(mutexPtr) { return WAPI_ERR_NOTSUP; },
-            mutex_destroy(mutex) { return WAPI_ERR_NOTSUP; },
-            mutex_lock(mutex) { return WAPI_ERR_NOTSUP; },
-            mutex_try_lock(mutex) { return WAPI_ERR_NOTSUP; },
-            mutex_unlock(mutex) { return WAPI_ERR_NOTSUP; },
-            rwlock_create(rwlockPtr) { return WAPI_ERR_NOTSUP; },
-            rwlock_destroy(rwlock) { return WAPI_ERR_NOTSUP; },
-            rwlock_read_lock(rwlock) { return WAPI_ERR_NOTSUP; },
-            rwlock_try_read_lock(rwlock) { return WAPI_ERR_NOTSUP; },
-            rwlock_write_lock(rwlock) { return WAPI_ERR_NOTSUP; },
-            rwlock_try_write_lock(rwlock) { return WAPI_ERR_NOTSUP; },
-            rwlock_unlock(rwlock) { return WAPI_ERR_NOTSUP; },
-            sem_create(initialValue, semPtr) { return WAPI_ERR_NOTSUP; },
-            sem_destroy(sem) { return WAPI_ERR_NOTSUP; },
-            sem_wait(sem) { return WAPI_ERR_NOTSUP; },
-            sem_try_wait(sem) { return WAPI_ERR_NOTSUP; },
-            sem_wait_timeout(sem, timeoutNs) { return WAPI_ERR_NOTSUP; },
-            sem_signal(sem) { return WAPI_ERR_NOTSUP; },
-            sem_get_value(sem) { return 0; },
-            cond_create(condPtr) { return WAPI_ERR_NOTSUP; },
-            cond_destroy(cond) { return WAPI_ERR_NOTSUP; },
-            cond_wait(cond, mutex) { return WAPI_ERR_NOTSUP; },
-            cond_wait_timeout(cond, mutex, timeoutNs) { return WAPI_ERR_NOTSUP; },
-            cond_signal(cond) { return WAPI_ERR_NOTSUP; },
-            cond_broadcast(cond) { return WAPI_ERR_NOTSUP; },
-            barrier_create(count, barrierPtr) { return WAPI_ERR_NOTSUP; },
-            barrier_destroy(barrier) { return WAPI_ERR_NOTSUP; },
-            barrier_wait(barrier) { return WAPI_ERR_NOTSUP; },
-            call_once(onceFlagPtr, initFunc) { return WAPI_ERR_NOTSUP; },
-        };
+            get_id(_thread) { return 0n; },
+            set_qos(_qos) { return WAPI_OK; },
 
-        // -------------------------------------------------------------------
-        // wapi_fwatch (filewatcher - stub)
-        // -------------------------------------------------------------------
-        const wapi_fwatch = {
-            fwatch_add(pathPtr, pathLen, recursive, outHandlePtr) { return WAPI_ERR_NOTSUP; },
-            fwatch_remove(handle) { return WAPI_ERR_NOTSUP; },
+            tls_create(_destructor, slotPtr) {
+                const slot = nextTlsSlot++;
+                tlsMap.set(slot, 0);
+                self._writeI32(slotPtr, slot);
+                return WAPI_OK;
+            },
+            tls_destroy(slot) { tlsMap.delete(slot); return WAPI_OK; },
+            tls_set(slot, value) {
+                if (!tlsMap.has(slot)) return WAPI_ERR_BADF;
+                tlsMap.set(slot, value);
+                return WAPI_OK;
+            },
+            tls_get(slot) { return tlsMap.get(slot) || 0; },
+
+            // Single-thread: every lock succeeds trivially.
+            mutex_create(mutexPtr) {
+                const id = nextLockId++;
+                lockMap.set(id, { kind: "mutex", held: false });
+                self._writeI32(mutexPtr, id);
+                return WAPI_OK;
+            },
+            mutex_destroy(mutex)    { lockMap.delete(mutex); return WAPI_OK; },
+            mutex_lock(mutex)       { const l = lockMap.get(mutex); if (!l) return WAPI_ERR_BADF; l.held = true; return WAPI_OK; },
+            mutex_try_lock(mutex)   { const l = lockMap.get(mutex); if (!l) return WAPI_ERR_BADF; if (l.held) return WAPI_ERR_BUSY; l.held = true; return WAPI_OK; },
+            mutex_unlock(mutex)     { const l = lockMap.get(mutex); if (!l) return WAPI_ERR_BADF; l.held = false; return WAPI_OK; },
+
+            rwlock_create(ptr) {
+                const id = nextLockId++;
+                lockMap.set(id, { kind: "rw", readers: 0, writer: false });
+                self._writeI32(ptr, id);
+                return WAPI_OK;
+            },
+            rwlock_destroy(rw) { lockMap.delete(rw); return WAPI_OK; },
+            rwlock_read_lock(rw) { const l = lockMap.get(rw); if (!l) return WAPI_ERR_BADF; l.readers++; return WAPI_OK; },
+            rwlock_try_read_lock(rw) { return this.rwlock_read_lock(rw); },
+            rwlock_write_lock(rw) { const l = lockMap.get(rw); if (!l) return WAPI_ERR_BADF; l.writer = true; return WAPI_OK; },
+            rwlock_try_write_lock(rw) { return this.rwlock_write_lock(rw); },
+            rwlock_unlock(rw) { const l = lockMap.get(rw); if (!l) return WAPI_ERR_BADF; if (l.writer) l.writer = false; else if (l.readers > 0) l.readers--; return WAPI_OK; },
+
+            sem_create(initialValue, semPtr) {
+                const id = nextLockId++;
+                lockMap.set(id, { kind: "sem", value: initialValue });
+                self._writeI32(semPtr, id);
+                return WAPI_OK;
+            },
+            sem_destroy(sem) { lockMap.delete(sem); return WAPI_OK; },
+            sem_wait(sem) {
+                const l = lockMap.get(sem); if (!l) return WAPI_ERR_BADF;
+                if (l.value > 0) { l.value--; return WAPI_OK; }
+                return WAPI_ERR_DEADLK; // Can't block in single-thread; caller must treat this as "would block forever".
+            },
+            sem_try_wait(sem) {
+                const l = lockMap.get(sem); if (!l) return WAPI_ERR_BADF;
+                if (l.value > 0) { l.value--; return WAPI_OK; }
+                return WAPI_ERR_AGAIN;
+            },
+            sem_wait_timeout(sem, _timeoutNs) { return this.sem_try_wait(sem); },
+            sem_signal(sem) { const l = lockMap.get(sem); if (!l) return WAPI_ERR_BADF; l.value++; return WAPI_OK; },
+            sem_get_value(sem) { const l = lockMap.get(sem); return l ? l.value : 0; },
+
+            cond_create(condPtr) {
+                const id = nextLockId++;
+                lockMap.set(id, { kind: "cond" });
+                self._writeI32(condPtr, id);
+                return WAPI_OK;
+            },
+            cond_destroy(cond) { lockMap.delete(cond); return WAPI_OK; },
+            cond_wait(_cond, _mutex) { return WAPI_ERR_DEADLK; }, // would block forever
+            cond_wait_timeout(_cond, _mutex, _timeoutNs) { return WAPI_ERR_TIMEDOUT; },
+            cond_signal(_cond) { return WAPI_OK; },
+            cond_broadcast(_cond) { return WAPI_OK; },
+
+            barrier_create(count, barrierPtr) {
+                const id = nextLockId++;
+                lockMap.set(id, { kind: "barrier", count, arrived: 0 });
+                self._writeI32(barrierPtr, id);
+                return WAPI_OK;
+            },
+            barrier_destroy(barrier) { lockMap.delete(barrier); return WAPI_OK; },
+            barrier_wait(barrier) {
+                // Single-thread: the caller is the one arrival; if count > 1
+                // we'd wait forever, so signal deadlock.
+                const l = lockMap.get(barrier); if (!l) return WAPI_ERR_BADF;
+                if (l.count <= 1) return WAPI_OK;
+                return WAPI_ERR_DEADLK;
+            },
+
+            // call_once: run initFunc exactly once. onceFlagPtr points to a
+            // 4-byte flag in linear memory; we set it to 1 after invocation.
+            call_once(onceFlagPtr, initFunc) {
+                self._refreshViews();
+                const flag = self._readU32(onceFlagPtr);
+                if (flag === 1) return WAPI_OK;
+                const table = self.instance.exports.__indirect_function_table;
+                if (!table) return WAPI_ERR_NOTSUP;
+                const fn = table.get(initFunc);
+                if (!fn) return WAPI_ERR_INVAL;
+                try { fn(); self._writeU32(onceFlagPtr, 1); return WAPI_OK; }
+                catch (_) { return WAPI_ERR_IO; }
+            },
         };
 
         // -------------------------------------------------------------------
         // wapi_eyedrop (screen color picker - stub)
         // -------------------------------------------------------------------
+        // EyeDropper API (Chromium-only). Async-to-sync polling.
         const wapi_eyedrop = {
-            eyedropper_pick(rgbaPtr) { return WAPI_ERR_NOTSUP; },
+            eyedropper_pick(rgbaPtr) {
+                if (typeof EyeDropper === "undefined") return WAPI_ERR_NOTSUP;
+                const key = "eyedrop:" + rgbaPtr;
+                const st = self._dialogStates && self._dialogStates.get(key);
+                if (st && st.state !== "pending") {
+                    self._dialogStates.delete(key);
+                    if (st.state === "ready") {
+                        self._writeU32(rgbaPtr, st.rgba);
+                        return WAPI_OK;
+                    }
+                    if (st.state === "canceled") return WAPI_ERR_CANCELED;
+                    return WAPI_ERR_IO;
+                }
+                if (!self._dialogStates) self._dialogStates = new Map();
+                if (!self._dialogStates.has(key)) {
+                    const entry = { state: "pending" };
+                    self._dialogStates.set(key, entry);
+                    const ed = new EyeDropper();
+                    ed.open().then(
+                        (r) => {
+                            const c = r.sRGBHex.replace("#", "");
+                            const rr = parseInt(c.substr(0,2), 16);
+                            const gg = parseInt(c.substr(2,2), 16);
+                            const bb = parseInt(c.substr(4,2), 16);
+                            entry.state = "ready";
+                            entry.rgba = ((rr<<24)|(gg<<16)|(bb<<8)|0xFF) >>> 0;
+                        },
+                        (err) => {
+                            entry.state = err && err.name === "AbortError" ? "canceled" : "failed";
+                        }
+                    );
+                }
+                return WAPI_ERR_AGAIN;
+            },
         };
 
         // -------------------------------------------------------------------
@@ -5835,19 +8735,1503 @@ class WAPI {
         // surface area and break the capability-gating contract: a host that
         // didn't grant wapi_network would still be reachable via the legacy
         // module import.
+
+        // -------------------------------------------------------------------
+        // Built-in IO opcode handlers for the new spec-defined namespaces.
+        //
+        // These are pre-registered on the instance's opcode dispatch table
+        // so modules compiled against the opcode-based headers can use the
+        // capability surface without any host integration glue. All handlers
+        // accept the decoded op descriptor and post a completion.
+        // -------------------------------------------------------------------
+        if (!self._opcodeHandlers) self._opcodeHandlers = new Map();
+
+        // WAPI_IO_OP_CAP_REQUEST (0x01) — universal capability gate.
+        // Every capability, even ambient ones, flows through here. The
+        // browser host auto-grants anything the user-agent actually
+        // supports; real prompts land on the individual-op handlers
+        // (notify.show fires the Notification request, geo.get_position
+        // fires geolocation, etc.). We complete synchronously with the
+        // current grant state inlined.
+        self._opcodeHandlers.set(0x01 >>> 0, ({ addr, len, resultPtr, userData, self: inst }) => {
+            inst._refreshViews();
+            const name = inst._readString(addr, Number(len));
+            const granted = inst._detectCapabilities().includes(name);
+            // GRANTED=0, DENIED=1, PROMPT=2
+            const state = granted ? 0 : 1;
+            if (resultPtr) inst._writeU32(resultPtr, state);
+            const payload = new Uint8Array(4);
+            new DataView(payload.buffer).setUint32(0, state, true);
+            inst._eventQueue.push({
+                type: WAPI_EVENT_IO_COMPLETION,
+                userData, result: granted ? WAPI_OK : WAPI_ERR_ACCES,
+                flags: 0x0004 /* WAPI_IO_CQE_F_INLINE */,
+                inlinePayload: payload,
+            });
+        });
+
+        // WAPI_IO_OP_CRYPTO_HASH (0x2C0) — SubtleCrypto digest,
+        // result inlined as up to 64 bytes in the event payload.
+        self._opcodeHandlers.set(WAPI_IO_OP_CRYPTO_HASH >>> 0, ({ flags, addr, len, userData, self: inst }) => {
+            const algos = { 0: "SHA-256", 1: "SHA-384", 2: "SHA-512", 3: "SHA-1" };
+            const algoName = algos[flags];
+            if (!algoName || typeof crypto === "undefined" || !crypto.subtle) {
+                inst._eventQueue.push({
+                    type: WAPI_EVENT_IO_COMPLETION,
+                    userData, result: WAPI_ERR_NOTSUP, flags: 0,
+                });
+                return;
+            }
+            inst._refreshViews();
+            const data = inst._u8.slice(addr, addr + Number(len));
+            crypto.subtle.digest(algoName, data).then(
+                (buf) => {
+                    const digest = new Uint8Array(buf);
+                    inst._eventQueue.push({
+                        type: WAPI_EVENT_IO_COMPLETION,
+                        userData, result: digest.length,
+                        flags: 0x0004 /* WAPI_IO_CQE_F_INLINE */,
+                        inlinePayload: digest,
+                    });
+                },
+                () => {
+                    inst._eventQueue.push({
+                        type: WAPI_EVENT_IO_COMPLETION,
+                        userData, result: WAPI_ERR_IO, flags: 0,
+                    });
+                }
+            );
+        });
+
+        // WAPI_IO_OP_TRANSFER_OFFER (0x310) — unified clipboard/DnD/share offer.
+        //   fd        = seat (must be 0 = WAPI_SEAT_DEFAULT)
+        //   flags     = mode bitmask (WAPI_TRANSFER_LATENT|POINTED|ROUTED)
+        //   addr/len  = wapi_transfer_offer_t* (48 bytes)
+        //
+        // wapi_transfer_offer_t layout:
+        //    0:u64 items_ptr  8:u32 item_count  12:u32 allowed_actions
+        //   16:u64 title.data 24:u64 title.length
+        //   32:i32 preview    36:u32 _reserved  40:u64 _reserved2
+        //
+        // wapi_transfer_item_t (32B):
+        //    0:u64 mime.data  8:u64 mime.length  16:u64 data  24:u64 data_len
+        self._opcodeHandlers.set(WAPI_IO_OP_TRANSFER_OFFER >>> 0,
+        ({ fd, flags, addr, userData, self: inst }) => {
+            const seat = fd | 0;
+            const mode = flags >>> 0;
+            const complete = (result) => inst._eventQueue.push({
+                type: WAPI_EVENT_IO_COMPLETION,
+                userData, result: result | 0, flags: 0,
+            });
+
+            if (seat !== 0) { complete(WAPI_ERR_INVAL); return; }
+            inst._refreshViews();
+            const dv = inst._dv;
+
+            const itemsPtr   = Number(dv.getBigUint64(addr +  0, true));
+            const itemCount  = dv.getUint32(addr +  8, true);
+            // const allowedActions = dv.getUint32(addr + 12, true);
+            const titleData  = Number(dv.getBigUint64(addr + 16, true));
+            const titleLen   = Number(dv.getBigUint64(addr + 24, true));
+            const titleStr   = (titleData && titleLen)
+                ? new TextDecoder().decode(inst._u8.subarray(titleData, titleData + titleLen))
+                : "";
+
+            // Decode all items.
+            const items = [];
+            for (let i = 0; i < itemCount; i++) {
+                const it = itemsPtr + i * 32;
+                const mimeData = Number(dv.getBigUint64(it +  0, true));
+                const mimeLen  = Number(dv.getBigUint64(it +  8, true));
+                const dataAddr = Number(dv.getBigUint64(it + 16, true));
+                const dataLen  = Number(dv.getBigUint64(it + 24, true));
+                const mime = new TextDecoder().decode(
+                    inst._u8.subarray(mimeData, mimeData + mimeLen));
+                const bytes = inst._u8.slice(dataAddr, dataAddr + dataLen);
+                items.push({ mime, bytes });
+            }
+
+            // Helpers
+            const blobs = items.map(({ mime, bytes }) =>
+                new Blob([bytes], { type: mime || "application/octet-stream" }));
+
+            const doLatent = () => {
+                if (typeof navigator === "undefined" ||
+                    !navigator.clipboard || !navigator.clipboard.write) {
+                    return Promise.resolve(WAPI_ERR_NOTSUP);
+                }
+                if (typeof ClipboardItem === "undefined") {
+                    return Promise.resolve(WAPI_ERR_NOTSUP);
+                }
+                const dict = {};
+                items.forEach(({ mime }, idx) => { dict[mime] = blobs[idx]; });
+                return navigator.clipboard.write([new ClipboardItem(dict)]).then(
+                    () => (WAPI_TRANSFER_LATENT << 8) | 1, /* COPY */
+                    () => WAPI_ERR_ACCES,
+                );
+            };
+
+            const doRouted = () => {
+                if (typeof navigator === "undefined" || !navigator.share) {
+                    return Promise.resolve(WAPI_ERR_NOTSUP);
+                }
+                const data = {};
+                if (titleStr) data.title = titleStr;
+                // Map well-known MIME types into Web Share fields.
+                for (const { mime, bytes } of items) {
+                    if (mime === "text/plain" && !data.text) {
+                        data.text = new TextDecoder().decode(bytes);
+                    } else if (mime === "text/uri-list" && !data.url) {
+                        data.url = new TextDecoder().decode(bytes).split("\n")[0].trim();
+                    }
+                }
+                // Files (when navigator.canShare supports them).
+                if (navigator.canShare) {
+                    const files = items
+                        .filter(({ mime }) =>
+                            mime !== "text/plain" && mime !== "text/uri-list")
+                        .map(({ mime, bytes }) =>
+                            new File([bytes], "shared",
+                                     { type: mime || "application/octet-stream" }));
+                    if (files.length && navigator.canShare({ files })) {
+                        data.files = files;
+                    }
+                }
+                return navigator.share(data).then(
+                    () => (WAPI_TRANSFER_ROUTED << 8) | 1,
+                    (err) => (err && err.name === "AbortError")
+                        ? WAPI_ERR_CANCELED : WAPI_ERR_IO,
+                );
+            };
+
+            const doPointed = () => {
+                // Browser drag-source initiation requires a real DOM dragstart;
+                // we can't open a session from an arbitrary IO call. Apps that
+                // need POINTED must use the dragstart-based flow exposed
+                // separately through the canvas listeners.
+                return Promise.resolve(WAPI_ERR_NOTSUP);
+            };
+
+            // Run the requested modes; report the first non-NOTSUP completion.
+            const tasks = [];
+            if (mode & WAPI_TRANSFER_LATENT)  tasks.push(doLatent());
+            if (mode & WAPI_TRANSFER_POINTED) tasks.push(doPointed());
+            if (mode & WAPI_TRANSFER_ROUTED)  tasks.push(doRouted());
+
+            if (tasks.length === 0) { complete(WAPI_ERR_INVAL); return; }
+
+            Promise.all(tasks).then((results) => {
+                for (const r of results) {
+                    if (r !== WAPI_ERR_NOTSUP) { complete(r); return; }
+                }
+                complete(WAPI_ERR_NOTSUP);
+            });
+        });
+
+        // WAPI_IO_OP_TRANSFER_READ (0x311) — read a format from a seat's
+        // transfer pool for a given mode.
+        //   fd       = seat
+        //   flags    = mode (single, not bitmask)
+        //   addr/len = mime stringview
+        //   addr2/len2 = output buffer
+        self._opcodeHandlers.set(WAPI_IO_OP_TRANSFER_READ >>> 0,
+        ({ fd, flags, addr, len, addr2, len2, userData, self: inst }) => {
+            const seat = fd | 0;
+            const mode = flags >>> 0;
+            const complete = (result) => inst._eventQueue.push({
+                type: WAPI_EVENT_IO_COMPLETION,
+                userData, result: result | 0, flags: 0,
+            });
+
+            if (seat !== 0) { complete(WAPI_ERR_INVAL); return; }
+            const mime = inst._readString(addr, Number(len));
+
+            if (mode === WAPI_TRANSFER_POINTED) {
+                // Items stashed by the canvas drop listener.
+                const stash = inst._dropItems || [];
+                const item = stash.find(it => it.mime === mime);
+                if (!item) { complete(WAPI_ERR_NOENT); return; }
+                inst._refreshViews();
+                const n = Math.min(item.bytes.length, Number(len2));
+                inst._u8.set(item.bytes.subarray(0, n), addr2);
+                complete(item.bytes.length);
+                return;
+            }
+
+            if (mode !== WAPI_TRANSFER_LATENT) {
+                complete(WAPI_ERR_NOTSUP);
+                return;
+            }
+
+            // LATENT — read from system clipboard.
+            if (typeof navigator === "undefined" || !navigator.clipboard) {
+                complete(WAPI_ERR_NOTSUP);
+                return;
+            }
+            if (mime === "text/plain" && navigator.clipboard.readText) {
+                navigator.clipboard.readText().then(
+                    (text) => {
+                        inst._refreshViews();
+                        const bytes = new TextEncoder().encode(text);
+                        const n = Math.min(bytes.length, Number(len2));
+                        inst._u8.set(bytes.subarray(0, n), addr2);
+                        complete(bytes.length);
+                    },
+                    () => complete(WAPI_ERR_ACCES),
+                );
+                return;
+            }
+            if (navigator.clipboard.read) {
+                navigator.clipboard.read().then(async (clipItems) => {
+                    for (const ci of clipItems) {
+                        if (!ci.types.includes(mime)) continue;
+                        const blob = await ci.getType(mime);
+                        const buf  = new Uint8Array(await blob.arrayBuffer());
+                        inst._refreshViews();
+                        const n = Math.min(buf.length, Number(len2));
+                        inst._u8.set(buf.subarray(0, n), addr2);
+                        complete(buf.length);
+                        return;
+                    }
+                    complete(WAPI_ERR_NOENT);
+                }, () => complete(WAPI_ERR_ACCES));
+                return;
+            }
+            complete(WAPI_ERR_NOTSUP);
+        });
+
+        // Helper factories for completion emission. The kick-off handlers
+        // below all share the same shape: do async work, then push an
+        // IO_COMPLETION event. These helpers keep each registration a
+        // one-liner while still honouring the inline-payload convention.
+        const H = self._opcodeHandlers;
+        const complete = (inst, userData, result, flags = 0, inlinePayload = null) => {
+            inst._eventQueue.push({
+                type: WAPI_EVENT_IO_COMPLETION,
+                userData, result: result | 0,
+                flags: flags >>> 0,
+                inlinePayload,
+            });
+        };
+        const completeInline = (inst, userData, payload, result = WAPI_OK) => {
+            complete(inst, userData, result, 0x0004 /* INLINE */, payload);
+        };
+        const abortErr = (err) =>
+            (err && (err.name === "NotAllowedError" || err.name === "NotFoundError" || err.name === "AbortError"))
+                ? WAPI_ERR_CANCELED : WAPI_ERR_IO;
+
+        // ====================================================================
+        // BLUETOOTH (namespace 0x0000 methods 0x0A0-0x0A6)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_BT_DEVICE_REQUEST, ({ addr, flags2, resultPtr, userData, self: inst }) => {
+            if (!navigator.bluetooth) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            inst._refreshViews();
+            const filters = [];
+            for (let i = 0; i < flags2; i++) {
+                const base = addr + i * 32;
+                const uuid = inst._readStringView(base + 0);
+                const name = inst._readStringView(base + 16);
+                const f = {};
+                if (uuid) f.services = [uuid.toLowerCase()];
+                if (name) f.namePrefix = name;
+                filters.push(f);
+            }
+            const opts = flags2 > 0 ? { filters } : { acceptAllDevices: true };
+            navigator.bluetooth.requestDevice(opts).then(
+                (d) => {
+                    const h = inst.handles.insert({ type: "bt_device", device: d });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(WAPI_IO_OP_BT_CONNECT, ({ fd, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "bt_device") return complete(inst, userData, WAPI_ERR_BADF);
+            e.device.gatt.connect().then(
+                (srv) => { e.server = srv; complete(inst, userData, WAPI_OK); },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BT_SERVICE_GET, ({ fd, addr, len, resultPtr, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || !e.server) return complete(inst, userData, WAPI_ERR_BADF);
+            const uuid = inst._readString(addr, Number(len));
+            e.server.getPrimaryService(uuid.toLowerCase()).then(
+                (s) => {
+                    const h = inst.handles.insert({ type: "bt_service", service: s });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                () => complete(inst, userData, WAPI_ERR_NOENT)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BT_CHARACTERISTIC_GET, ({ fd, addr, len, resultPtr, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "bt_service") return complete(inst, userData, WAPI_ERR_BADF);
+            const uuid = inst._readString(addr, Number(len));
+            e.service.getCharacteristic(uuid.toLowerCase()).then(
+                (c) => {
+                    const h = inst.handles.insert({ type: "bt_char", ch: c });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                () => complete(inst, userData, WAPI_ERR_NOENT)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BT_VALUE_READ, ({ fd, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "bt_char") return complete(inst, userData, WAPI_ERR_BADF);
+            e.ch.readValue().then(
+                (dv) => {
+                    inst._refreshViews();
+                    const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+                    const n = Math.min(Number(len), bytes.length);
+                    inst._u8.set(bytes.subarray(0, n), addr);
+                    complete(inst, userData, bytes.length);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BT_VALUE_WRITE, ({ fd, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "bt_char") return complete(inst, userData, WAPI_ERR_BADF);
+            inst._refreshViews();
+            const data = inst._u8.slice(addr, addr + Number(len));
+            e.ch.writeValue(data).then(
+                () => complete(inst, userData, WAPI_OK),
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BT_NOTIFICATIONS_START, ({ fd, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "bt_char") return complete(inst, userData, WAPI_ERR_BADF);
+            e.ch.startNotifications().then(
+                (c) => {
+                    e.notify = (ev) => {
+                        const dv = ev.target.value;
+                        complete(inst, userData, dv.byteLength, 0x0001 /* MORE */);
+                    };
+                    c.addEventListener("characteristicvaluechanged", e.notify);
+                    complete(inst, userData, WAPI_OK, 0x0001 /* MORE */);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        // ====================================================================
+        // USB (0x0B0-0x0B5)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_USB_DEVICE_REQUEST, ({ addr, flags2, resultPtr, userData, self: inst }) => {
+            if (!navigator.usb) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            inst._refreshViews();
+            const filters = [];
+            for (let i = 0; i < flags2; i++) {
+                const base = addr + i * 8;
+                const vid = inst._dv.getUint16(base + 0, true);
+                const pid = inst._dv.getUint16(base + 2, true);
+                const cls = inst._u8[base + 4];
+                const f = {};
+                if (vid) f.vendorId = vid;
+                if (pid) f.productId = pid;
+                if (cls) f.classCode = cls;
+                filters.push(f);
+            }
+            navigator.usb.requestDevice({ filters: filters.length ? filters : [{}] }).then(
+                (d) => {
+                    const h = inst.handles.insert({ type: "usb", device: d });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(WAPI_IO_OP_USB_OPEN, ({ fd, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "usb") return complete(inst, userData, WAPI_ERR_BADF);
+            e.device.open().then(
+                () => { e.opened = true; complete(inst, userData, WAPI_OK); },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_USB_INTERFACE_CLAIM, ({ fd, flags, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "usb") return complete(inst, userData, WAPI_ERR_BADF);
+            e.device.claimInterface(flags).then(
+                () => complete(inst, userData, WAPI_OK),
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_USB_TRANSFER_IN, ({ fd, flags, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "usb") return complete(inst, userData, WAPI_ERR_BADF);
+            e.device.transferIn(flags, Number(len)).then(
+                (r) => {
+                    inst._refreshViews();
+                    const bytes = new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength);
+                    const n = Math.min(Number(len), bytes.length);
+                    inst._u8.set(bytes.subarray(0, n), addr);
+                    complete(inst, userData, bytes.length);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_USB_TRANSFER_OUT, ({ fd, flags, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "usb") return complete(inst, userData, WAPI_ERR_BADF);
+            inst._refreshViews();
+            const data = inst._u8.slice(addr, addr + Number(len));
+            e.device.transferOut(flags, data).then(
+                (r) => complete(inst, userData, r.bytesWritten),
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_USB_CONTROL_TRANSFER, ({ fd, offset, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "usb") return complete(inst, userData, WAPI_ERR_BADF);
+            const rt = Number(offset & 0xFFn);
+            const rq = Number((offset >> 8n) & 0xFFn);
+            const vl = Number((offset >> 16n) & 0xFFFFn);
+            const ix = Number((offset >> 32n) & 0xFFFFn);
+            const isIn = (rt & 0x80) !== 0;
+            const recipients = ["device", "interface", "endpoint", "other"];
+            const types = ["standard", "class", "vendor"];
+            const setup = {
+                requestType: types[(rt >> 5) & 0x3] || "vendor",
+                recipient: recipients[rt & 0xF] || "device",
+                request: rq, value: vl, index: ix,
+            };
+            const done = (r) => complete(inst, userData, r | 0);
+            if (isIn) {
+                e.device.controlTransferIn(setup, Number(len)).then(
+                    (r) => {
+                        inst._refreshViews();
+                        const bytes = new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength);
+                        const n = Math.min(Number(len), bytes.length);
+                        inst._u8.set(bytes.subarray(0, n), addr);
+                        done(bytes.length);
+                    },
+                    () => done(WAPI_ERR_IO)
+                );
+            } else {
+                inst._refreshViews();
+                const data = inst._u8.slice(addr, addr + Number(len));
+                e.device.controlTransferOut(setup, data).then(
+                    (r) => done(r.bytesWritten),
+                    () => done(WAPI_ERR_IO)
+                );
+            }
+        });
+
+        // ====================================================================
+        // SERIAL (0x080-0x083)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_SERIAL_PORT_REQUEST, ({ resultPtr, userData, self: inst }) => {
+            if (!navigator.serial) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            navigator.serial.requestPort({}).then(
+                (p) => {
+                    const h = inst.handles.insert({
+                        type: "serial", port: p,
+                        reader: null, writer: null, rxQueue: [], opened: false,
+                    });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(WAPI_IO_OP_SERIAL_OPEN, ({ fd, addr, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "serial") return complete(inst, userData, WAPI_ERR_BADF);
+            inst._refreshViews();
+            const baud   = inst._dv.getUint32(addr + 0, true) || 9600;
+            const dbits  = inst._u8[addr + 4] || 8;
+            const sbits  = inst._u8[addr + 5] || 1;
+            const parity = inst._u8[addr + 6];
+            const flow   = inst._u8[addr + 7];
+            const opts = {
+                baudRate: baud, dataBits: dbits, stopBits: sbits,
+                parity: ["none", "even", "odd"][parity] || "none",
+                flowControl: flow ? "hardware" : "none",
+            };
+            e.port.open(opts).then(
+                async () => {
+                    e.opened = true;
+                    e.reader = e.port.readable.getReader();
+                    e.writer = e.port.writable.getWriter();
+                    (async () => {
+                        try {
+                            while (e.opened) {
+                                const { value, done } = await e.reader.read();
+                                if (done) break;
+                                if (value) e.rxQueue.push(value);
+                            }
+                        } catch (_) {}
+                    })();
+                    complete(inst, userData, WAPI_OK);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_SERIAL_READ, ({ fd, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "serial" || !e.opened) return complete(inst, userData, WAPI_ERR_BADF);
+            if (e.rxQueue.length === 0) return complete(inst, userData, WAPI_ERR_AGAIN);
+            inst._refreshViews();
+            const cap = Number(len);
+            let written = 0;
+            while (e.rxQueue.length > 0 && written < cap) {
+                const front = e.rxQueue[0];
+                const n = Math.min(front.byteLength, cap - written);
+                inst._u8.set(front.subarray(0, n), addr + written);
+                written += n;
+                if (n === front.byteLength) e.rxQueue.shift();
+                else e.rxQueue[0] = front.subarray(n);
+            }
+            complete(inst, userData, written);
+        });
+
+        H.set(WAPI_IO_OP_SERIAL_WRITE, ({ fd, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "serial" || !e.opened) return complete(inst, userData, WAPI_ERR_BADF);
+            inst._refreshViews();
+            const data = inst._u8.slice(addr, addr + Number(len));
+            e.writer.write(data).then(
+                () => complete(inst, userData, Number(len)),
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        // ====================================================================
+        // MIDI (0x090-0x093)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_MIDI_ACCESS_REQUEST, ({ flags, userData, self: inst }) => {
+            if (!navigator.requestMIDIAccess) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            navigator.requestMIDIAccess({ sysex: !!flags }).then(
+                (a) => { inst._midiAccess = a; complete(inst, userData, WAPI_OK); },
+                () => complete(inst, userData, WAPI_ERR_ACCES)
+            );
+        });
+
+        H.set(WAPI_IO_OP_MIDI_PORT_OPEN, ({ flags, flags2, resultPtr, userData, self: inst }) => {
+            const a = inst._midiAccess;
+            if (!a) return complete(inst, userData, WAPI_ERR_BADF);
+            const coll = flags === 0 ? a.inputs : a.outputs;
+            const arr = Array.from(coll.values());
+            if (flags2 < 0 || flags2 >= arr.length) return complete(inst, userData, WAPI_ERR_OVERFLOW);
+            const port = arr[flags2];
+            const entry = { type: "midi", port, inbox: [], kind: flags };
+            if (flags === 0) {
+                port.onmidimessage = (e) => {
+                    entry.inbox.push({
+                        data: e.data,
+                        ts: BigInt(Math.round((e.timeStamp || performance.now()) * 1e6)),
+                    });
+                };
+            }
+            try { port.open && port.open(); } catch (_) {}
+            const h = inst.handles.insert(entry);
+            inst._writeI32(resultPtr, h);
+            complete(inst, userData, WAPI_OK);
+        });
+
+        H.set(WAPI_IO_OP_MIDI_SEND, ({ fd, addr, len, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "midi" || e.kind !== 1) return complete(inst, userData, WAPI_ERR_BADF);
+            inst._refreshViews();
+            const data = inst._u8.slice(addr, addr + Number(len));
+            try { e.port.send(data); complete(inst, userData, Number(len)); }
+            catch (_) { complete(inst, userData, WAPI_ERR_IO); }
+        });
+
+        H.set(WAPI_IO_OP_MIDI_RECV, ({ fd, addr, len, resultPtr, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "midi" || e.kind !== 0) return complete(inst, userData, WAPI_ERR_BADF);
+            if (e.inbox.length === 0) return complete(inst, userData, WAPI_ERR_AGAIN);
+            const msg = e.inbox.shift();
+            inst._refreshViews();
+            const copy = Math.min(Number(len), msg.data.length);
+            inst._u8.set(msg.data.subarray(0, copy), addr);
+            if (resultPtr) inst._dv.setBigUint64(resultPtr, msg.ts, true);
+            complete(inst, userData, msg.data.length);
+        });
+
+        // ====================================================================
+        // NFC (0x0C0-0x0C1)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_NFC_SCAN_START, ({ userData, self: inst }) => {
+            if (typeof NDEFReader === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            try {
+                const r = new NDEFReader();
+                inst._nfcReader = r;
+                r.scan().then(() => {
+                    r.onreading = (ev) => {
+                        for (const rec of ev.message.records) {
+                            const text = rec.data ? new TextDecoder().decode(rec.data) : "";
+                            const payload = new TextEncoder().encode(text).subarray(0, 96);
+                            complete(inst, userData, payload.length, 0x0004 | 0x0001 /* INLINE|MORE */, payload);
+                        }
+                    };
+                }).catch(() => complete(inst, userData, WAPI_ERR_ACCES));
+                complete(inst, userData, WAPI_OK, 0x0001 /* MORE */);
+            } catch (_) { complete(inst, userData, WAPI_ERR_IO); }
+        });
+
+        H.set(WAPI_IO_OP_NFC_WRITE, ({ addr, flags, userData, self: inst }) => {
+            if (typeof NDEFReader === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            try {
+                const w = new NDEFReader();
+                const records = [];
+                inst._refreshViews();
+                for (let i = 0; i < flags; i++) {
+                    const base = addr + i * 32;
+                    const rt   = inst._dv.getUint32(base + 0, true);
+                    const plen = inst._dv.getUint32(base + 4, true);
+                    const pptr = Number(inst._dv.getBigUint64(base + 8, true));
+                    const bytes = inst._u8.slice(pptr, pptr + plen);
+                    const text = new TextDecoder().decode(bytes);
+                    records.push({ recordType: ["text","url","mime","absolute-url","empty","unknown"][rt] || "text", data: text });
+                }
+                w.write({ records }).then(
+                    () => complete(inst, userData, WAPI_OK),
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            } catch (_) { complete(inst, userData, WAPI_ERR_IO); }
+        });
+
+        // ====================================================================
+        // CAMERA (0x0D0) — only OPEN is async; frame read is bounded-local
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_CAMERA_OPEN, ({ addr, resultPtr, userData, self: inst }) => {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                return complete(inst, userData, WAPI_ERR_NOTSUP);
+            }
+            inst._refreshViews();
+            const facing = inst._dv.getUint32(addr + 0, true);
+            const w = inst._dv.getUint32(addr + 4, true);
+            const h = inst._dv.getUint32(addr + 8, true);
+            navigator.mediaDevices.getUserMedia({
+                video: {
+                    facingMode: facing === 1 ? "environment" : "user",
+                    width: w > 0 ? w : undefined,
+                    height: h > 0 ? h : undefined,
+                },
+                audio: false,
+            }).then(
+                (stream) => {
+                    const video = document.createElement("video");
+                    video.srcObject = stream; video.muted = true; video.playsInline = true;
+                    video.play().catch(() => {});
+                    const canvas = document.createElement("canvas");
+                    const handle = inst.handles.insert({
+                        type: "camera", stream, video, canvas,
+                        ctx: canvas.getContext("2d"),
+                    });
+                    inst._writeI32(resultPtr, handle);
+                    complete(inst, userData, WAPI_OK);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        // ====================================================================
+        // CAPTURE (0x130)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_CAPTURE_REQUEST, ({ flags, resultPtr, userData, self: inst }) => {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+                return complete(inst, userData, WAPI_ERR_NOTSUP);
+            }
+            const opts = { video: true, audio: false };
+            if (flags === 2) opts.preferCurrentTab = true;
+            navigator.mediaDevices.getDisplayMedia(opts).then(
+                (stream) => {
+                    const video = document.createElement("video");
+                    video.srcObject = stream; video.muted = true; video.playsInline = true;
+                    video.play().catch(() => {});
+                    const canvas = document.createElement("canvas");
+                    const h = inst.handles.insert({
+                        type: "screen_cap", stream, video, canvas,
+                        ctx: canvas.getContext("2d"),
+                    });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        // ====================================================================
+        // XR (0x200-0x204 + 0x203 is_supported + 0x204 create_ref_space)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_XR_SESSION_REQUEST, ({ flags, resultPtr, userData, self: inst }) => {
+            if (!navigator.xr) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const modes = ["immersive-vr", "immersive-ar", "inline"];
+            const mode = modes[flags] || "inline";
+            navigator.xr.requestSession(mode).then(
+                (s) => {
+                    const h = inst.handles.insert({ type: "xr_session", session: s });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(0x203 /* XR_IS_SUPPORTED */, ({ flags, userData, self: inst }) => {
+            if (!navigator.xr) return completeInline(inst, userData, new Uint8Array([0,0,0,0]), 0);
+            const modes = ["immersive-vr", "immersive-ar", "inline"];
+            const mode = modes[flags];
+            if (!mode) return completeInline(inst, userData, new Uint8Array([0,0,0,0]), 0);
+            navigator.xr.isSessionSupported(mode).then(
+                (ok) => completeInline(inst, userData, new Uint8Array([ok ? 1 : 0, 0, 0, 0]), ok ? 1 : 0),
+                () => completeInline(inst, userData, new Uint8Array([0,0,0,0]), 0)
+            );
+        });
+
+        H.set(0x204 /* XR_REF_SPACE_CREATE */, ({ fd, flags, resultPtr, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "xr_session") return complete(inst, userData, WAPI_ERR_BADF);
+            const names = ["local", "local-floor", "bounded-floor", "unbounded", "viewer"];
+            const name = names[flags] || "local";
+            e.session.requestReferenceSpace(name).then(
+                (s) => {
+                    const h = inst.handles.insert({ type: "xr_space", space: s });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        // ====================================================================
+        // DIALOG (0x180-0x185)
+        // ====================================================================
+
+        const readDialogFilters = (inst, filtersPtr, filterCount) => {
+            const out = [];
+            for (let i = 0; i < filterCount; i++) {
+                const base = filtersPtr + i * 32;
+                const name = inst._readStringView(base + 0) || "";
+                const pat  = inst._readStringView(base + 16) || "";
+                const exts = pat.split(";").map(s => s.replace(/^\*\.?/, "").trim()).filter(Boolean);
+                out.push({ description: name, accept: { "*/*": exts.map(e => "." + e) } });
+            }
+            return out;
+        };
+
+        H.set(WAPI_IO_OP_DIALOG_FILE_OPEN, ({ flags, flags2, offset, addr2, len2, userData, self: inst }) => {
+            const filtersPtr = Number(offset);
+            const multi = (flags & 0x0001) !== 0;
+            const finish = (paths) => {
+                const text = paths.map(p => p + "\0").join("") + "\0";
+                inst._refreshViews();
+                const written = inst._writeString(addr2, Number(len2), text);
+                complete(inst, userData, written);
+            };
+            if (window.showOpenFilePicker) {
+                window.showOpenFilePicker({
+                    multiple: multi,
+                    types: flags2 > 0 ? readDialogFilters(inst, filtersPtr, flags2) : undefined,
+                }).then(
+                    (hs) => finish(hs.map(h => h.name)),
+                    (err) => complete(inst, userData, abortErr(err))
+                );
+                return;
+            }
+            const input = document.createElement("input");
+            input.type = "file"; if (multi) input.multiple = true;
+            input.style.display = "none";
+            input.oncancel = () => { complete(inst, userData, WAPI_ERR_CANCELED); input.remove(); };
+            input.onchange = () => {
+                const names = Array.from(input.files || []).map(f => f.name);
+                input.remove();
+                if (names.length === 0) complete(inst, userData, WAPI_ERR_CANCELED);
+                else finish(names);
+            };
+            document.body.appendChild(input);
+            input.click();
+        });
+
+        H.set(WAPI_IO_OP_DIALOG_FILE_SAVE, ({ flags2, offset, addr, len, addr2, len2, userData, self: inst }) => {
+            if (!window.showSaveFilePicker) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const filtersPtr = Number(offset);
+            const defPath = addr && len ? inst._readString(addr, Number(len)) : undefined;
+            window.showSaveFilePicker({
+                suggestedName: defPath || undefined,
+                types: flags2 > 0 ? readDialogFilters(inst, filtersPtr, flags2) : undefined,
+            }).then(
+                (h) => {
+                    const written = inst._writeString(addr2, Number(len2), h.name);
+                    complete(inst, userData, written);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(WAPI_IO_OP_DIALOG_FOLDER_OPEN, ({ addr, len, addr2, len2, userData, self: inst }) => {
+            if (!window.showDirectoryPicker) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            window.showDirectoryPicker().then(
+                (h) => {
+                    const written = inst._writeString(addr2, Number(len2), h.name);
+                    complete(inst, userData, written);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(WAPI_IO_OP_DIALOG_MESSAGEBOX, ({ flags, flags2, addr, len, addr2, len2, userData, self: inst }) => {
+            const title = addr && len ? inst._readString(addr, Number(len)) : "";
+            const msg   = addr2 && len2 ? inst._readString(addr2, Number(len2)) : "";
+            const body  = title ? title + "\n\n" + msg : msg;
+            let result = 0;
+            try {
+                if (flags2 === 0) { window.alert(body); result = 0; }
+                else {
+                    const ok = window.confirm(body);
+                    if (flags2 === 1) result = ok ? 0 : 1;
+                    else              result = ok ? 2 : 3;
+                }
+            } catch (_) { return complete(inst, userData, WAPI_ERR_IO); }
+            const payload = new Uint8Array(4);
+            new DataView(payload.buffer).setUint32(0, result, true);
+            completeInline(inst, userData, payload, result);
+        });
+
+        H.set(WAPI_IO_OP_DIALOG_PICK_COLOR, ({ flags, addr, len, userData, self: inst }) => {
+            const input = document.createElement("input");
+            input.type = "color";
+            const r = (flags >>> 24) & 0xFF, g = (flags >>> 16) & 0xFF, b = (flags >>> 8) & 0xFF;
+            input.value = "#" + [r, g, b].map(v => v.toString(16).padStart(2, "0")).join("");
+            input.style.position = "absolute"; input.style.opacity = "0";
+            input.addEventListener("change", () => {
+                const hex = input.value.replace("#", "");
+                const nr = parseInt(hex.substr(0,2), 16);
+                const ng = parseInt(hex.substr(2,2), 16);
+                const nb = parseInt(hex.substr(4,2), 16);
+                const rgba = ((nr<<24)|(ng<<16)|(nb<<8)|0xFF) >>> 0;
+                const payload = new Uint8Array(4);
+                new DataView(payload.buffer).setUint32(0, rgba, true);
+                completeInline(inst, userData, payload, rgba);
+                input.remove();
+            });
+            input.addEventListener("cancel", () => { complete(inst, userData, WAPI_ERR_CANCELED); input.remove(); });
+            document.body.appendChild(input);
+            input.click();
+        });
+
+        H.set(WAPI_IO_OP_DIALOG_PICK_FONT, ({ userData, self: inst }) => {
+            complete(inst, userData, WAPI_ERR_NOTSUP);
+        });
+
+        // ====================================================================
+        // PICKERS: authn, bio, pay, contacts, eyedrop (0x190-0x1A3)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE, ({ addr, len, addr2, len2, userData, self: inst }) => {
+            if (!navigator.credentials) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            inst._refreshViews();
+            const rpId = inst._readString(addr, Number(len));
+            const challenge = inst._u8.slice(addr2, addr2 + Number(len2));
+            navigator.credentials.create({
+                publicKey: {
+                    rp: { id: rpId, name: rpId },
+                    user: {
+                        id: crypto.getRandomValues(new Uint8Array(16)),
+                        name: "user", displayName: "user",
+                    },
+                    challenge,
+                    pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+                    timeout: 60000,
+                },
+            }).then(
+                () => complete(inst, userData, WAPI_OK),
+                () => complete(inst, userData, WAPI_ERR_ACCES)
+            );
+        });
+
+        H.set(WAPI_IO_OP_AUTHN_ASSERTION_GET, ({ addr, len, addr2, len2, userData, self: inst }) => {
+            if (!navigator.credentials) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            inst._refreshViews();
+            const rpId = inst._readString(addr, Number(len));
+            const challenge = inst._u8.slice(addr2, addr2 + Number(len2));
+            navigator.credentials.get({
+                publicKey: { challenge, rpId, timeout: 60000 },
+            }).then(
+                () => complete(inst, userData, WAPI_OK),
+                () => complete(inst, userData, WAPI_ERR_ACCES)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BIO_AUTHENTICATE, ({ userData, self: inst }) => {
+            if (typeof PublicKeyCredential === "undefined" || !navigator.credentials) {
+                return complete(inst, userData, WAPI_ERR_NOTSUP);
+            }
+            const challenge = new Uint8Array(32);
+            crypto.getRandomValues(challenge);
+            navigator.credentials.get({
+                publicKey: { challenge, userVerification: "required", timeout: 60000 },
+            }).then(
+                () => complete(inst, userData, WAPI_OK),
+                () => complete(inst, userData, WAPI_ERR_ACCES)
+            );
+        });
+
+        H.set(WAPI_IO_OP_PAY_PAYMENT_REQUEST, ({ addr2, len2, userData, self: inst }) => {
+            if (typeof PaymentRequest === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const methods = [{ supportedMethods: "basic-card" }];
+            const details = { total: { label: "Total", amount: { currency: "USD", value: "0.00" } } };
+            try {
+                const pr = new PaymentRequest(methods, details);
+                pr.show().then(
+                    async (resp) => {
+                        const token = JSON.stringify(resp.details || {});
+                        await resp.complete("success").catch(() => {});
+                        const written = inst._writeString(addr2, Number(len2), token);
+                        complete(inst, userData, written);
+                    },
+                    (err) => complete(inst, userData, abortErr(err))
+                );
+            } catch (_) { complete(inst, userData, WAPI_ERR_IO); }
+        });
+
+        H.set(WAPI_IO_OP_CONTACTS_PICK, ({ flags, flags2, addr, len, userData, self: inst }) => {
+            if (!navigator.contacts || !navigator.contacts.select) {
+                return complete(inst, userData, WAPI_ERR_NOTSUP);
+            }
+            const props = [];
+            if (flags & 0x01) props.push("name");
+            if (flags & 0x02) props.push("email");
+            if (flags & 0x04) props.push("tel");
+            if (flags & 0x08) props.push("address");
+            if (flags & 0x10) props.push("icon");
+            if (props.length === 0) props.push("name", "email", "tel");
+            navigator.contacts.select(props, { multiple: !!flags2 }).then(
+                (contacts) => {
+                    const text = contacts.map(c => [
+                        (c.name || [""])[0],
+                        (c.tel || [""])[0],
+                        (c.email || [""])[0],
+                        (c.address || [""])[0],
+                    ].join("\t")).join("\n");
+                    const written = inst._writeString(addr, Number(len), text);
+                    complete(inst, userData, contacts.length);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        H.set(WAPI_IO_OP_EYEDROPPER_PICK, ({ userData, self: inst }) => {
+            if (typeof EyeDropper === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const ed = new EyeDropper();
+            ed.open().then(
+                (r) => {
+                    const c = r.sRGBHex.replace("#", "");
+                    const rr = parseInt(c.substr(0,2), 16);
+                    const gg = parseInt(c.substr(2,2), 16);
+                    const bb = parseInt(c.substr(4,2), 16);
+                    const rgba = ((rr<<24)|(gg<<16)|(bb<<8)|0xFF) >>> 0;
+                    const payload = new Uint8Array(4);
+                    new DataView(payload.buffer).setUint32(0, rgba, true);
+                    completeInline(inst, userData, payload, rgba);
+                },
+                (err) => complete(inst, userData, abortErr(err))
+            );
+        });
+
+        // ====================================================================
+        // GEOLOCATION (0x210-0x211) — position inlines 48B
+        // ====================================================================
+
+        const writeGeoPayload = (coords) => {
+            const buf = new Uint8Array(48);
+            const dv = new DataView(buf.buffer);
+            dv.setFloat64(0, coords.latitude, true);
+            dv.setFloat64(8, coords.longitude, true);
+            dv.setFloat64(16, coords.altitude == null ? NaN : coords.altitude, true);
+            dv.setFloat64(24, coords.accuracy, true);
+            dv.setFloat64(32, coords.altitudeAccuracy == null ? NaN : coords.altitudeAccuracy, true);
+            dv.setFloat64(40, coords.heading == null ? NaN : coords.heading, true);
+            return buf;
+        };
+
+        H.set(WAPI_IO_OP_GEO_POSITION_GET, ({ flags, offset, userData, self: inst }) => {
+            if (!navigator.geolocation) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            navigator.geolocation.getCurrentPosition(
+                (pos) => completeInline(inst, userData, writeGeoPayload(pos.coords), WAPI_OK),
+                (err) => complete(inst, userData, err.code === 1 ? WAPI_ERR_ACCES : err.code === 3 ? WAPI_ERR_TIMEDOUT : WAPI_ERR_IO),
+                {
+                    enableHighAccuracy: (flags & 0x0001) !== 0,
+                    timeout: Number(offset) > 0 ? Number(offset) : undefined,
+                }
+            );
+        });
+
+        H.set(WAPI_IO_OP_GEO_POSITION_WATCH, ({ flags, resultPtr, userData, self: inst }) => {
+            if (!navigator.geolocation) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const watchId = navigator.geolocation.watchPosition(
+                (pos) => completeInline(inst, userData, writeGeoPayload(pos.coords), WAPI_OK),
+                () => complete(inst, userData, WAPI_ERR_IO, 0x0001 /* MORE */),
+                { enableHighAccuracy: (flags & 0x0001) !== 0 }
+            );
+            const h = inst.handles.insert({ type: "geo_watch", watchId });
+            inst._writeI32(resultPtr, h);
+            complete(inst, userData, WAPI_OK, 0x0001 /* MORE */);
+        });
+
+        // ====================================================================
+        // SPEECH (0x120-0x122)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_SPEECH_SPEAK, ({ addr, resultPtr, userData, self: inst }) => {
+            if (typeof speechSynthesis === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const text = inst._readStringView(addr + 0) || "";
+            const lang = inst._readStringView(addr + 16);
+            const rate   = inst._dv.getFloat32(addr + 32, true);
+            const pitch  = inst._dv.getFloat32(addr + 36, true);
+            const volume = inst._dv.getFloat32(addr + 40, true);
+            const u = new SpeechSynthesisUtterance(text);
+            if (lang) u.lang = lang;
+            if (rate > 0) u.rate = rate;
+            if (pitch >= 0) u.pitch = pitch;
+            if (volume >= 0) u.volume = volume;
+            u.onend = () => complete(inst, userData, WAPI_OK);
+            u.onerror = () => complete(inst, userData, WAPI_ERR_IO);
+            try {
+                speechSynthesis.speak(u);
+                const h = inst.handles.insert({ type: "tts", utterance: u });
+                inst._writeI32(resultPtr, h);
+            } catch (_) { complete(inst, userData, WAPI_ERR_IO); }
+        });
+
+        // Recognize start/result left as follow-on; webkitSpeechRecognition
+        // plumbing is involved and lower priority than the rest of this pass.
+
+        // ====================================================================
+        // CRYPTO remaining (encrypt/decrypt/sign/verify/derive/key_*)
+        // ====================================================================
+
+        const CRYPTO_HASH_ALGO = { 0: "SHA-256", 1: "SHA-384", 2: "SHA-512", 3: "SHA-1" };
+        const CRYPTO_CIPHER = {
+            0: { name: "AES-GCM", bits: 128 }, 1: { name: "AES-GCM", bits: 256 },
+            2: { name: "AES-CBC", bits: 128 }, 3: { name: "AES-CBC", bits: 256 },
+        };
+
+        H.set(WAPI_IO_OP_CRYPTO_HASH_CREATE,
+            ({ fd, flags, addr, len, resultPtr, userData, self: inst }) => {
+                if (!crypto.subtle) return complete(inst, userData, WAPI_ERR_NOTSUP);
+                // flags==0: update; flags==1: finish; fd==0 & !fd: create
+                if (!fd) {
+                    // Create new ctx
+                    const algo = CRYPTO_HASH_ALGO[flags];
+                    if (!algo) return complete(inst, userData, WAPI_ERR_INVAL);
+                    const h = inst.handles.insert({ type: "hashctx", algo, chunks: [] });
+                    inst._writeI32(resultPtr, h);
+                    return complete(inst, userData, WAPI_OK);
+                }
+                const e = inst.handles.get(fd);
+                if (!e || e.type !== "hashctx") return complete(inst, userData, WAPI_ERR_BADF);
+                if (flags === 0) {
+                    inst._refreshViews();
+                    e.chunks.push(inst._u8.slice(addr, addr + Number(len)));
+                    return complete(inst, userData, WAPI_OK);
+                }
+                // finish
+                const total = e.chunks.reduce((n, c) => n + c.length, 0);
+                const all = new Uint8Array(total);
+                let o = 0;
+                for (const c of e.chunks) { all.set(c, o); o += c.length; }
+                crypto.subtle.digest(e.algo, all).then(
+                    (buf) => {
+                        const digest = new Uint8Array(buf);
+                        inst.handles.remove(fd);
+                        completeInline(inst, userData, digest, digest.length);
+                    },
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            });
+
+        H.set(WAPI_IO_OP_CRYPTO_ENCRYPT,
+            ({ fd, flags, offset, addr, len, addr2, len2, userData, self: inst }) => {
+                const spec = CRYPTO_CIPHER[flags];
+                const k = inst.handles.get(fd);
+                if (!spec || !k || k.type !== "cryptokey") return complete(inst, userData, WAPI_ERR_INVAL);
+                const ivPtr = Number(offset & 0xFFFFFFFFn);
+                const ivLen = Number((offset >> 32n) & 0xFFFFFFFFn);
+                inst._refreshViews();
+                const iv = inst._u8.slice(ivPtr, ivPtr + ivLen);
+                const pt = inst._u8.slice(addr, addr + Number(len));
+                crypto.subtle.encrypt({ name: spec.name, iv }, k.key, pt).then(
+                    (buf) => {
+                        const ct = new Uint8Array(buf);
+                        inst._refreshViews();
+                        const n = Math.min(Number(len2), ct.length);
+                        inst._u8.set(ct.subarray(0, n), addr2);
+                        complete(inst, userData, ct.length);
+                    },
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            });
+
+        H.set(WAPI_IO_OP_CRYPTO_DECRYPT,
+            ({ fd, flags, offset, addr, len, addr2, len2, userData, self: inst }) => {
+                const spec = CRYPTO_CIPHER[flags];
+                const k = inst.handles.get(fd);
+                if (!spec || !k || k.type !== "cryptokey") return complete(inst, userData, WAPI_ERR_INVAL);
+                const ivPtr = Number(offset & 0xFFFFFFFFn);
+                const ivLen = Number((offset >> 32n) & 0xFFFFFFFFn);
+                inst._refreshViews();
+                const iv = inst._u8.slice(ivPtr, ivPtr + ivLen);
+                const ct = inst._u8.slice(addr, addr + Number(len));
+                crypto.subtle.decrypt({ name: spec.name, iv }, k.key, ct).then(
+                    (buf) => {
+                        const pt = new Uint8Array(buf);
+                        inst._refreshViews();
+                        const n = Math.min(Number(len2), pt.length);
+                        inst._u8.set(pt.subarray(0, n), addr2);
+                        complete(inst, userData, pt.length);
+                    },
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            });
+
+        H.set(WAPI_IO_OP_CRYPTO_KEY_IMPORT_RAW,
+            ({ flags, addr, len, resultPtr, userData, self: inst }) => {
+                if (!crypto.subtle) return complete(inst, userData, WAPI_ERR_NOTSUP);
+                inst._refreshViews();
+                const raw = inst._u8.slice(addr, addr + Number(len));
+                const uses = [];
+                if (flags & 0x1) uses.push("encrypt");
+                if (flags & 0x2) uses.push("decrypt");
+                if (flags & 0x4) uses.push("sign");
+                if (flags & 0x8) uses.push("verify");
+                crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false,
+                    uses.length ? uses : ["encrypt", "decrypt"]).then(
+                    (k) => {
+                        const h = inst.handles.insert({ type: "cryptokey", key: k });
+                        inst._writeI32(resultPtr, h);
+                        complete(inst, userData, WAPI_OK);
+                    },
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            });
+
+        H.set(WAPI_IO_OP_CRYPTO_KEY_GENERATE,
+            ({ flags, flags2, resultPtr, userData, self: inst }) => {
+                if (!crypto.subtle) return complete(inst, userData, WAPI_ERR_NOTSUP);
+                const spec = CRYPTO_CIPHER[flags];
+                if (!spec) return complete(inst, userData, WAPI_ERR_INVAL);
+                const uses = [];
+                if (flags2 & 0x1) uses.push("encrypt");
+                if (flags2 & 0x2) uses.push("decrypt");
+                const algoDesc = spec.bits ? { name: spec.name, length: spec.bits } : { name: spec.name };
+                crypto.subtle.generateKey(algoDesc, true,
+                    uses.length ? uses : ["encrypt", "decrypt"]).then(
+                    (k) => {
+                        const h = inst.handles.insert({ type: "cryptokey", key: k });
+                        inst._writeI32(resultPtr, h);
+                        complete(inst, userData, WAPI_OK);
+                    },
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            });
+
+        // ====================================================================
+        // POWER (0x2E8-0x2EA)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_POWER_INFO_GET, ({ userData, self: inst }) => {
+            const payload = new Uint8Array(16);
+            const dv = new DataView(payload.buffer);
+            if (!navigator.getBattery) {
+                dv.setUint32 (0, 0, true);
+                dv.setFloat32(4, 1.0, true);
+                dv.setFloat32(8, Infinity, true);
+                return completeInline(inst, userData, payload, WAPI_OK);
+            }
+            navigator.getBattery().then(
+                (b) => {
+                    const src = b.charging
+                        ? (b.level >= 0.999 ? 4 : 3)
+                        : 1;
+                    const secs = b.charging
+                        ? (isFinite(b.chargingTime) ? b.chargingTime : Infinity)
+                        : (isFinite(b.dischargingTime) ? b.dischargingTime : Infinity);
+                    dv.setUint32 (0, src, true);
+                    dv.setFloat32(4, b.level, true);
+                    dv.setFloat32(8, secs, true);
+                    completeInline(inst, userData, payload, WAPI_OK);
+                },
+                () => {
+                    dv.setUint32(0, 0, true);
+                    completeInline(inst, userData, payload, WAPI_OK);
+                }
+            );
+        });
+
+        H.set(WAPI_IO_OP_POWER_WAKE_ACQUIRE, ({ flags, resultPtr, userData, self: inst }) => {
+            if (!navigator.wakeLock) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            navigator.wakeLock.request("screen").then(
+                (lock) => {
+                    const h = inst.handles.insert({ type: "wakelock", lock });
+                    inst._writeI32(resultPtr, h);
+                    complete(inst, userData, WAPI_OK);
+                },
+                () => complete(inst, userData, WAPI_ERR_ACCES)
+            );
+        });
+
+        H.set(WAPI_IO_OP_POWER_IDLE_START, ({ flags, userData, self: inst }) => {
+            if (typeof IdleDetector === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            IdleDetector.requestPermission().then((perm) => {
+                if (perm !== "granted") return complete(inst, userData, WAPI_ERR_ACCES);
+                const det = new IdleDetector();
+                det.addEventListener("change", () => {
+                    const state = det.userState === "idle"
+                        ? (det.screenState === "locked" ? 2 : 1)
+                        : 0;
+                    const payload = new Uint8Array(4);
+                    new DataView(payload.buffer).setUint32(0, state, true);
+                    completeInline(inst, userData, payload, state);
+                });
+                det.start({ threshold: Math.max(60_000, flags) }).then(
+                    () => { inst._idleDetector = det; complete(inst, userData, WAPI_OK, 0x0001 /* MORE */); },
+                    () => complete(inst, userData, WAPI_ERR_IO)
+                );
+            });
+        });
+
+        // ====================================================================
+        // SENSOR (0x2F0)
+        // ====================================================================
+
+        const SENSOR_CTORS = {
+            0: typeof Accelerometer !== "undefined" ? Accelerometer : null,
+            1: typeof Gyroscope !== "undefined" ? Gyroscope : null,
+            2: typeof Magnetometer !== "undefined" ? Magnetometer : null,
+            3: typeof AmbientLightSensor !== "undefined" ? AmbientLightSensor : null,
+            5: typeof GravitySensor !== "undefined" ? GravitySensor : null,
+            6: typeof LinearAccelerationSensor !== "undefined" ? LinearAccelerationSensor : null,
+        };
+
+        H.set(WAPI_IO_OP_SENSOR_START, ({ flags, offset, resultPtr, userData, self: inst }) => {
+            const Ctor = SENSOR_CTORS[flags];
+            if (!Ctor) return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const freqBits = Number(offset);
+            const buf = new ArrayBuffer(4);
+            new DataView(buf).setUint32(0, freqBits, true);
+            const freq = new DataView(buf).getFloat32(0, true);
+            try {
+                const sensor = new Ctor({ frequency: freq > 0 ? freq : 60 });
+                const entry = { type: "sensor", sensor, kind: flags, xyz: null, scalar: null };
+                sensor.onreading = () => {
+                    const ts = BigInt(Math.round(performance.now() * 1e6));
+                    if (flags === 3 || flags === 4) {
+                        entry.scalar = { value: sensor.illuminance ?? sensor.distance ?? 0, ts };
+                    } else {
+                        entry.xyz = { x: sensor.x || 0, y: sensor.y || 0, z: sensor.z || 0, ts };
+                    }
+                };
+                sensor.onerror = () => complete(inst, userData, WAPI_ERR_IO, 0x0001 /* MORE */);
+                sensor.start();
+                const h = inst.handles.insert(entry);
+                inst._writeI32(resultPtr, h);
+                complete(inst, userData, WAPI_OK);
+            } catch (_) { complete(inst, userData, WAPI_ERR_ACCES); }
+        });
+
+        // ====================================================================
+        // NOTIFY SHOW (0x2F8) — capability grant is handled by the
+        // universal CAP_REQUEST path above.
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_NOTIFY_SHOW, ({ addr, resultPtr, userData, self: inst }) => {
+            if (typeof Notification === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            if (Notification.permission !== "granted") return complete(inst, userData, WAPI_ERR_ACCES);
+            const title = inst._readStringView(addr + 0) || "";
+            const body  = inst._readStringView(addr + 16) || "";
+            const icon  = inst._readStringView(addr + 32);
+            try {
+                const n = new Notification(title, { body, icon: icon || undefined });
+                const h = inst.handles.insert({ type: "notification", obj: n });
+                inst._writeI32(resultPtr, h);
+                complete(inst, userData, WAPI_OK);
+            } catch (_) { complete(inst, userData, WAPI_ERR_IO); }
+        });
+
+        // ====================================================================
+        // FONT family_info (0x2FC)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_FONT_FAMILY_INFO, ({ flags, addr, userData, self: inst }) => {
+            const defaults = ["serif", "sans-serif", "monospace", "cursive", "fantasy",
+                              "system-ui", "Arial", "Times New Roman", "Courier New",
+                              "Georgia", "Verdana", "Helvetica"];
+            const writeInfo = (list, index) => {
+                if (index < 0 || index >= list.length) return complete(inst, userData, WAPI_ERR_OVERFLOW);
+                const name = list[index];
+                inst._refreshViews();
+                const encoded = new TextEncoder().encode(name);
+                const ptr = inst._hostAlloc(encoded.length + 1, 1);
+                inst._refreshViews();
+                inst._u8.set(encoded, ptr);
+                inst._u8[ptr + encoded.length] = 0;
+                inst._dv.setBigUint64(addr + 0, BigInt(ptr), true);
+                inst._dv.setBigUint64(addr + 8, BigInt(encoded.length), true);
+                inst._dv.setUint32(addr + 16, 100, true);
+                inst._dv.setUint32(addr + 20, 900, true);
+                inst._dv.setUint32(addr + 24, 0x0007, true);
+                inst._dv.setInt32 (addr + 28, 0, true);
+                complete(inst, userData, list.length);
+            };
+            if (window.queryLocalFonts) {
+                window.queryLocalFonts().then(
+                    (fonts) => {
+                        const fams = [...new Set(fonts.map(f => f.family))];
+                        writeInfo(fams.length ? fams : defaults, flags);
+                    },
+                    () => writeInfo(defaults, flags)
+                );
+            } else {
+                writeInfo(defaults, flags);
+            }
+        });
+
+        // ====================================================================
+        // FWATCH (host: 0x008-0x009; sandbox: 0x2A3-0x2A4)
+        // ====================================================================
+
+        H.set(WAPI_IO_OP_FWATCH_ADD, ({ flags, addr, len, resultPtr, userData, self: inst }) => {
+            const path = inst._readString(addr, Number(len));
+            const entry = { type: "fwatch", path, recursive: !!flags };
+            if (typeof FileSystemObserver !== "undefined") {
+                try {
+                    const obs = new FileSystemObserver((records) => {
+                        for (const r of records) {
+                            const kind = r.type === "appeared" ? 0 : r.type === "disappeared" ? 2 : 1;
+                            complete(inst, userData, kind, 0x0001 /* MORE */);
+                        }
+                    });
+                    entry.observer = obs;
+                } catch (_) {}
+            }
+            const h = inst.handles.insert(entry);
+            inst._writeI32(resultPtr, h);
+            complete(inst, userData, WAPI_OK, 0x0001 /* MORE */);
+        });
+
+        H.set(WAPI_IO_OP_FWATCH_REMOVE, ({ fd, userData, self: inst }) => {
+            const e = inst.handles.get(fd);
+            if (!e || e.type !== "fwatch") return complete(inst, userData, WAPI_ERR_BADF);
+            try { e.observer && e.observer.disconnect(); } catch (_) {}
+            inst.handles.remove(fd);
+            complete(inst, userData, WAPI_OK);
+        });
+
+        // ====================================================================
+        // BARCODE (0x2D8-0x2D9)
+        // ====================================================================
+
+        const writeBarcodeResults2 = (inst, results, maxResults, resultsBufPtr) => {
+            const n = Math.min(results.length, maxResults);
+            const formatMap = { qr_code:0, ean_13:1, ean_8:2, code_128:3, code_39:4,
+                                upc_a:5, upc_e:6, data_matrix:7, pdf417:8, aztec:9 };
+            inst._refreshViews();
+            for (let i = 0; i < n; i++) {
+                const r = results[i];
+                const base = resultsBufPtr + i * 32;
+                inst._dv.setUint32(base + 0, formatMap[r.format] ?? 0, true);
+                const encoded = new TextEncoder().encode(r.rawValue || "");
+                const vptr = inst._hostAlloc(encoded.length + 1, 1);
+                inst._refreshViews();
+                inst._u8.set(encoded, vptr);
+                inst._u8[vptr + encoded.length] = 0;
+                inst._dv.setUint32(base + 4, encoded.length, true);
+                inst._dv.setBigUint64(base + 8, BigInt(vptr), true);
+                const box = r.boundingBox || { x:0, y:0, width:0, height:0 };
+                inst._dv.setFloat32(base + 16, box.x, true);
+                inst._dv.setFloat32(base + 20, box.y, true);
+                inst._dv.setFloat32(base + 24, box.width, true);
+                inst._dv.setFloat32(base + 28, box.height, true);
+            }
+            return n;
+        };
+
+        H.set(WAPI_IO_OP_BARCODE_DETECT_IMAGE, ({ flags, flags2, addr, addr2, len2, userData, self: inst }) => {
+            if (typeof BarcodeDetector === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const width = flags, height = flags2;
+            inst._refreshViews();
+            const px = inst._u8.slice(addr, addr + width * height * 4);
+            const img = new ImageData(new Uint8ClampedArray(px.buffer), width, height);
+            const canvas = document.createElement("canvas");
+            canvas.width = width; canvas.height = height;
+            canvas.getContext("2d").putImageData(img, 0, 0);
+            const det = new BarcodeDetector();
+            det.detect(canvas).then(
+                (results) => {
+                    const maxResults = Math.floor(Number(len2) / 32);
+                    const count = writeBarcodeResults(inst, results, maxResults, addr2);
+                    complete(inst, userData, count);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        H.set(WAPI_IO_OP_BARCODE_DETECT_CAMERA, ({ fd, addr, len, userData, self: inst }) => {
+            if (typeof BarcodeDetector === "undefined") return complete(inst, userData, WAPI_ERR_NOTSUP);
+            const cam = inst.handles.get(fd);
+            if (!cam || cam.type !== "camera") return complete(inst, userData, WAPI_ERR_BADF);
+            if (!cam.video.videoWidth) return complete(inst, userData, WAPI_ERR_AGAIN);
+            const det = new BarcodeDetector();
+            det.detect(cam.video).then(
+                (results) => {
+                    const maxResults = Math.floor(Number(len) / 32);
+                    const count = writeBarcodeResults(inst, results, maxResults, addr);
+                    complete(inst, userData, count);
+                },
+                () => complete(inst, userData, WAPI_ERR_IO)
+            );
+        });
+
+        // Add wapi_input.device_seat into the existing wapi_input module.
+        // Single-seat browser host: always returns WAPI_SEAT_DEFAULT.
+        wapi_input.device_seat = (_device) => 0;
+
         return { wapi, wapi_env, wapi_memory, wapi_clock, wapi_filesystem,
                  wapi_gpu, wapi_wgpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_text,
-                 wapi_clipboard, wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
+                 wapi_transfer, wapi_seat,
+                 wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
                  wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
-                 wapi_share, wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr,
+                 wapi_pay, wapi_usb, wapi_midi, wapi_bt, wapi_camera, wapi_xr,
                  wapi_register, wapi_taskbar, wapi_power, wapi_orient,
                  wapi_codec, wapi_media, wapi_encode,
                  wapi_authn, wapi_netinfo, wapi_haptic,
                  wapi_serial, wapi_capture, wapi_contacts,
-                 wapi_barcode, wapi_nfc, wapi_dnd,
+                 wapi_barcode, wapi_nfc,
                  wapi_window, wapi_display, wapi_dialog, wapi_menu, wapi_tray,
-                 wapi_theme, wapi_sysinfo, wapi_process, wapi_thread,
-                 wapi_fwatch, wapi_eyedrop, wapi_plugin,
+                 wapi_theme, wapi_sysinfo, wapi_user, wapi_process, wapi_thread,
+                 wapi_eyedrop, wapi_plugin,
                  wasi_snapshot_preview1 };
     }
 
@@ -5997,14 +10381,36 @@ class WAPI {
                 this._dv.setInt32(ptr + 20, ev.data2 || 0, true);
                 break;
 
+            case WAPI_EVENT_TRANSFER_ENTER:
+            case WAPI_EVENT_TRANSFER_OVER:
+            case WAPI_EVENT_TRANSFER_LEAVE:
+            case WAPI_EVENT_TRANSFER_DELIVER:
+                // wapi_transfer_event_t after 16-byte common header:
+                //   16: i32 pointer_id
+                //   20: i32 x
+                //   24: i32 y
+                //   28: u32 item_count
+                //   32: u32 available_actions
+                this._dv.setInt32(ptr + 16, ev.pointer_id | 0, true);
+                this._dv.setInt32(ptr + 20, ev.x | 0, true);
+                this._dv.setInt32(ptr + 24, ev.y | 0, true);
+                this._dv.setUint32(ptr + 28, (ev.item_count >>> 0) || 0, true);
+                this._dv.setUint32(ptr + 32, (ev.available_actions >>> 0) || 0, true);
+                break;
+
             case WAPI_EVENT_IO_COMPLETION:
                 // wapi_io_event_t after 16-byte common header:
                 //   16: int32_t   result
-                //   20: uint32_t  flags
+                //   20: uint32_t  flags    (WAPI_IO_CQE_F_*)
                 //   24: uint64_t  user_data
+                //   32: uint8_t   payload[96]  (inline, when F_INLINE set)
                 this._dv.setInt32(ptr + 16, ev.result | 0, true);
                 this._dv.setUint32(ptr + 20, ev.flags >>> 0, true);
                 this._dv.setBigUint64(ptr + 24, BigInt(ev.userData || 0n), true);
+                if (ev.inlinePayload) {
+                    const n = Math.min(ev.inlinePayload.length, 96);
+                    this._u8.set(ev.inlinePayload.subarray(0, n), ptr + 32);
+                }
                 break;
 
             default:
@@ -6088,35 +10494,23 @@ class WAPI {
 
         // Mouse
         console.log("[WAPI] _setupInputListeners called, canvas:", canvas, "surface:", surfaceHandle);
-        // Use window-level listeners for mouse events since the canvas
-        // fills the viewport and position:fixed canvases can have
-        // hit-testing issues in some browsers.
-        // One-shot diagnostic so we can verify coordinate spaces on the
-        // first mousedown. Remove once cursor alignment is confirmed.
-        let __wapiCursorDebug = 3;
+        // Window-level listeners (so drags continue when the cursor leaves the canvas);
+        // coordinates are translated into canvas-local space because the canvas can be
+        // inset from the viewport (e.g. by a host-page stats bar).
         window.addEventListener("mousemove", (e) => {
-            self._mouseX = e.clientX;
-            self._mouseY = e.clientY;
-            if (__wapiCursorDebug > 0) {
-                const info = self._surfaces.get(sid);
-                const rect = canvas.getBoundingClientRect();
-                console.log("[WAPI cursor]",
-                    "clientX=" + e.clientX, "clientY=" + e.clientY,
-                    "| canvas.width=" + canvas.width, "height=" + canvas.height,
-                    "| css rect=" + rect.width.toFixed(1) + "x" + rect.height.toFixed(1),
-                    "at (" + rect.left.toFixed(1) + "," + rect.top.toFixed(1) + ")",
-                    "| dpr=" + (info ? info.dpr : "?"),
-                    "| window.dpr=" + window.devicePixelRatio);
-                __wapiCursorDebug--;
-            }
+            const rect = canvas.getBoundingClientRect();
+            const lx = e.clientX - rect.left;
+            const ly = e.clientY - rect.top;
+            self._mouseX = lx;
+            self._mouseY = ly;
             self._eventQueue.push({
                 type: WAPI_EVENT_MOUSE_MOTION,
                 surface_id: sid,
                 timestamp: performance.now() * 1_000_000,
                 mouse_id: 0,
                 button_state: self._mouseButtons,
-                x: e.clientX,
-                y: e.clientY,
+                x: lx,
+                y: ly,
                 xrel: e.movementX,
                 yrel: e.movementY,
             });
@@ -6125,6 +10519,7 @@ class WAPI {
         window.addEventListener("mousedown", (e) => {
             const btn = domButtonToTP(e.button);
             self._mouseButtons |= (1 << btn);
+            const rect = canvas.getBoundingClientRect();
             self._eventQueue.push({
                 type: WAPI_EVENT_MOUSE_BUTTON_DOWN,
                 surface_id: sid,
@@ -6133,14 +10528,15 @@ class WAPI {
                 button: btn,
                 down: 1,
                 clicks: e.detail,
-                x: e.clientX,
-                y: e.clientY,
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
             });
         });
 
         window.addEventListener("mouseup", (e) => {
             const btn = domButtonToTP(e.button);
             self._mouseButtons &= ~(1 << btn);
+            const rect = canvas.getBoundingClientRect();
             self._eventQueue.push({
                 type: WAPI_EVENT_MOUSE_BUTTON_UP,
                 surface_id: sid,
@@ -6149,8 +10545,8 @@ class WAPI {
                 button: btn,
                 down: 0,
                 clicks: e.detail,
-                x: e.clientX,
-                y: e.clientY,
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
             });
         });
 
@@ -6168,6 +10564,93 @@ class WAPI {
 
         // Context menu prevention
         canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+        // Drag-and-drop. Bridge HTML5 drag events into the unified WAPI
+        // transfer event family (WAPI_EVENT_TRANSFER_*). Items are stashed
+        // in self._dropItems as { mime, bytes } so apps can read them via
+        // wapi_transfer_read(POINTED, mime, ...).
+        const transferActionsFromEffectAllowed = (s) => {
+            // Bitmask of wapi_transfer_action_t values.
+            switch (s) {
+                case "none":         return 0;
+                case "copy":         return 1 << 1;       // COPY
+                case "move":         return 1 << 2;       // MOVE
+                case "link":         return 1 << 3;       // LINK
+                case "copyMove":     return (1 << 1) | (1 << 2);
+                case "copyLink":     return (1 << 1) | (1 << 3);
+                case "linkMove":     return (1 << 2) | (1 << 3);
+                case "all":
+                case "uninitialized":
+                default:             return (1 << 1) | (1 << 2) | (1 << 3);
+            }
+        };
+        const pushTransferEvent = (e, type, count) => {
+            const rect = canvas.getBoundingClientRect();
+            self._eventQueue.push({
+                type,
+                surface_id: sid,
+                timestamp: performance.now() * 1_000_000,
+                pointer_id: 0, // single-pointer drag in browsers
+                x: Math.round(e.clientX - rect.left),
+                y: Math.round(e.clientY - rect.top),
+                item_count: count,
+                available_actions: transferActionsFromEffectAllowed(
+                    e.dataTransfer && e.dataTransfer.effectAllowed),
+            });
+        };
+        canvas.addEventListener("dragenter", (e) => {
+            const types = (e.dataTransfer && e.dataTransfer.types) || [];
+            if (types.length === 0) return;
+            e.preventDefault();
+            pushTransferEvent(e, WAPI_EVENT_TRANSFER_ENTER, types.length);
+        });
+        canvas.addEventListener("dragover", (e) => {
+            const types = (e.dataTransfer && e.dataTransfer.types) || [];
+            if (types.length === 0) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+            pushTransferEvent(e, WAPI_EVENT_TRANSFER_OVER, types.length);
+        });
+        canvas.addEventListener("dragleave", (e) => {
+            pushTransferEvent(e, WAPI_EVENT_TRANSFER_LEAVE, 0);
+        });
+        canvas.addEventListener("drop", (e) => {
+            e.preventDefault();
+            self._dropItems = [];
+            const dt = e.dataTransfer;
+            if (!dt) {
+                pushTransferEvent(e, WAPI_EVENT_TRANSFER_DELIVER, 0);
+                return;
+            }
+            // Synchronously stash text/* items.
+            for (const t of (dt.types || [])) {
+                if (t === "Files") continue;
+                const data = dt.getData(t);
+                if (data) {
+                    self._dropItems.push({
+                        mime: t,
+                        bytes: new TextEncoder().encode(data),
+                    });
+                }
+            }
+            // Asynchronously stash file items; deliver event after all loaded.
+            const filePromises = Array.from(dt.files || []).map((f) =>
+                f.arrayBuffer().then((buf) => ({
+                    mime: f.type || "application/octet-stream",
+                    bytes: new Uint8Array(buf),
+                }))
+            );
+            if (filePromises.length === 0) {
+                pushTransferEvent(e, WAPI_EVENT_TRANSFER_DELIVER,
+                                  self._dropItems.length);
+                return;
+            }
+            Promise.all(filePromises).then((fileItems) => {
+                self._dropItems.push(...fileItems);
+                pushTransferEvent(e, WAPI_EVENT_TRANSFER_DELIVER,
+                                  self._dropItems.length);
+            });
+        });
 
         // Touch (coordinates in surface pixels, not normalized)
         canvas.addEventListener("touchstart", (e) => {
@@ -6707,6 +11190,32 @@ class WAPI {
         const node = this.memfs.stat(path);
         if (!node || node.type !== WAPI_FILETYPE_REGULAR) return null;
         return node.data;
+    }
+
+    /**
+     * Register a JS-side handler for an IO opcode. Extension point for
+     * host integrators who want to plug vendor opcodes into dispatch
+     * without forking the shim.
+     *
+     * @param {number} opcode — packed u32 (namespace<<16 | method).
+     * @param {(op: {fd, flags, flags2, offset, addr, len, addr2, len2,
+     *     userData, resultPtr, _pushIoCompletion, self}) => void} handler
+     *   Either complete synchronously (use _pushIoCompletion) or
+     *   schedule async work that calls it later. `self` is the WAPI
+     *   instance, giving access to memory helpers (_u8, _dv, etc.).
+     */
+    registerOpcodeHandler(opcode, handler) {
+        if (!this._opcodeHandlers) this._opcodeHandlers = new Map();
+        this._opcodeHandlers.set(opcode >>> 0, handler);
+    }
+
+    /**
+     * Look up the minted id for a namespace name, without causing a
+     * registration. Returns `undefined` if the namespace hasn't been
+     * registered yet.
+     */
+    getNamespaceId(name) {
+        return this._nsRegistry && this._nsRegistry.get(name);
     }
 }
 

@@ -1,5 +1,5 @@
 /**
- * WAPI - Bluetooth Capability
+ * WAPI - Bluetooth
  * Version 1.0.0
  *
  * Maps to: Web Bluetooth API, CoreBluetooth (iOS/macOS),
@@ -8,8 +8,6 @@
  * Focuses on Bluetooth Low Energy (BLE) GATT profile.
  *
  * Import module: "wapi_bt"
- *
- * Query availability with wapi_capability_supported("wapi.bluetooth", 12)
  */
 
 #ifndef WAPI_BLUETOOTH_H
@@ -33,85 +31,122 @@ typedef struct wapi_bt_filter_t {
     wapi_stringview_t name_prefix;
 } wapi_bt_filter_t;
 
-/**
- * Request a BLE device (shows picker dialog).
- *
- * @see WAPI_IO_OP_BT_DEVICE_REQUEST
- * @param filters       Array of scan filters.
- * @param filter_count  Number of filters.
- * @param device        [out] Device handle.
- */
-WAPI_IMPORT(wapi_bt, request_device)
-wapi_result_t wapi_bt_request_device(const wapi_bt_filter_t* filters,
-                                  uint32_t filter_count, wapi_handle_t* device);
+/* ============================================================
+ * Bluetooth Operations (async, submitted via wapi_io_t)
+ * ============================================================ */
 
-/**
- * Connect to a BLE device's GATT server.
- *
- * @see WAPI_IO_OP_BT_CONNECT
- */
-WAPI_IMPORT(wapi_bt, connect)
-wapi_result_t wapi_bt_connect(wapi_handle_t device);
+/** Request a BLE device (shows system picker). */
+static inline wapi_result_t wapi_bt_request_device(
+    const wapi_io_t* io,
+    const wapi_bt_filter_t* filters, uint32_t filter_count,
+    wapi_handle_t* out_device, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_BT_DEVICE_REQUEST;
+    op.addr       = (uint64_t)(uintptr_t)filters;
+    op.len        = (uint64_t)filter_count * sizeof(wapi_bt_filter_t);
+    op.flags2     = filter_count;
+    op.result_ptr = (uint64_t)(uintptr_t)out_device;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Disconnect from a BLE device.
- */
-WAPI_IMPORT(wapi_bt, disconnect)
-wapi_result_t wapi_bt_disconnect(wapi_handle_t device);
+/** Connect to a BLE device's GATT server. */
+static inline wapi_result_t wapi_bt_connect(
+    const wapi_io_t* io, wapi_handle_t device, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BT_CONNECT;
+    op.fd        = device;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Get a GATT service by UUID.
- *
- * @param device       Device handle.
- * @param uuid         Service UUID string.
- * @param service      [out] Service handle.
- */
-WAPI_IMPORT(wapi_bt, get_service)
-wapi_result_t wapi_bt_get_service(wapi_handle_t device, wapi_stringview_t uuid,
-                               wapi_handle_t* service);
+/** Get a GATT service by UUID. */
+static inline wapi_result_t wapi_bt_get_service(
+    const wapi_io_t* io, wapi_handle_t device,
+    wapi_stringview_t uuid, wapi_handle_t* out_service,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_BT_SERVICE_GET;
+    op.fd         = device;
+    op.addr       = uuid.data;
+    op.len        = uuid.length;
+    op.result_ptr = (uint64_t)(uintptr_t)out_service;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Get a GATT characteristic by UUID.
- *
- * @param service        Service handle.
- * @param uuid           Characteristic UUID string.
- * @param characteristic [out] Characteristic handle.
- */
-WAPI_IMPORT(wapi_bt, get_characteristic)
-wapi_result_t wapi_bt_get_characteristic(wapi_handle_t service, wapi_stringview_t uuid,
-                                      wapi_handle_t* characteristic);
+/** Get a GATT characteristic by UUID. */
+static inline wapi_result_t wapi_bt_get_characteristic(
+    const wapi_io_t* io, wapi_handle_t service,
+    wapi_stringview_t uuid, wapi_handle_t* out_char,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_BT_CHARACTERISTIC_GET;
+    op.fd         = service;
+    op.addr       = uuid.data;
+    op.len        = uuid.length;
+    op.result_ptr = (uint64_t)(uintptr_t)out_char;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Read a GATT characteristic value.
- *
- * @see WAPI_IO_OP_BT_VALUE_READ
- */
-WAPI_IMPORT(wapi_bt, read_value)
-wapi_result_t wapi_bt_read_value(wapi_handle_t characteristic, void* buf,
-                              wapi_size_t buf_len, wapi_size_t* val_len);
+/** Read a GATT characteristic value. */
+static inline wapi_result_t wapi_bt_read_value(
+    const wapi_io_t* io, wapi_handle_t characteristic,
+    void* buf, wapi_size_t buf_len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BT_VALUE_READ;
+    op.fd        = characteristic;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Write a GATT characteristic value.
- *
- * @see WAPI_IO_OP_BT_VALUE_WRITE
- */
-WAPI_IMPORT(wapi_bt, write_value)
-wapi_result_t wapi_bt_write_value(wapi_handle_t characteristic, const void* data,
-                               wapi_size_t len);
+/** Write a GATT characteristic value. */
+static inline wapi_result_t wapi_bt_write_value(
+    const wapi_io_t* io, wapi_handle_t characteristic,
+    const void* data, wapi_size_t len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BT_VALUE_WRITE;
+    op.fd        = characteristic;
+    op.addr      = (uint64_t)(uintptr_t)data;
+    op.len       = len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Subscribe to GATT characteristic notifications.
- *
- * @see WAPI_IO_OP_BT_NOTIFICATIONS_START
- */
-WAPI_IMPORT(wapi_bt, start_notifications)
-wapi_result_t wapi_bt_start_notifications(wapi_handle_t characteristic);
+/** Subscribe to GATT characteristic notifications. Host emits a
+ *  WAPI_EVENT_IO_COMPLETION per notification (WAPI_IO_CQE_F_MORE set). */
+static inline wapi_result_t wapi_bt_start_notifications(
+    const wapi_io_t* io, wapi_handle_t characteristic, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BT_NOTIFICATIONS_START;
+    op.fd        = characteristic;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Unsubscribe from notifications.
- */
-WAPI_IMPORT(wapi_bt, stop_notifications)
-wapi_result_t wapi_bt_stop_notifications(wapi_handle_t characteristic);
+/** Unsubscribe — cancels the notification subscription by user_data. */
+static inline wapi_result_t wapi_bt_stop_notifications(
+    const wapi_io_t* io, uint64_t subscription_user_data)
+{
+    return io->cancel(io->impl, subscription_user_data);
+}
+
+/** Disconnect — cancels the device's ongoing connection by user_data. */
+static inline wapi_result_t wapi_bt_disconnect(
+    const wapi_io_t* io, uint64_t connect_user_data)
+{
+    return io->cancel(io->impl, connect_user_data);
+}
 
 #ifdef __cplusplus
 }

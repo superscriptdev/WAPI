@@ -1,13 +1,11 @@
 /**
- * WAPI - Payments Capability
+ * WAPI - Payments
  * Version 1.0.0
  *
  * Maps to: Payment Request API (Web), Apple Pay,
  *          Google Pay / Android Pay
  *
  * Import module: "wapi_pay"
- *
- * Query availability with wapi_capability_supported("wapi.payments", 11)
  */
 
 #ifndef WAPI_PAYMENTS_H
@@ -53,17 +51,31 @@ typedef struct wapi_pay_request_t {
 #define WAPI_PAY_FLAG_REQUEST_EMAIL     0x0002
 #define WAPI_PAY_FLAG_REQUEST_PHONE     0x0004
 
+/* ============================================================
+ * Payment Operations (async, submitted via wapi_io_t)
+ * ============================================================ */
+
 /**
- * Show the payment sheet and process payment.
- *
- * @param request   Payment request descriptor.
- * @param token     [out] Buffer for payment token/nonce.
- * @param token_len [in] Buffer capacity, [out] actual token length.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if user canceled.
+ * Submit a payment request. Shows the system payment sheet. On
+ * completion the payment token/nonce is written to `token` and the
+ * actual length is returned in the completion event's
+ * `result` field.
  */
-WAPI_IMPORT(wapi_pay, request_payment)
-wapi_result_t wapi_pay_request_payment(const wapi_pay_request_t* request,
-                                    void* token, wapi_size_t* token_len);
+static inline wapi_result_t wapi_pay_request_payment(
+    const wapi_io_t* io,
+    const wapi_pay_request_t* request,
+    void* token, wapi_size_t token_capacity,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_PAY_PAYMENT_REQUEST;
+    op.addr       = (uint64_t)(uintptr_t)request;
+    op.len        = sizeof(*request);
+    op.addr2      = (uint64_t)(uintptr_t)token;
+    op.len2       = token_capacity;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 /**
- * WAPI - Haptics Capability
+ * WAPI - Haptics
  * Version 1.0.0
  *
  * Device vibration patterns and advanced haptic effects.
@@ -11,8 +11,6 @@
  *          SDL_Haptic (Desktop)
  *
  * Import module: "wapi_haptic"
- *
- * Query availability with wapi_capability_supported("wapi.haptics", 12)
  */
 
 #ifndef WAPI_HAPTICS_H

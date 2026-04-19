@@ -1,11 +1,11 @@
 /**
- * WAPI - System Information Capability
+ * WAPI - System Information
  * Version 1.0.0
  *
  * Query host platform, device class, CPU/hardware capabilities,
- * locale, timezone, and display preferences. Provides a portable
- * snapshot of the runtime environment without exposing
- * fingerprint-level detail.
+ * and display preferences. Provides a portable snapshot of the
+ * runtime environment without exposing fingerprint-level detail.
+ * Locale and timezone live in wapi_env (user environment).
  *
  * CPU feature detection is granular: modules query specific
  * instruction set extensions (SSE4.1, AVX2, NEON, etc.) just
@@ -20,8 +20,6 @@
  *          SDL_GetCPUCacheLineSize / SDL_GetSystemRAM (SDL3)
  *
  * Import module: "wapi_sysinfo"
- *
- * Query availability with wapi_capability_supported("wapi.sysinfo", 12)
  */
 
 #ifndef WAPI_SYSINFO_H
@@ -34,20 +32,22 @@ extern "C" {
 #endif
 
 /* ============================================================
- * Platform
- * ============================================================ */
+ * Operating System
+ * ============================================================
+ * What kernel/OS the module observes. A VM presenting Linux =
+ * WAPI_OS_LINUX. See wapi_env_t in wapi_env.h for the environment axis
+ * (browser, app sandbox, container) — those are not OSes. */
 
-typedef enum wapi_platform_t {
-    WAPI_PLATFORM_UNKNOWN   = 0,
-    WAPI_PLATFORM_WINDOWS   = 1,
-    WAPI_PLATFORM_MACOS     = 2,
-    WAPI_PLATFORM_LINUX     = 3,
-    WAPI_PLATFORM_IOS       = 4,
-    WAPI_PLATFORM_ANDROID   = 5,
-    WAPI_PLATFORM_BROWSER   = 6,
-    WAPI_PLATFORM_WASM_EDGE = 7,
-    WAPI_PLATFORM_FORCE32   = 0x7FFFFFFF
-} wapi_platform_t;
+typedef enum wapi_os_t {
+    WAPI_OS_UNKNOWN = 0,
+    WAPI_OS_WINDOWS = 1,
+    WAPI_OS_MACOS   = 2,
+    WAPI_OS_LINUX   = 3,
+    WAPI_OS_IOS     = 4,
+    WAPI_OS_ANDROID = 5,
+    WAPI_OS_OTHER   = 6,
+    WAPI_OS_FORCE32 = 0x7FFFFFFF
+} wapi_os_t;
 
 /* ============================================================
  * Device Class
@@ -141,54 +141,32 @@ typedef enum wapi_cpu_arch_t {
 #define WAPI_CPU_WASM_TAIL_CALL ((uint64_t)1 << 52)  /* Tail calls */
 
 /* ============================================================
- * Sandbox Type
- * ============================================================
- * What kind of sandbox the module is running in.
- * Useful for adjusting expectations (e.g. no subprocess spawning
- * in a browser sandbox).
- */
-
-typedef enum wapi_sandbox_t {
-    WAPI_SANDBOX_NONE       = 0,  /* No sandbox (native process) */
-    WAPI_SANDBOX_APP        = 1,  /* App sandbox (macOS, iOS, Android) */
-    WAPI_SANDBOX_BROWSER    = 2,  /* Browser sandbox */
-    WAPI_SANDBOX_CONTAINER  = 3,  /* Container (Docker, etc.) */
-    WAPI_SANDBOX_WASM       = 4,  /* Wasm runtime sandbox */
-    WAPI_SANDBOX_FORCE32    = 0x7FFFFFFF
-} wapi_sandbox_t;
-
-/* ============================================================
  * System Info
  * ============================================================
  *
  * Layout (128 bytes, align 8):
- *   Offset   0: uint32_t platform            wapi_platform_t
+ *   Offset   0: uint32_t os                  wapi_os_t
  *   Offset   4: uint32_t device_class        wapi_device_class_t
  *   Offset   8: uint64_t os_version_ptr      Linear memory address of UTF-8 version string
- *   Offset  16: uint64_t locale_ptr          Linear memory address of UTF-8 locale string
- *   Offset  24: uint64_t timezone_ptr        Linear memory address of UTF-8 timezone string
- *   Offset  32: uint64_t cpu_features        Bitmask of WAPI_CPU_* flags
- *   Offset  40: uint32_t os_version_len      Byte length of version string
- *   Offset  44: uint32_t cpu_count           Number of logical CPU cores
- *   Offset  48: uint32_t physical_cpu_count  Physical (non-HT) cores
- *   Offset  52: uint32_t ram_mb              Approximate RAM in megabytes
- *   Offset  56: uint32_t cpu_arch            wapi_cpu_arch_t
- *   Offset  60: uint32_t cache_line_size     CPU cache line in bytes (typically 64)
- *   Offset  64: uint32_t page_size           System memory page in bytes (typically 4096)
- *   Offset  68: uint32_t locale_len          Byte length of locale string
- *   Offset  72: uint32_t timezone_len        Byte length of timezone string
- *   Offset  76: uint32_t dark_mode           1 if dark mode enabled
- *   Offset  80: uint32_t accent_color_rgba   Accent color as 0xRRGGBBAA
- *   Offset  84: uint32_t sandbox             wapi_sandbox_t
- *   Offset  88: uint8_t  _reserved[40]
+ *   Offset  16: uint64_t cpu_features        Bitmask of WAPI_CPU_* flags
+ *   Offset  24: uint32_t os_version_len      Byte length of version string
+ *   Offset  28: uint32_t cpu_count           Number of logical CPU cores
+ *   Offset  32: uint32_t physical_cpu_count  Physical (non-HT) cores
+ *   Offset  36: uint32_t ram_mb              Approximate RAM in megabytes
+ *   Offset  40: uint32_t cpu_arch            wapi_cpu_arch_t
+ *   Offset  44: uint32_t cache_line_size     CPU cache line in bytes (typically 64)
+ *   Offset  48: uint32_t page_size           System memory page in bytes (typically 4096)
+ *   Offset  52: uint32_t dark_mode           1 if dark mode enabled
+ *   Offset  56: uint32_t accent_color_rgba   Accent color as 0xRRGGBBAA
+ *   Offset  60: uint32_t env                 wapi_env_t (see wapi_env.h)
+ *   Offset  64: uint32_t is_remote           1 if RDP/SSH/VNC/remote desktop
+ *   Offset  68: uint8_t  _reserved[60]
  */
 
 typedef struct wapi_sysinfo_t {
-    uint32_t    platform;
+    uint32_t    os;
     uint32_t    device_class;
     uint64_t    os_version_ptr;
-    uint64_t    locale_ptr;
-    uint64_t    timezone_ptr;
     uint64_t    cpu_features;
     uint32_t    os_version_len;
     uint32_t    cpu_count;
@@ -197,12 +175,11 @@ typedef struct wapi_sysinfo_t {
     uint32_t    cpu_arch;
     uint32_t    cache_line_size;
     uint32_t    page_size;
-    uint32_t    locale_len;
-    uint32_t    timezone_len;
     uint32_t    dark_mode;
     uint32_t    accent_color_rgba;
-    uint32_t    sandbox;
-    uint8_t     _reserved[40];
+    uint32_t    env;
+    uint32_t    is_remote;
+    uint8_t     _reserved[60];
 } wapi_sysinfo_t;
 
 _Static_assert(sizeof(wapi_sysinfo_t) == 128,
@@ -217,43 +194,36 @@ _Static_assert(_Alignof(wapi_sysinfo_t) == 8,
 /**
  * Get a snapshot of system information.
  *
- * @param info_ptr  [out] Pointer to wapi_sysinfo_t.
- * @return WAPI_OK on success.
- *
  * Wasm signature: (i32) -> i32
  */
 WAPI_IMPORT(wapi_sysinfo, sysinfo_get)
 wapi_result_t wapi_sysinfo_get(wapi_sysinfo_t* info_ptr);
 
-/**
- * Get the current locale as a BCP 47 language tag (e.g. "en-US").
+/* ============================================================
+ * Host Info (Escape Hatch)
+ * ============================================================
+ * Key/value escape hatch for platform knowledge not covered by
+ * the typed struct. Prefer capability queries or sysinfo_get;
+ * use host_get only for workarounds, analytics, or
+ * platform-appropriate UI conventions.
  *
- * @param buf      Buffer to write the locale string into.
- * @param buf_len  Size of the buffer in bytes.
- * @param len_ptr  [out] Actual length written (excluding null terminator).
- * @return WAPI_OK on success, WAPI_ERR_RANGE if buffer too small.
+ * Well-known keys (hosts SHOULD populate these):
+ *   "os.family"         "windows", "macos", "linux", "android", "ios", "browser"
+ *   "os.version"        "10.0.26200", "15.2", etc.
+ *   "runtime.name"      "wapi-desktop", "wapi-browser", etc.
+ *   "runtime.version"   Semver string
+ *   "device.form"       "desktop", "mobile", "tablet", "embedded", "xr"
+ *   "browser.engine"    "chromium", "gecko", "webkit" (browser hosts only)
  *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Unknown keys return WAPI_ERR_NOENT. Hosts may define additional
+ * keys under "vendor.<name>.*".
+ *
+ * Wasm signature: (i32, i32, i64, i32) -> i32
  */
-WAPI_IMPORT(wapi_sysinfo, sysinfo_get_locale)
-wapi_result_t wapi_sysinfo_get_locale(char* buf,
-                                      wapi_size_t buf_len,
-                                      wapi_size_t* len_ptr);
-
-/**
- * Get the current IANA timezone name (e.g. "America/New_York").
- *
- * @param buf      Buffer to write the timezone string into.
- * @param buf_len  Size of the buffer in bytes.
- * @param len_ptr  [out] Actual length written (excluding null terminator).
- * @return WAPI_OK on success, WAPI_ERR_RANGE if buffer too small.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_sysinfo, sysinfo_get_timezone)
-wapi_result_t wapi_sysinfo_get_timezone(char* buf,
-                                        wapi_size_t buf_len,
-                                        wapi_size_t* len_ptr);
+WAPI_IMPORT(wapi_sysinfo, host_get)
+wapi_result_t wapi_sysinfo_host_get(wapi_stringview_t key,
+                                    char* buf, wapi_size_t buf_len,
+                                    wapi_size_t* val_len);
 
 #ifdef __cplusplus
 }

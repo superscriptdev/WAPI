@@ -1,5 +1,5 @@
 /**
- * WAPI - Eyedropper Capability
+ * WAPI - Eyedropper
  * Version 1.0.0
  *
  * Screen color picker.
@@ -8,8 +8,6 @@
  *          custom impl (Windows/Linux)
  *
  * Import module: "wapi_eyedrop"
- *
- * Query availability with wapi_capability_supported("wapi.eyedrop", 12)
  */
 
 #ifndef WAPI_EYEDROPPER_H
@@ -22,26 +20,25 @@ extern "C" {
 #endif
 
 /* ============================================================
- * Eyedropper Functions
- * ============================================================ */
+ * Eyedropper Operations (async, submitted via wapi_io_t)
+ * ============================================================
+ * Completion: result=WAPI_OK / WAPI_ERR_CANCELED. On success the RGBA
+ * u32 arrives inline in the event's payload[0..3] and
+ * WAPI_IO_CQE_F_INLINE is set in flags.
+ */
 
 /**
- * Show the system color picker and return the selected color.
- *
- * Blocks until the user picks a color or cancels. The color is
- * written as a uint32_t in RGBA format (0xRRGGBBAA).
- *
- * For non-blocking usage, submit WAPI_IO_OP_EYEDROPPER_PICK through
- * the I/O vtable instead; the result arrives as an IO completion event.
- *
- * @param rgba_ptr  [out] Pointer to receive the RGBA color value.
- * @return WAPI_OK on success, WAPI_ERR_CANCEL if user cancelled,
- *         WAPI_ERR_NOTSUP if not supported.
- *
- * Wasm signature: (i32) -> i32
+ * Submit an eyedropper pick. Shows the system color picker and
+ * completes when the user picks a color or cancels.
  */
-WAPI_IMPORT(wapi_eyedrop, eyedropper_pick)
-wapi_result_t wapi_eyedropper_pick(uint32_t* rgba_ptr);
+static inline wapi_result_t wapi_eyedropper_pick(
+    const wapi_io_t* io, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_EYEDROPPER_PICK;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

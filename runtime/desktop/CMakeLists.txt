@@ -24,7 +24,8 @@ set(SOURCES
     src/wapi_host_gpu.c
     src/wapi_host_content.c
     src/wapi_host_text.c
-    src/wapi_host_clipboard.c
+    src/wapi_host_transfer.c
+    src/wapi_host_seat.c
     src/wapi_host_font.c
     src/wapi_host_video.c
     src/wapi_host_kv_storage.c
@@ -35,7 +36,6 @@ set(SOURCES
     src/wapi_host_sensors.c
     src/wapi_host_speech.c
     src/wapi_host_biometric.c
-    src/wapi_host_share.c
     src/wapi_host_payments.c
     src/wapi_host_usb.c
     src/wapi_host_midi.c
@@ -62,7 +62,7 @@ set(SOURCES
     src/wapi_host_contacts.c
     src/wapi_host_barcode.c
     src/wapi_host_nfc.c
-    src/wapi_host_dnd.c
+    src/wapi_host_user.c
 )
 
 add_executable(wapi_runtime ${SOURCES})

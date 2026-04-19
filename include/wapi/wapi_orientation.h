@@ -1,5 +1,5 @@
 /**
- * WAPI - Screen Orientation Capability
+ * WAPI - Screen Orientation
  * Version 1.0.0
  *
  * Query and lock screen orientation.
@@ -8,8 +8,6 @@
  *          ActivityInfo.screenOrientation (Android)
  *
  * Import module: "wapi_orient"
- *
- * Query availability with wapi_capability_supported("wapi.orientation", 15)
  */
 
 #ifndef WAPI_ORIENTATION_H

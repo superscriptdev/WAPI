@@ -48,7 +48,8 @@ wapi_result_t wapi_main(void) {
     wapi_result_t res;
 
     /* Check capabilities */
-    if (!wapi_capability_supported(WAPI_CAP_AUDIO, 8)) {
+    const wapi_io_t* io = wapi_io_get();
+    if (!io || !wapi_cap_supported(io, WAPI_STR(WAPI_CAP_AUDIO))) {
         const char msg[] = "Audio capability not available\n";
         wapi_size_t written;
         wapi_fs_write(WAPI_STDERR, msg, sizeof(msg) - 1, &written);

@@ -1,13 +1,11 @@
 /**
- * WAPI - Geolocation Capability
+ * WAPI - Geolocation
  * Version 1.0.0
  *
  * Maps to: Web Geolocation API, CoreLocation (iOS/macOS),
  *          Android LocationManager
  *
  * Import module: "wapi_geo"
- *
- * Query availability with wapi_capability_supported("wapi.geolocation", 16)
  */
 
 #ifndef WAPI_GEOLOCATION_H
@@ -44,33 +42,48 @@ typedef struct wapi_geo_position_t {
 #define WAPI_GEO_LOWPOWER      0x0002
 
 /**
- * Request the current position (one-shot).
- *
- * @param flags     Accuracy flags.
- * @param timeout_ms  Maximum wait time in milliseconds.
- * @param position  [out] Position result.
- * @return WAPI_OK on success, WAPI_ERR_TIMEDOUT, WAPI_ERR_ACCES (denied).
+ * Submit a one-shot position request. Completion's payload[0..47]
+ * inlines the 48-byte wapi_geo_position_t (WAPI_IO_CQE_F_INLINE set),
+ * or result carries a negative error (WAPI_ERR_ACCES / WAPI_ERR_TIMEDOUT).
  */
-WAPI_IMPORT(wapi_geo, get_position)
-wapi_result_t wapi_geo_get_position(wapi_flags_t flags, uint32_t timeout_ms,
-                                 wapi_geo_position_t* position);
+static inline wapi_result_t wapi_geo_get_position(
+    const wapi_io_t* io, wapi_flags_t flags, uint32_t timeout_ms,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_GEO_POSITION_GET;
+    op.flags     = flags;
+    op.offset    = (uint64_t)timeout_ms;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
- * Start watching position changes.
- * Positions are delivered as WAPI_IO_OP completions on the I/O queue.
- *
- * @param flags   Accuracy flags.
- * @param watch   [out] Watch handle (use wapi_geo_clear_watch to stop).
- * @return WAPI_OK on success.
+ * Submit a watch-position request. The host emits one completion
+ * per reading (flags include WAPI_IO_CQE_F_MORE until the watch is
+ * cleared). *out_watch receives the watch handle for clear_watch.
  */
-WAPI_IMPORT(wapi_geo, watch_position)
-wapi_result_t wapi_geo_watch_position(wapi_flags_t flags, wapi_handle_t* watch);
+static inline wapi_result_t wapi_geo_watch_position(
+    const wapi_io_t* io, wapi_flags_t flags,
+    wapi_handle_t* out_watch, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_GEO_POSITION_WATCH;
+    op.flags      = flags;
+    op.result_ptr = (uint64_t)(uintptr_t)out_watch;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
- * Stop watching position changes.
+ * Stop watching position changes. Bounded-local (cancels an existing
+ * subscription); uses io->cancel keyed on the watch's user_data.
  */
-WAPI_IMPORT(wapi_geo, clear_watch)
-wapi_result_t wapi_geo_clear_watch(wapi_handle_t watch);
+static inline wapi_result_t wapi_geo_clear_watch(
+    const wapi_io_t* io, uint64_t watch_user_data)
+{
+    return io->cancel(io->impl, watch_user_data);
+}
 
 #ifdef __cplusplus
 }

@@ -287,7 +287,8 @@ int main(int argc, char** argv) {
     wapi_host_register_gpu(linker);
     wapi_host_register_content(linker);
     wapi_host_register_text(linker);
-    wapi_host_register_clipboard(linker);
+    wapi_host_register_transfer(linker);
+    wapi_host_register_seat(linker);
     wapi_host_register_font(linker);
     wapi_host_register_video(linker);
     wapi_host_register_kv(linker);
@@ -298,7 +299,6 @@ int main(int argc, char** argv) {
     wapi_host_register_sensors(linker);
     wapi_host_register_speech(linker);
     wapi_host_register_biometric(linker);
-    wapi_host_register_share(linker);
     wapi_host_register_payments(linker);
     wapi_host_register_usb(linker);
     wapi_host_register_midi(linker);
@@ -327,7 +327,7 @@ int main(int argc, char** argv) {
     wapi_host_register_contacts(linker);
     wapi_host_register_barcode(linker);
     wapi_host_register_nfc(linker);
-    wapi_host_register_dnd(linker);
+    wapi_host_register_user(linker);
 
     /* ---- Instantiate the module ---- */
     wasm_trap_t* trap = NULL;

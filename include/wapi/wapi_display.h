@@ -1,5 +1,5 @@
 /**
- * WAPI - Display Information Capability
+ * WAPI - Display Information
  * Version 1.0.0
  *
  * Enumerate connected displays and query their geometry, refresh rate,
@@ -12,8 +12,6 @@
  *          XRandR / wl_output (Linux)
  *
  * Import module: "wapi_display"
- *
- * Query availability with wapi_capability_supported("wapi.display", 12)
  */
 
 #ifndef WAPI_DISPLAY_H

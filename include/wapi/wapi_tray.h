@@ -1,5 +1,5 @@
 /**
- * WAPI - System Tray Capability
+ * WAPI - System Tray
  * Version 1.0.0
  *
  * System tray / notification area / menu bar extras.
@@ -8,8 +8,6 @@
  *          AppIndicator (Linux)
  *
  * Import module: "wapi_tray"
- *
- * Query availability with wapi_capability_supported("wapi.tray", 8)
  */
 
 #ifndef WAPI_TRAY_H

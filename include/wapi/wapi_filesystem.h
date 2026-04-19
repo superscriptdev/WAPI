@@ -334,6 +334,79 @@ WAPI_IMPORT(wapi_filesystem, readdir)
 wapi_result_t wapi_filesystem_readdir(wapi_handle_t fd, void* buf, wapi_size_t buf_len,
                            uint64_t cookie, wapi_size_t* used);
 
+/* ============================================================
+ * Watch Operations (async, submitted via wapi_io_t)
+ * ============================================================
+ * Per-change notifications arrive as wapi_fwatch_event_t entries in
+ * the event queue (see wapi.h). Host-path watches gate on
+ * wapi.filesystem; sandbox-path watches gate on wapi.sandbox. Cache
+ * filesystem has no watcher (single-instance, no other writers).
+ */
+
+typedef enum wapi_fwatch_change_t {
+    WAPI_FWATCH_CREATED  = 0,
+    WAPI_FWATCH_MODIFIED = 1,
+    WAPI_FWATCH_DELETED  = 2,
+    WAPI_FWATCH_RENAMED  = 3,
+    WAPI_FWATCH_FORCE32  = 0x7FFFFFFF
+} wapi_fwatch_change_t;
+
+/** Start watching a host-filesystem path. */
+static inline wapi_result_t wapi_fwatch_add(
+    const wapi_io_t* io,
+    wapi_stringview_t path, wapi_bool_t recursive,
+    wapi_handle_t* out_handle,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_FWATCH_ADD;
+    op.addr       = path.data;
+    op.len        = path.length;
+    op.flags      = recursive ? 1 : 0;
+    op.result_ptr = (uint64_t)(uintptr_t)out_handle;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+/** Start watching a sandbox-filesystem path. */
+static inline wapi_result_t wapi_sandbox_fwatch_add(
+    const wapi_io_t* io,
+    wapi_stringview_t path, wapi_bool_t recursive,
+    wapi_handle_t* out_handle,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_SANDBOX_FWATCH_ADD;
+    op.addr       = path.data;
+    op.len        = path.length;
+    op.flags      = recursive ? 1 : 0;
+    op.result_ptr = (uint64_t)(uintptr_t)out_handle;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+/** Stop a host-filesystem watch. */
+static inline wapi_result_t wapi_fwatch_remove(
+    const wapi_io_t* io, wapi_handle_t handle, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_FWATCH_REMOVE;
+    op.fd        = handle;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+/** Stop a sandbox-filesystem watch. */
+static inline wapi_result_t wapi_sandbox_fwatch_remove(
+    const wapi_io_t* io, wapi_handle_t handle, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_SANDBOX_FWATCH_REMOVE;
+    op.fd        = handle;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
 #ifdef __cplusplus
 }
 #endif

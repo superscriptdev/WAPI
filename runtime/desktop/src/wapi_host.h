@@ -510,7 +510,8 @@ void wapi_host_register_fs(wasmtime_linker_t* linker);
 void wapi_host_register_memory(wasmtime_linker_t* linker);
 void wapi_host_register_io(wasmtime_linker_t* linker);
 void wapi_host_register_net(wasmtime_linker_t* linker);
-void wapi_host_register_clipboard(wasmtime_linker_t* linker);
+void wapi_host_register_transfer(wasmtime_linker_t* linker);
+void wapi_host_register_seat(wasmtime_linker_t* linker);
 void wapi_host_register_kv(wasmtime_linker_t* linker);
 void wapi_host_register_crypto(wasmtime_linker_t* linker);
 void wapi_host_register_content(wasmtime_linker_t* linker);
@@ -523,7 +524,6 @@ void wapi_host_register_geolocation(wasmtime_linker_t* linker);
 void wapi_host_register_sensors(wasmtime_linker_t* linker);
 void wapi_host_register_speech(wasmtime_linker_t* linker);
 void wapi_host_register_biometric(wasmtime_linker_t* linker);
-void wapi_host_register_share(wasmtime_linker_t* linker);
 void wapi_host_register_payments(wasmtime_linker_t* linker);
 void wapi_host_register_usb(wasmtime_linker_t* linker);
 void wapi_host_register_midi(wasmtime_linker_t* linker);
@@ -552,7 +552,11 @@ void wapi_host_register_screen_capture(wasmtime_linker_t* linker);
 void wapi_host_register_contacts(wasmtime_linker_t* linker);
 void wapi_host_register_barcode(wasmtime_linker_t* linker);
 void wapi_host_register_nfc(wasmtime_linker_t* linker);
-void wapi_host_register_dnd(wasmtime_linker_t* linker);
+void wapi_host_register_user(wasmtime_linker_t* linker);
+
+/* Exposed by wapi_host_user.c; writes current user's stable id (SID/UID
+ * string) to `out`. Returns length on success, -1 on failure. */
+int wapi_host_user_current_id(char* out, size_t out_size);
 
 /* Helper to define a linker function with proper error checking */
 #define WAPI_LINK_FUNC(linker, module, name, callback, param_types, param_count, result_types, result_count) \

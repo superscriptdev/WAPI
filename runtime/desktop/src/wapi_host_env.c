@@ -4,10 +4,12 @@
  * Implements: wapi_env.args_count, wapi_env.args_get,
  *             wapi_env.environ_count, wapi_env.environ_get,
  *             wapi_env.getenv, wapi_env.random_get,
- *             wapi_env.exit, wapi_env.get_error
+ *             wapi_env.exit, wapi_env.get_locale,
+ *             wapi_env.get_timezone, wapi_env.get_error
  */
 
 #include "wapi_host.h"
+#include <time.h>
 
 #ifdef _WIN32
 #include <bcrypt.h>
@@ -295,6 +297,126 @@ static wasm_trap_t* host_exit(
 }
 
 /* ============================================================
+ * Locale and Timezone
+ * ============================================================ */
+
+static void detect_locale(char* out, size_t out_size) {
+#ifdef _WIN32
+    wchar_t wbuf[LOCALE_NAME_MAX_LENGTH];
+    int wn = GetUserDefaultLocaleName(wbuf, LOCALE_NAME_MAX_LENGTH);
+    if (wn > 0) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, out, (int)out_size, NULL, NULL);
+        if (n > 0) return;
+    }
+#else
+    const char* env = getenv("LC_ALL");
+    if (!env || !*env) env = getenv("LC_MESSAGES");
+    if (!env || !*env) env = getenv("LANG");
+    if (env && *env) {
+        /* Strip ".UTF-8" and "@modifier" suffixes, convert '_' to '-' */
+        size_t i = 0;
+        for (; i + 1 < out_size && env[i] && env[i] != '.' && env[i] != '@'; i++) {
+            out[i] = (env[i] == '_') ? '-' : env[i];
+        }
+        out[i] = '\0';
+        if (i > 0) return;
+    }
+#endif
+    const char* fallback = "en-US";
+    size_t flen = strlen(fallback);
+    if (flen >= out_size) flen = out_size - 1;
+    memcpy(out, fallback, flen);
+    out[flen] = '\0';
+}
+
+static void detect_timezone(char* out, size_t out_size) {
+#ifdef _WIN32
+    DYNAMIC_TIME_ZONE_INFORMATION tzi;
+    if (GetDynamicTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, tzi.TimeZoneKeyName, -1,
+                                    out, (int)out_size, NULL, NULL);
+        if (n > 0) return;
+    }
+#else
+    const char* env = getenv("TZ");
+    if (env && *env) {
+        if (env[0] == ':') env++;
+        size_t len = strlen(env);
+        if (len >= out_size) len = out_size - 1;
+        memcpy(out, env, len);
+        out[len] = '\0';
+        return;
+    }
+    /* Try /etc/timezone or readlink /etc/localtime */
+    FILE* f = fopen("/etc/timezone", "r");
+    if (f) {
+        if (fgets(out, (int)out_size, f)) {
+            size_t len = strlen(out);
+            while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r')) {
+                out[--len] = '\0';
+            }
+            fclose(f);
+            if (len > 0) return;
+        }
+        fclose(f);
+    }
+#endif
+    const char* fallback = "UTC";
+    size_t flen = strlen(fallback);
+    if (flen >= out_size) flen = out_size - 1;
+    memcpy(out, fallback, flen);
+    out[flen] = '\0';
+}
+
+/* get_locale: (i32 buf, i32 buf_len, i32 len_ptr) -> i32 */
+static wasm_trap_t* host_get_locale(
+    void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller;
+    uint32_t buf_ptr = WAPI_ARG_U32(0);
+    uint32_t buf_len = WAPI_ARG_U32(1);
+    uint32_t len_ptr = WAPI_ARG_U32(2);
+
+    char locale[96];
+    detect_locale(locale, sizeof(locale));
+
+    uint32_t len = (uint32_t)strlen(locale);
+    wapi_wasm_write_u32(len_ptr, len);
+
+    uint32_t copy_len = len < buf_len ? len : buf_len;
+    if (copy_len > 0) wapi_wasm_write_bytes(buf_ptr, locale, copy_len);
+
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
+}
+
+/* get_timezone: (i32 buf, i32 buf_len, i32 len_ptr) -> i32 */
+static wasm_trap_t* host_get_timezone(
+    void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller;
+    uint32_t buf_ptr = WAPI_ARG_U32(0);
+    uint32_t buf_len = WAPI_ARG_U32(1);
+    uint32_t len_ptr = WAPI_ARG_U32(2);
+
+    char tz[128];
+    detect_timezone(tz, sizeof(tz));
+
+    uint32_t len = (uint32_t)strlen(tz);
+    wapi_wasm_write_u32(len_ptr, len);
+
+    uint32_t copy_len = len < buf_len ? len : buf_len;
+    if (copy_len > 0) wapi_wasm_write_bytes(buf_ptr, tz, copy_len);
+
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
+}
+
+/* ============================================================
  * Error Messages
  * ============================================================ */
 
@@ -336,5 +458,7 @@ void wapi_host_register_env(wasmtime_linker_t* linker) {
     /* exit: (i32) -> void (but we trap, so define with no returns) */
     WAPI_DEFINE_1_0(linker, "wapi_env", "exit", host_exit);
 
-    WAPI_DEFINE_3_1(linker, "wapi_env", "get_error", host_get_error);
+    WAPI_DEFINE_3_1(linker, "wapi_env", "get_locale",   host_get_locale);
+    WAPI_DEFINE_3_1(linker, "wapi_env", "get_timezone", host_get_timezone);
+    WAPI_DEFINE_3_1(linker, "wapi_env", "get_error",    host_get_error);
 }

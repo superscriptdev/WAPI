@@ -1,12 +1,10 @@
 /**
- * WAPI - Menu Capability
+ * WAPI - Menu
  * Version 1.0.0
  *
  * Native context menus and window menu bars.
  *
  * Import module: "wapi_menu"
- *
- * Query availability with wapi_capability_supported("wapi.menu", 8)
  */
 
 #ifndef WAPI_MENU_H

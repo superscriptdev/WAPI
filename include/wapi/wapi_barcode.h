@@ -1,5 +1,5 @@
 /**
- * WAPI - Barcode Detection Capability
+ * WAPI - Barcode Detection
  * Version 1.0.0
  *
  * Detect and decode barcodes from image data or camera feeds.
@@ -8,8 +8,6 @@
  *          ML Kit Barcode Scanning (Android), ZXing (Desktop)
  *
  * Import module: "wapi_barcode"
- *
- * Query availability with wapi_capability_supported("wapi.barcode", 11)
  */
 
 #ifndef WAPI_BARCODE_H
@@ -67,41 +65,54 @@ _Static_assert(_Alignof(wapi_barcode_result_t) == 8,
                "wapi_barcode_result_t must be 8-byte aligned");
 
 /* ============================================================
- * Barcode Functions
- * ============================================================ */
+ * Barcode Operations (async, submitted via wapi_io_t)
+ * ============================================================
+ * Detected strings are allocated by the host in the module's linear
+ * memory (via the module's allocator vtable); each wapi_barcode_result_t
+ * entry's value_ptr points to a UTF-8 buffer the caller frees after
+ * use.
+ */
 
 /**
- * Detect barcodes in image data.
- *
- * @param image_data   Pointer to RGBA pixel data.
- * @param width        Image width in pixels.
- * @param height       Image height in pixels.
- * @param results_buf  Buffer to receive barcode results.
- * @param max_results  Maximum number of results to return.
- * @return Number of barcodes detected on success, or negative error code.
- *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ * Submit an image for barcode detection. Completion carries
+ * result = number of barcodes written to results_buf, or a
+ * negative error code.
  */
-WAPI_IMPORT(wapi_barcode, detect)
-wapi_result_t wapi_barcode_detect(const void* image_data, uint32_t width,
-                                  uint32_t height,
-                                  wapi_barcode_result_t* results_buf,
-                                  uint32_t max_results);
+static inline wapi_result_t wapi_barcode_detect_image(
+    const wapi_io_t* io,
+    const void* image_data, uint32_t width, uint32_t height,
+    wapi_barcode_result_t* results_buf, uint32_t max_results,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BARCODE_DETECT_IMAGE;
+    op.addr      = (uint64_t)(uintptr_t)image_data;
+    op.len       = (uint64_t)width * height * 4;
+    op.flags     = width;
+    op.flags2    = height;
+    op.addr2     = (uint64_t)(uintptr_t)results_buf;
+    op.len2      = (uint64_t)max_results * sizeof(wapi_barcode_result_t);
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
- * Detect barcodes from a camera handle.
- *
- * @param camera_handle  Camera handle obtained from wapi_camera.
- * @param results_buf    Buffer to receive barcode results.
- * @param max_results    Maximum number of results to return.
- * @return Number of barcodes detected on success, or negative error code.
- *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Submit a camera-feed frame for barcode detection.
  */
-WAPI_IMPORT(wapi_barcode, detect)
-wapi_result_t wapi_barcode_detect(wapi_handle_t camera_handle,
-                                              wapi_barcode_result_t* results_buf,
-                                              uint32_t max_results);
+static inline wapi_result_t wapi_barcode_detect_from_camera(
+    const wapi_io_t* io,
+    wapi_handle_t camera_handle,
+    wapi_barcode_result_t* results_buf, uint32_t max_results,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BARCODE_DETECT_CAMERA;
+    op.fd        = camera_handle;
+    op.addr      = (uint64_t)(uintptr_t)results_buf;
+    op.len       = (uint64_t)max_results * sizeof(wapi_barcode_result_t);
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

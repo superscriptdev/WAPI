@@ -1,8 +1,6 @@
 /**
- * WAPI - Runtime Module Linking Capability
+ * WAPI - Runtime Module Linking
  * Version 1.0.0
- *
- * Query availability with wapi_capability_supported("wapi.module", 11)
  *
  * This module defines how Wasm modules compose at RUNTIME: loading
  * isolated modules by content hash, calling their functions, and

@@ -1,5 +1,5 @@
 /**
- * WAPI - Web Authentication Capability
+ * WAPI - Authentication
  * Version 1.0.0
  *
  * Create and use passkeys/FIDO2 credentials for passwordless
@@ -9,8 +9,6 @@
  *          FIDO2 CredentialManager (Android), Windows Hello / WebAuthn Win32
  *
  * Import module: "wapi_authn"
- *
- * Query availability with wapi_capability_supported("wapi.authn", 9)
  */
 
 #ifndef WAPI_AUTHN_H
@@ -66,44 +64,67 @@ _Static_assert(_Alignof(wapi_authn_credential_t) == 8,
                "wapi_authn_credential_t must be 8-byte aligned");
 
 /* ============================================================
- * Authentication Functions
- * ============================================================ */
+ * Authentication Operations (async, submitted via wapi_io_t)
+ * ============================================================
+ * The underlying ABI is IO-op submission; the inline helpers below
+ * build a wapi_io_op_t and pass it to io->submit. Completion arrives
+ * later on the event queue with the same user_data.
+ *
+ *   WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE  (ns 0x0000 method 0x192)
+ *   WAPI_IO_OP_AUTHN_ASSERTION_GET      (ns 0x0000 method 0x193)
+ */
 
 /**
- * Create a new credential (register a passkey).
+ * Submit a "create credential" (register a passkey) request.
  *
- * @see WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE
- *
- * @param rp_id          Relying party identifier (UTF-8, e.g., "example.com").
- * @param user_ptr       Pointer to user entity data (opaque to host).
- * @param challenge_ptr  Pointer to challenge bytes.
- * @param challenge_len  Challenge length.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if user canceled,
- *         WAPI_ERR_NOTSUP if not supported.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * @param io            I/O vtable to submit against.
+ * @param rp_id         Relying party identifier.
+ * @param challenge     Challenge bytes the RP sent.
+ * @param challenge_len Challenge length.
+ * @param out_cred      Memory where the host writes the credential
+ *                      on completion. Must remain valid until the
+ *                      completion event arrives.
+ * @param user_data     Correlation token echoed in the completion.
+ * @return Number of ops submitted (1) on success, negative on error.
  */
-WAPI_IMPORT(wapi_authn, create_credential)
-wapi_result_t wapi_authn_create_credential(wapi_stringview_t rp_id,
-                                           const void* user_ptr,
-                                           const void* challenge_ptr,
-                                           wapi_size_t challenge_len);
+static inline wapi_result_t wapi_authn_create_credential(
+    const wapi_io_t* io,
+    wapi_stringview_t rp_id,
+    const void* challenge, wapi_size_t challenge_len,
+    wapi_authn_credential_t* out_cred,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_AUTHN_CREDENTIAL_CREATE;
+    op.addr       = rp_id.data;
+    op.len        = rp_id.length;
+    op.addr2      = (uint64_t)(uintptr_t)challenge;
+    op.len2       = challenge_len;
+    op.result_ptr = (uint64_t)(uintptr_t)out_cred;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
- * Get an assertion (authenticate with an existing credential).
- *
- * @param rp_id          Relying party identifier (UTF-8).
- * @param challenge_ptr  Pointer to challenge bytes.
- * @param challenge_len  Challenge length.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if user canceled,
- *         WAPI_ERR_NOENT if no matching credential found.
- *
- * Wasm signature: (i32, i32, i32) -> i32
+ * Submit a "get assertion" (authenticate with existing passkey) request.
  */
-WAPI_IMPORT(wapi_authn, get_assertion)
-wapi_result_t wapi_authn_get_assertion(wapi_stringview_t rp_id,
-                                       const void* challenge_ptr,
-                                       wapi_size_t challenge_len);
+static inline wapi_result_t wapi_authn_get_assertion(
+    const wapi_io_t* io,
+    wapi_stringview_t rp_id,
+    const void* challenge, wapi_size_t challenge_len,
+    wapi_authn_credential_t* out_cred,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_AUTHN_ASSERTION_GET;
+    op.addr       = rp_id.data;
+    op.len        = rp_id.length;
+    op.addr2      = (uint64_t)(uintptr_t)challenge;
+    op.len2       = challenge_len;
+    op.result_ptr = (uint64_t)(uintptr_t)out_cred;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 /**
- * WAPI - Contacts Capability
+ * WAPI - Contacts
  * Version 2.0.0
  *
  * Access device contact information via a picker interface.
@@ -9,9 +9,6 @@
  *          (Windows), libfolks (Linux)
  *
  * Import module: "wapi_contacts"
- *
- * Query support:     wapi_capability_supported(WAPI_STR(WAPI_CAP_CONTACTS))
- * Query permission:  wapi_perm_query(WAPI_STR(WAPI_CAP_CONTACTS), &state)
  *
  * ============================================================
  * Serialization Format (results_buf filled by host)
@@ -92,47 +89,47 @@ typedef enum wapi_contact_label_t {
 } wapi_contact_label_t;
 
 /* ============================================================
- * Contact Functions
+ * Contact Operations (async, submitted via wapi_io_t)
  * ============================================================ */
 
 /**
- * Show a contact picker and retrieve selected contacts.
- *
- * @param properties_mask  Bitmask of wapi_contact_prop_t fields to request.
- * @param multiple         Non-zero to allow multiple contact selection.
- * @param results_buf      Buffer to receive serialized contact data.
- * @param results_buf_len  Size of the results buffer in bytes.
- * @return Number of contacts selected on success, WAPI_ERR_RANGE if
- *         buffer too small, WAPI_ERR_CANCELED if user dismissed picker,
- *         or other negative error code.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Submit a contact-picker request.
+ * Completion: result = number of contacts selected on success, or
+ * WAPI_ERR_RANGE / WAPI_ERR_CANCELED.
  */
-WAPI_IMPORT(wapi_contacts, pick)
-wapi_result_t wapi_contacts_pick(uint32_t properties_mask, wapi_bool_t multiple,
-                                 void* results_buf, wapi_size_t results_buf_len);
+static inline wapi_result_t wapi_contacts_pick(
+    const wapi_io_t* io,
+    uint32_t properties_mask, wapi_bool_t multiple,
+    void* results_buf, wapi_size_t results_buf_len,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_CONTACTS_PICK;
+    op.flags     = properties_mask;
+    op.flags2    = multiple ? 1 : 0;
+    op.addr      = (uint64_t)(uintptr_t)results_buf;
+    op.len       = results_buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
- * Read icon image data for a contact.
- *
- * Icon handles are returned in the serialized pick results when
- * WAPI_CONTACT_ICON is requested. Handles remain valid until the
- * next call to wapi_contacts_pick().
- *
- * @param icon_handle  Handle from the serialized icon property value.
- * @param buf          Buffer to receive image bytes (PNG or JPEG).
- * @param buf_len      Size of buf in bytes.
- * @param out_len      [out] Actual image size in bytes. Set even when
- *                     returning WAPI_ERR_RANGE so caller can resize.
- * @return WAPI_OK on success, WAPI_ERR_RANGE if buf too small,
- *         WAPI_ERR_NOENT if handle is invalid or expired.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
+ * Submit an icon read for a contact.
  */
-WAPI_IMPORT(wapi_contacts, icon_read)
-wapi_result_t wapi_contacts_icon_read(uint32_t icon_handle,
-                                      void* buf, wapi_size_t buf_len,
-                                      wapi_size_t* out_len);
+static inline wapi_result_t wapi_contacts_icon_read(
+    const wapi_io_t* io,
+    uint32_t icon_handle,
+    void* buf, wapi_size_t buf_len,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_CONTACTS_ICON_READ;
+    op.fd        = (int32_t)icon_handle;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

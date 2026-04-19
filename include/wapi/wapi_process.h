@@ -12,8 +12,6 @@
  *
  * Import module: "wapi_process"
  *
- * Query availability with wapi_capability_supported("wapi.process", 12)
- *
  * Platform availability:
  *   Desktop (Win/Mac/Linux): Full support
  *   Server/Headless:         Full support

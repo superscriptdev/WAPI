@@ -1,5 +1,5 @@
 /**
- * WAPI - NFC Capability
+ * WAPI - NFC
  * Version 1.0.0
  *
  * Near Field Communication for reading and writing NFC tags.
@@ -7,8 +7,6 @@
  * Maps to: Web NFC API (Web), CoreNFC (iOS), NfcAdapter (Android)
  *
  * Import module: "wapi_nfc"
- *
- * Query availability with wapi_capability_supported("wapi.nfc", 7)
  */
 
 #ifndef WAPI_NFC_H
@@ -41,55 +39,43 @@ typedef enum wapi_nfc_record_type_t {
 } wapi_nfc_record_type_t;
 
 /* ============================================================
- * NFC Functions
+ * NFC Operations (async, submitted via wapi_io_t)
  * ============================================================ */
 
-/**
- * Start scanning for NFC tags.
- *
- * When a tag is read, a WAPI_EVENT_NFC_READ event is emitted.
- *
- * @return WAPI_OK on success, WAPI_ERR_ACCES if not permitted.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi_nfc, scan_start)
-wapi_result_t wapi_nfc_scan_start(void);
+/** Submit a scan-start. Each detected tag fires a
+ *  WAPI_EVENT_NFC_READ event. */
+static inline wapi_result_t wapi_nfc_scan_start(
+    const wapi_io_t* io, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_NFC_SCAN_START;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Stop scanning for NFC tags.
- *
- * @return WAPI_OK on success.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi_nfc, scan_stop)
-wapi_result_t wapi_nfc_scan_stop(void);
+/** Stop scanning — cancels the scan_start op by its user_data. */
+static inline wapi_result_t wapi_nfc_scan_stop(
+    const wapi_io_t* io, uint64_t scan_user_data)
+{
+    return io->cancel(io->impl, scan_user_data);
+}
 
-/**
- * Write NDEF records to an NFC tag.
- *
- * @param records       Pointer to array of NDEF record descriptors.
- * @param record_count  Number of records to write.
- * @param tag           [out] Tag handle for the written tag.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_nfc, write)
-wapi_result_t wapi_nfc_write(const void* records, uint32_t record_count,
-                             wapi_handle_t* tag);
+/** Submit a write of NDEF records. */
+static inline wapi_result_t wapi_nfc_write(
+    const wapi_io_t* io, const void* records, uint32_t record_count,
+    wapi_handle_t* out_tag, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_NFC_WRITE;
+    op.addr       = (uint64_t)(uintptr_t)records;
+    op.len        = (uint64_t)record_count * 32u; /* see wapi_shim for record layout */
+    op.flags      = record_count;
+    op.result_ptr = (uint64_t)(uintptr_t)out_tag;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Make an NFC tag read-only (permanent, cannot be undone).
- *
- * @param tag  Tag handle.
- * @return WAPI_OK on success, WAPI_ERR_BADF if invalid handle.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_nfc, make_read_only)
-wapi_result_t wapi_nfc_make_read_only(wapi_handle_t tag);
+/* make_read_only has no platform-standard async path; left unspec'd. */
 
 #ifdef __cplusplus
 }

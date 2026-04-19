@@ -3,7 +3,8 @@
  * Version 1.0.0
  *
  * Command-line arguments, environment variables, random bytes,
- * and process exit. Modeled on WASI Preview 1.
+ * process exit, and user locale/timezone. Modeled on WASI
+ * Preview 1.
  *
  * Import module: "wapi_env"
  */
@@ -16,6 +17,28 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ============================================================
+ * Environment
+ * ============================================================
+ * What's embedding the wasm runtime. Orthogonal to the OS
+ * (wapi_os_t in wapi_sysinfo.h): an app-sandboxed Mac app and
+ * an unrestricted Mac binary both report WAPI_OS_MACOS but differ
+ * here. Single-pick — a native app inside Docker usually reports
+ * the tighter ring (APP_SANDBOX); container layering isn't
+ * expressed. Module use: informational / telemetry; the cap-grant
+ * system is the authoritative "can I do X?" answer. */
+
+typedef enum wapi_env_t {
+    WAPI_ENV_UNKNOWN         = 0,
+    WAPI_ENV_NATIVE          = 1, /* Unrestricted native process */
+    WAPI_ENV_APP_SANDBOX     = 2, /* macOS/iOS/Android app sandbox */
+    WAPI_ENV_BROWSER         = 3, /* Wasm in a browser */
+    WAPI_ENV_EDGE_RUNTIME    = 4, /* Cloudflare Workers, Fastly Compute, etc. */
+    WAPI_ENV_CONTAINER       = 5, /* Docker / LXC / podman */
+    WAPI_ENV_WASM_STANDALONE = 6, /* wasmtime / wasmer CLI */
+    WAPI_ENV_FORCE32         = 0x7FFFFFFF
+} wapi_env_t;
 
 /* ============================================================
  * Command-Line Arguments
@@ -140,40 +163,28 @@ WAPI_IMPORT(wapi_env, open_url)
 wapi_result_t wapi_env_open_url(wapi_stringview_t url);
 
 /* ============================================================
- * Host Information (Escape Hatch)
- * ============================================================
- * Prefer capability queries for feature detection. Use host_get
- * only when platform knowledge is genuinely needed (workarounds,
- * analytics, platform-appropriate UI conventions).
- *
- * Well-known keys (hosts SHOULD populate these):
- *   "os.family"         "windows", "macos", "linux", "android", "ios", "browser"
- *   "os.version"        "10.0.26200", "15.2", etc.
- *   "runtime.name"      "wapi-desktop", "wapi-browser", etc.
- *   "runtime.version"   Semver string
- *   "device.form"       "desktop", "mobile", "tablet", "embedded", "xr"
- *   "browser.engine"    "chromium", "gecko", "webkit" (browser hosts only)
- *   "locale"            "en-US", "ja-JP", etc.
- *
- * Unknown keys return WAPI_ERR_NOENT. Hosts may define additional
- * keys under "vendor.<name>.*".
- */
+ * Locale and Timezone
+ * ============================================================ */
 
 /**
- * Query host information by key.
+ * Get the current locale as a BCP 47 language tag (e.g. "en-US").
  *
- * @param key      Key name (UTF-8).
- * @param buf      Buffer to receive the value (UTF-8).
- * @param buf_len  Buffer capacity.
- * @param val_len  [out] Actual value length.
- * @return WAPI_OK on success, WAPI_ERR_NOENT if key unknown.
- *
- * Wasm signature: (i32, i32, i64, i32) -> i32
+ * Wasm signature: (i32, i64, i32) -> i32
  */
-WAPI_IMPORT(wapi_env, host_get)
-wapi_result_t wapi_env_host_get(wapi_stringview_t key,
-                                char* buf, wapi_size_t buf_len,
-                                wapi_size_t* val_len);
+WAPI_IMPORT(wapi_env, get_locale)
+wapi_result_t wapi_env_get_locale(char* buf,
+                                  wapi_size_t buf_len,
+                                  wapi_size_t* len_ptr);
+
+/**
+ * Get the current IANA timezone name (e.g. "America/New_York").
+ *
+ * Wasm signature: (i32, i64, i32) -> i32
+ */
+WAPI_IMPORT(wapi_env, get_timezone)
+wapi_result_t wapi_env_get_timezone(char* buf,
+                                    wapi_size_t buf_len,
+                                    wapi_size_t* len_ptr);
 
 /* ============================================================
  * Error Messages

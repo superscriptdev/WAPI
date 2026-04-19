@@ -1,5 +1,5 @@
 /**
- * WAPI - Camera Capability
+ * WAPI - Camera
  * Version 1.0.0
  *
  * Maps to: MediaDevices.getUserMedia (Web), AVCaptureSession (iOS),
@@ -9,8 +9,6 @@
  * raw pixel data.
  *
  * Import module: "wapi_camera"
- *
- * Query availability with wapi_capability_supported("wapi.camera", 9)
  */
 
 #ifndef WAPI_CAMERA_H
@@ -71,54 +69,43 @@ typedef struct wapi_camera_frame_t {
     uint64_t    timestamp;
 } wapi_camera_frame_t;
 
-/**
- * Get the number of available cameras.
- */
+/** Bounded-local: number of cameras the host has advertised. */
 WAPI_IMPORT(wapi_camera, count)
 int32_t wapi_camera_count(void);
 
-/**
- * Open a camera (shows permission prompt if needed).
- *
- * @param desc    Camera descriptor.
- * @param camera  [out] Camera handle.
- */
-WAPI_IMPORT(wapi_camera, open)
-wapi_result_t wapi_camera_open(const wapi_camera_desc_t* desc,
-                            wapi_handle_t* camera);
-
-/**
- * Close a camera.
- */
+/** Bounded-local: close a previously opened camera handle. */
 WAPI_IMPORT(wapi_camera, close)
 wapi_result_t wapi_camera_close(wapi_handle_t camera);
 
-/**
- * Grab the latest frame as raw pixel data.
- *
- * @param camera  Camera handle.
- * @param frame   [out] Frame metadata.
- * @param buf     Buffer for pixel data.
- * @param buf_len Buffer capacity.
- * @param size    [out] Actual data size.
- * @return WAPI_OK, WAPI_ERR_AGAIN if no new frame.
- */
+/** Bounded-local: read the latest cached frame. Returns WAPI_ERR_AGAIN
+ *  if no frame has been delivered yet. */
 WAPI_IMPORT(wapi_camera, read_frame)
 wapi_result_t wapi_camera_read_frame(wapi_handle_t camera, wapi_camera_frame_t* frame,
                                   void* buf, wapi_size_t buf_len, wapi_size_t* size);
 
-/**
- * Get the latest frame as a GPU texture (zero-copy path).
- *
- * @param camera   Camera handle.
- * @param frame    [out] Frame metadata.
- * @param texture  [out] GPU texture handle (valid until next call).
- * @return WAPI_OK, WAPI_ERR_AGAIN if no new frame.
- */
+/** Bounded-local: zero-copy GPU texture view of the latest frame. */
 WAPI_IMPORT(wapi_camera, read_frame_gpu)
 wapi_result_t wapi_camera_read_frame_gpu(wapi_handle_t camera,
                                       wapi_camera_frame_t* frame,
                                       wapi_handle_t* texture);
+
+/* ============================================================
+ * Camera Operations (async, submitted via wapi_io_t)
+ * ============================================================ */
+
+/** Submit a camera open. May prompt for permission. */
+static inline wapi_result_t wapi_camera_open(
+    const wapi_io_t* io, const wapi_camera_desc_t* desc,
+    wapi_handle_t* out_camera, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_CAMERA_OPEN;
+    op.addr       = (uint64_t)(uintptr_t)desc;
+    op.len        = sizeof(*desc);
+    op.result_ptr = (uint64_t)(uintptr_t)out_camera;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

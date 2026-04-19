@@ -102,16 +102,24 @@ WAPI_IMPORT(wapi_font, family_count)
 int32_t wapi_font_family_count(void);
 
 /**
- * Get information about a font family by index.
- *
- * @param index  Family index (0 .. family_count-1).
- * @param info   [out] Font family information.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
+ * Submit a family-info query. Async because web hosts satisfy this
+ * via the permission-gated Local Font Access API; native hosts return
+ * from their cached system-font table. The completion's `result` is
+ * the family_count (so callers can discover the list size); `info`
+ * is filled at the caller's pointer on success.
  */
-WAPI_IMPORT(wapi_font, family_info)
-wapi_result_t wapi_font_family_info(uint32_t index, wapi_font_info_t* info);
+static inline wapi_result_t wapi_font_family_info(
+    const wapi_io_t* io, uint32_t index,
+    wapi_font_info_t* info, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_FONT_FAMILY_INFO;
+    op.flags     = index;
+    op.addr      = (uint64_t)(uintptr_t)info;
+    op.len       = sizeof(*info);
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /* ============================================================
  * Script and Feature Queries

@@ -1,13 +1,11 @@
 /**
- * WAPI - Sensors Capability
+ * WAPI - Sensors
  * Version 1.0.0
  *
  * Maps to: Web Sensor API (Accelerometer, Gyroscope, AmbientLight),
  *          CoreMotion (iOS), Android SensorManager
  *
  * Import module: "wapi_sensor"
- *
- * Query availability with wapi_capability_supported("wapi.sensors", 10)
  */
 
 #ifndef WAPI_SENSORS_H
@@ -65,16 +63,24 @@ WAPI_IMPORT(wapi_sensor, available)
 wapi_bool_t wapi_sensor_available(wapi_sensor_type_t type);
 
 /**
- * Start a sensor with the given sampling frequency.
- *
- * @param type      Sensor type.
- * @param freq_hz   Desired sampling rate in Hz.
- * @param sensor    [out] Sensor handle.
- * @return WAPI_OK on success.
+ * Submit a sensor start request (async: may prompt for permission).
+ * The sensor handle arrives in *out_sensor on completion; subsequent
+ * wapi_sensor_read_xyz / read_scalar calls use that handle.
  */
-WAPI_IMPORT(wapi_sensor, start)
-wapi_result_t wapi_sensor_start(wapi_sensor_type_t type, float freq_hz,
-                             wapi_handle_t* sensor);
+static inline wapi_result_t wapi_sensor_start(
+    const wapi_io_t* io, wapi_sensor_type_t type, float freq_hz,
+    wapi_handle_t* out_sensor, uint64_t user_data)
+{
+    union { float f; uint32_t u; } cast;
+    cast.f = freq_hz;
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_SENSOR_START;
+    op.flags      = (uint32_t)type;
+    op.offset     = (uint64_t)cast.u; /* pack f32 bits */
+    op.result_ptr = (uint64_t)(uintptr_t)out_sensor;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
  * Stop and release a sensor.

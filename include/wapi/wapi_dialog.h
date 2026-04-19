@@ -16,8 +16,6 @@
  *          SDL_ShowOpenFileDialog / SDL_ShowMessageBox (SDL3)
  *
  * Import module: "wapi_dialog"
- *
- * Query availability with wapi_capability_supported("wapi.dialog", 11)
  */
 
 #ifndef WAPI_DIALOG_H
@@ -55,74 +53,65 @@ typedef struct wapi_dialog_filter_t {
  * File Dialog Functions
  * ============================================================ */
 
-/**
- * Show a native "Open File" dialog.
- *
- * Submitted via the I/O vtable. The vtable implementation determines
- * whether this blocks or returns immediately.
- * Selected paths are written as consecutive null-terminated
- * UTF-8 strings into the buffer (double-null terminated).
- *
- * @see WAPI_IO_OP_DIALOG_FILE_OPEN
- *
- * @param filters      Array of file type filters (NULL for none).
- * @param filter_count Number of filters.
- * @param default_path Initial directory or file path (NULL = system default).
- * @param flags        WAPI_DIALOG_FLAG_* flags.
- * @param buf          [out] Buffer for selected path(s).
- * @param buf_len      Buffer capacity in bytes.
- * @param result_len   [out] Bytes written to buf.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if dismissed.
- *
- * Wasm signature: (i32, i32, i32, i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, open_file)
-wapi_result_t wapi_dialog_open_file(const wapi_dialog_filter_t* filters,
-                                    uint32_t filter_count,
-                                    wapi_stringview_t default_path,
-                                    wapi_flags_t flags,
-                                    char* buf, wapi_size_t buf_len,
-                                    wapi_size_t* result_len);
+/* ============================================================
+ * File Dialogs (async, submitted via wapi_io_t)
+ * Selected paths are written into the caller's buffer as consecutive
+ * null-terminated UTF-8 strings (double-null terminated at the end).
+ * ============================================================ */
 
-/**
- * Show a native "Save File" dialog.
- *
- * @see WAPI_IO_OP_DIALOG_FILE_SAVE
- *
- * @param filters        Array of file type filters (NULL for none).
- * @param filter_count   Number of filters.
- * @param default_path   Suggested file path/name (NULL = system default).
- * @param buf            [out] Buffer for the chosen save path.
- * @param buf_len        Buffer capacity.
- * @param result_len     [out] Bytes written to buf.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if dismissed.
- *
- * Wasm signature: (i32, i32, i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, save_file)
-wapi_result_t wapi_dialog_save_file(const wapi_dialog_filter_t* filters,
-                                    uint32_t filter_count,
-                                    wapi_stringview_t default_path,
-                                    char* buf, wapi_size_t buf_len,
-                                    wapi_size_t* result_len);
+static inline wapi_result_t wapi_dialog_open_file(
+    const wapi_io_t* io,
+    const wapi_dialog_filter_t* filters, uint32_t filter_count,
+    wapi_stringview_t default_path, wapi_flags_t flags,
+    char* buf, wapi_size_t buf_len,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_DIALOG_FILE_OPEN;
+    op.flags     = flags;
+    op.flags2    = filter_count;
+    op.offset    = (uint64_t)(uintptr_t)filters;
+    op.addr      = default_path.data;
+    op.len       = default_path.length;
+    op.addr2     = (uint64_t)(uintptr_t)buf;
+    op.len2      = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Show a native "Open Folder" dialog.
- *
- * @see WAPI_IO_OP_DIALOG_FOLDER_OPEN
- *
- * @param default_path  Initial directory (NULL = system default).
- * @param buf           [out] Buffer for the selected folder path.
- * @param buf_len       Buffer capacity.
- * @param result_len    [out] Bytes written to buf.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if dismissed.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, open_folder)
-wapi_result_t wapi_dialog_open_folder(wapi_stringview_t default_path,
-                                      char* buf, wapi_size_t buf_len,
-                                      wapi_size_t* result_len);
+static inline wapi_result_t wapi_dialog_save_file(
+    const wapi_io_t* io,
+    const wapi_dialog_filter_t* filters, uint32_t filter_count,
+    wapi_stringview_t default_path,
+    char* buf, wapi_size_t buf_len,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_DIALOG_FILE_SAVE;
+    op.flags2    = filter_count;
+    op.offset    = (uint64_t)(uintptr_t)filters;
+    op.addr      = default_path.data;
+    op.len       = default_path.length;
+    op.addr2     = (uint64_t)(uintptr_t)buf;
+    op.len2      = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+static inline wapi_result_t wapi_dialog_open_folder(
+    const wapi_io_t* io, wapi_stringview_t default_path,
+    char* buf, wapi_size_t buf_len,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_DIALOG_FOLDER_OPEN;
+    op.addr      = default_path.data;
+    op.len       = default_path.length;
+    op.addr2     = (uint64_t)(uintptr_t)buf;
+    op.len2      = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /* ============================================================
  * Message Box
@@ -150,42 +139,33 @@ typedef enum wapi_msgbox_buttons_t {
 #define WAPI_MSGBOX_RESULT_YES    2
 #define WAPI_MSGBOX_RESULT_NO     3
 
-/**
- * Show a native message box dialog.
- *
- * Submitted via the I/O vtable. The vtable implementation determines
- * whether this blocks or returns immediately.
- *
- * @see WAPI_IO_OP_DIALOG_MESSAGEBOX
- *
- * @param type       Icon / severity.
- * @param title      Dialog title (UTF-8).
- * @param message    Dialog message body (UTF-8).
- * @param buttons    Button configuration.
- * @param result     [out] Which button was clicked (WAPI_MSGBOX_RESULT_*).
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, message_box)
-wapi_result_t wapi_dialog_message_box(wapi_msgbox_type_t type,
-                                      wapi_stringview_t title,
-                                      wapi_stringview_t message,
-                                      wapi_msgbox_buttons_t buttons,
-                                      int32_t* result);
+/** Submit a native message box. Button id arrives in completion
+ *  event's payload bytes 0..3 (WAPI_IO_CQE_F_INLINE set) as a u32. */
+static inline wapi_result_t wapi_dialog_message_box(
+    const wapi_io_t* io, wapi_msgbox_type_t type,
+    wapi_stringview_t title, wapi_stringview_t message,
+    wapi_msgbox_buttons_t buttons, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_DIALOG_MESSAGEBOX;
+    op.flags     = (uint32_t)type;
+    op.flags2    = (uint32_t)buttons;
+    op.addr      = title.data;
+    op.len       = title.length;
+    op.addr2     = message.data;
+    op.len2      = message.length;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Convenience: show a simple informational message box with an OK button.
- *
- * @param title      Dialog title (UTF-8).
- * @param message    Dialog message (UTF-8).
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, simple_message_box)
-wapi_result_t wapi_dialog_simple_message_box(wapi_stringview_t title,
-                                             wapi_stringview_t message);
+/** Convenience: info box with OK button. */
+static inline wapi_result_t wapi_dialog_simple_message_box(
+    const wapi_io_t* io, wapi_stringview_t title,
+    wapi_stringview_t message, uint64_t user_data)
+{
+    return wapi_dialog_message_box(io, WAPI_MSGBOX_INFO, title,
+                                   message, WAPI_MSGBOX_OK, user_data);
+}
 
 /* ============================================================
  * Color Picker
@@ -202,28 +182,21 @@ wapi_result_t wapi_dialog_simple_message_box(wapi_stringview_t title,
 
 #define WAPI_DIALOG_COLOR_FLAG_ALPHA  0x0001  /* Allow alpha channel editing */
 
-/**
- * Show a native color picker dialog.
- *
- * Submitted via the I/O vtable. The vtable implementation determines
- * whether this blocks or returns immediately.
- *
- * @see WAPI_IO_OP_DIALOG_PICK_COLOR
- *
- * @param title        Dialog title (UTF-8), may be empty for OS default.
- * @param initial_rgba Starting color as 0xRRGGBBAA. Alpha ignored
- *                     unless WAPI_DIALOG_COLOR_FLAG_ALPHA is set.
- * @param flags        WAPI_DIALOG_COLOR_FLAG_* flags.
- * @param result_rgba  [out] Picked color as 0xRRGGBBAA.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if dismissed.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, pick_color)
-wapi_result_t wapi_dialog_pick_color(wapi_stringview_t title,
-                                     uint32_t initial_rgba,
-                                     wapi_flags_t flags,
-                                     uint32_t* result_rgba);
+/** Submit a color-picker dialog. Picked RGBA inlines in the
+ *  completion payload bytes 0..3 with WAPI_IO_CQE_F_INLINE. */
+static inline wapi_result_t wapi_dialog_pick_color(
+    const wapi_io_t* io, wapi_stringview_t title,
+    uint32_t initial_rgba, wapi_flags_t flags, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_DIALOG_PICK_COLOR;
+    op.flags     = initial_rgba;
+    op.flags2    = flags;
+    op.addr      = title.data;
+    op.len       = title.length;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /* ============================================================
  * Font Picker
@@ -278,29 +251,22 @@ typedef struct wapi_dialog_font_t {
     uint32_t _pad;
 } wapi_dialog_font_t;
 
-/**
- * Show a native font picker dialog.
- *
- * The caller passes an initial selection and a buffer into which the
- * host writes the chosen family name (UTF-8). On return, `io->family`
- * points into `name_buf`.
- *
- * @see WAPI_IO_OP_DIALOG_PICK_FONT
- *
- * @param title      Dialog title (UTF-8), may be empty for OS default.
- * @param io         [in/out] Initial selection on entry, picked font on return.
- * @param name_buf   [out] Buffer receiving the UTF-8 family name.
- * @param name_cap   Capacity of name_buf in bytes.
- * @return WAPI_OK on success, WAPI_ERR_CANCELED if dismissed,
- *         WAPI_ERR_NOTSUP if the platform has no native font picker.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_dialog, pick_font)
-wapi_result_t wapi_dialog_pick_font(wapi_stringview_t title,
-                                    wapi_dialog_font_t* io,
-                                    char* name_buf,
-                                    wapi_size_t name_cap);
+/** Submit a native font picker dialog. */
+static inline wapi_result_t wapi_dialog_pick_font(
+    const wapi_io_t* vtable, wapi_stringview_t title,
+    wapi_dialog_font_t* font_io, char* name_buf, wapi_size_t name_cap,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_DIALOG_PICK_FONT;
+    op.addr      = title.data;
+    op.len       = title.length;
+    op.addr2     = (uint64_t)(uintptr_t)name_buf;
+    op.len2      = name_cap;
+    op.offset    = (uint64_t)(uintptr_t)font_io;
+    op.user_data = user_data;
+    return vtable->submit(vtable->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

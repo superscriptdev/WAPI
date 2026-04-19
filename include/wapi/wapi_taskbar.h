@@ -1,5 +1,5 @@
 /**
- * WAPI - Taskbar / Dock Capability
+ * WAPI - Taskbar / Dock
  * Version 1.0.0
  *
  * Taskbar/dock progress indicators, badge counts, attention requests,
@@ -9,8 +9,6 @@
  *          LauncherApps / ShortcutBadger (Android)
  *
  * Import module: "wapi_taskbar"
- *
- * Query availability with wapi_capability_supported("wapi.taskbar", 11)
  */
 
 #ifndef WAPI_TASKBAR_H

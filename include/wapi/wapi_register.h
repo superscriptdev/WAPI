@@ -1,5 +1,5 @@
 /**
- * WAPI - App Registration Capability
+ * WAPI - App Registration
  * Version 1.0.0
  *
  * URL scheme handling, file type associations, and file preview providers.
@@ -9,8 +9,6 @@
  *          Web App Manifest file_handlers / protocol_handlers
  *
  * Import module: "wapi_register"
- *
- * Query availability with wapi_capability_supported("wapi.register", 12)
  */
 
 #ifndef WAPI_REGISTER_H

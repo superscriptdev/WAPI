@@ -1,13 +1,11 @@
 /**
- * WAPI - Biometric Authentication Capability
+ * WAPI - Biometric Authentication
  * Version 1.0.0
  *
  * Maps to: WebAuthn/FIDO2, Face ID/Touch ID (iOS),
  *          BiometricPrompt (Android), Windows Hello
  *
  * Import module: "wapi_bio"
- *
- * Query availability with wapi_capability_supported("wapi.biometric", 12)
  */
 
 #ifndef WAPI_BIOMETRIC_H
@@ -30,23 +28,34 @@ typedef enum wapi_bio_type_t {
 
 /**
  * Query available biometric types.
+ * Bounded local query — kept as a direct sync import.
  * @return Bitmask of wapi_bio_type_t values.
  */
 WAPI_IMPORT(wapi_bio, available_types)
 uint32_t wapi_bio_available_types(void);
 
+/* ============================================================
+ * Biometric Operations (async, submitted via wapi_io_t)
+ * ============================================================ */
+
 /**
- * Authenticate the user with biometrics.
- *
- * @see WAPI_IO_OP_BIO_AUTHENTICATE
- *
- * @param type       Accepted biometric types (bitmask).
- * @param reason     User-visible reason string (UTF-8).
- * @return WAPI_OK if authenticated, WAPI_ERR_ACCES if denied/failed,
- *         WAPI_ERR_CANCELED if user canceled.
+ * Submit a biometric authentication request. Completion:
+ *   result = WAPI_OK on success, WAPI_ERR_ACCES on denial/failure,
+ *            WAPI_ERR_CANCELED if the user canceled.
  */
-WAPI_IMPORT(wapi_bio, authenticate)
-wapi_result_t wapi_bio_authenticate(uint32_t type, wapi_stringview_t reason);
+static inline wapi_result_t wapi_bio_authenticate(
+    const wapi_io_t* io,
+    uint32_t type, wapi_stringview_t reason,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_BIO_AUTHENTICATE;
+    op.flags     = type;
+    op.addr      = reason.data;
+    op.len       = reason.length;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

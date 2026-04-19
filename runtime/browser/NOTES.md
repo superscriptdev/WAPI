@@ -1,5 +1,149 @@
 # WAPI Browser Extension — Status & Resume Notes
 
+## Opcode unification landed (2026-04-19)
+
+The double-API problem (every async-on-web capability exposed both a
+direct sync `WAPI_IMPORT` and an IO opcode) has been resolved: the
+sync imports for permission-gated / network-bound / decode-bound /
+modal ops are deleted from every capability header and replaced with
+thin `static inline` helpers that build a `wapi_io_op_t` and submit
+through the module's `wapi_io_t` vtable. Completions flow back as
+`WAPI_EVENT_IO_COMPLETION` events in the unified event queue.
+
+Key ABI changes:
+
+1. **Packed opcode encoding** (`wapi.h`). Opcodes are now
+   `(namespace_id:u16 << 16) | method_id:u16`. Namespace `0x0000`
+   holds every first-party spec-defined capability — file, network,
+   timers, audio, crypto, share, barcode, power, sensor, notify, font,
+   clipboard, etc. — all in one flat 16-bit method-id space.
+   Namespaces `0x0001`–`0xFFFF` are runtime-allocated for vendor
+   extensions via `wapi_io_t::namespace_register`.
+
+2. **Vendor namespace registration.** Two new methods on
+   `wapi_io_t`: `namespace_register(name, out_id)` and
+   `namespace_name(id, buf, ...)`. Modules never hardcode vendor ids
+   — they register a DNS-style name at init and cache the returned
+   id. The shim mints ids idempotently per vtable impl; the SW
+   sandbox vtable returns `WAPI_ERR_NOTCAPABLE` (§7.8).
+
+3. **Inline result payload.** `wapi_io_event_t` grew from 32 → 128
+   bytes. The trailing 96 bytes are `payload[96]` for results small
+   enough to fit (geo position, crypto digest, RGBA pick, cap
+   state, etc.); the host sets `WAPI_IO_CQE_F_INLINE` when it used
+   them. Larger results still flow through `result_ptr`.
+
+4. **Universal `WAPI_IO_OP_CAP_REQUEST`.** Every capability —
+   ambient or gated — routes grant acquisition through this single
+   opcode with the capability name. The platform decides prompt /
+   auto-grant / auto-deny. No per-capability grant opcodes exist.
+
+5. **Unknown opcode is `WAPI_ERR_NOSYS`, not a trap.** `submit`
+   accepts any opcode; dispatch returns a completion with
+   `result = WAPI_ERR_NOSYS` and `flags |= WAPI_IO_CQE_F_NOSYS` when
+   nothing is registered. Lets hosts register handlers lazily and
+   lets vendor opcodes fail diagnosably on hosts that don't
+   implement them.
+
+6. **Host extension API.** `WAPI.registerOpcodeHandler(opcode, fn)`
+   plugs a JS handler into the shim's dispatch table without
+   forking it. Used by page-side integrators to add vendor opcode
+   implementations.
+
+The shim `wapi_io.submit` now has a three-tier dispatch: the
+built-in opcode switch (existing core handlers), then the
+instance's `_opcodeHandlers` Map (new core ops + vendor ops), then
+the NOSYS fallback. The pre-registered handlers cover
+`WAPI_IO_OP_CAP_REQUEST`, `WAPI_IO_OP_CRYPTO_HASH`,
+`WAPI_IO_OP_TRANSFER_OFFER`, and `WAPI_IO_OP_TRANSFER_READ`; other
+dedicated-namespace ops can be added by copying the pattern.
+
+`examples/hello_opcodes.c` exercises the end-to-end path
+(cap_request → crypto_hash → namespace_register → vendor op that
+hits NOSYS because no handler is registered).
+
+## Capability coverage (2026-04-19)
+
+Every WAPI capability namespace defined by the headers now has a
+best-effort implementation wired into the page-world shim
+(`wapi_shim.js`). Anything that requires a browser permission prompt
+(Notifications, Geolocation, WebUSB/Bluetooth/Serial/MIDI, Web Share,
+Payments, Clipboard read, Camera, Screen Capture, NFC, WebAuthn, Idle,
+Contact Picker, Wake Lock, Local Font Access, Sensors, Speech
+Recognition) is **lazy** — the prompt only fires when the wasm module
+explicitly calls the API that requires it, never during capability
+detection or shim construction.
+
+The async-to-sync adaptation strategy (the WAPI ABI is synchronous; most
+browser APIs are Promise-based) is a **polling state machine**: the
+first call kicks off the Promise and returns `WAPI_ERR_AGAIN`; the
+module polls on subsequent frames until the result is cached, then one
+final call collects the result and clears the entry. State is keyed by
+the caller's output pointer so distinct in-flight calls don't collide.
+For event-stream APIs (geolocation watch, Bluetooth notifications, NFC
+scan, drop events, media-session actions), results are pushed into the
+standard `wapi_io_event_t` queue as `WAPI_EVENT_IO_COMPLETION` events
+with distinguishing flags bits set.
+
+Implementation map:
+
+| Namespace | Browser surface | Notes |
+|---|---|---|
+| `wapi_notify` | Notifications API | lazy permission |
+| `wapi_geo` | Geolocation API | one-shot polling + watch via event queue |
+| `wapi_sensor` | Generic Sensor API | Accelerometer/Gyroscope/etc. |
+| `wapi_speech` | SpeechSynthesis + SpeechRecognition | lazy mic permission |
+| `wapi_transfer` | navigator.clipboard / DataTransfer / navigator.share | unified clipboard+DnD+share, mode bitmask on offer; LATENT/POINTED/ROUTED |
+| `wapi_seat` | — | single-seat browser host: count=1, name="default" |
+| `wapi_pay` | PaymentRequest | minimal (basic-card) |
+| `wapi_power` | Battery, WakeLock, IdleDetector, connection.saveData | |
+| `wapi_encode` | TextEncoder/TextDecoder | covers UTF-8/16, ISO-8859-1, Shift-JIS, EUC, GB, Big5 |
+| `wapi_window` | document.title, requestFullscreen | minimize/maximize/restore NOTSUP (no web API) |
+| `wapi_display` | window.screen | single-display; Window Management API opt-in |
+| `wapi_dialog` | showOpenFilePicker + `<input type=file>` + window.confirm + `<input type=color>` | polling for file/color pickers |
+| `wapi_eyedrop` | EyeDropper API | Chromium only |
+| `wapi_sysinfo` | navigator + Intl | partial; cpu_count, ram, locale, tz, dark_mode |
+| `wapi_orient` | screen.orientation | full get/lock/unlock |
+| `wapi_theme` | matchMedia + CSS AccentColor | full |
+| `wapi_register` | navigator.registerProtocolHandler | schemes only; filetype/preview NOTSUP |
+| `wapi_taskbar` | setAppBadge + title-bar progress | |
+| `wapi_media` | MediaSession | metadata, playback state, position, action handlers via IO events |
+| `wapi_midi` | Web MIDI | request_access → polling; input inbox via IO events |
+| `wapi_bt` | Web Bluetooth | full connect/service/characteristic/read/write/notify chain |
+| `wapi_usb` | WebUSB | request/open/claim/transfer in/out/control |
+| `wapi_serial` | Web Serial | request/open/read/write/set_signals; reader pumped in background |
+| `wapi_camera` | getUserMedia + canvas capture | read_frame copies RGBA; gpu upload NOTSUP |
+| `wapi_capture` | getDisplayMedia | screen/window/tab |
+| `wapi_xr` | WebXR | session + ref space lifecycle; render-loop hooks pending |
+| `wapi_contacts` | ContactsManager | |
+| `wapi_barcode` | BarcodeDetector | image + camera |
+| `wapi_nfc` | NDEFReader | scan + write; results via IO events |
+| `wapi_video` | HTMLVideoElement | create/play/pause/seek/state/volume/mute/loop/rate; gpu upload deferred |
+| `wapi_codec` | WebCodecs | decode + encoded-chunk pull; encode from raw frames NOTSUP |
+| `wapi_text` | Canvas 2D measureText | per-char shaping + word-wrap layout + metrics + hit-test |
+| `wapi_authn` | navigator.credentials (PublicKeyCredential) | create + get via polling |
+| `wapi_bio` | navigator.credentials UV=required | mapped onto WebAuthn |
+| `wapi_font` | queryLocalFonts when permitted | web-safe defaults otherwise |
+| `wapi_crypto` | crypto.subtle | hash, incremental hash, AES-GCM/CBC encrypt/decrypt, key import/generate — all via polling |
+| `wapi_haptic` | navigator.vibrate + GamepadHapticActuator | per-device handle API + gamepad rumble |
+| `wapi_thread` | in-process | TLS real; mutex/rwlock/sem/cond/barrier are legal no-ops (correct for single-thread caller); thread create NOTSUP |
+| `wapi_process` | — | NOTSUP — no subprocess surface in the browser |
+| `wapi_tray` / `wapi_menu` | — | NOTSUP — no native tray/menu bar for a web page |
+| `wapi_plugin` | — | NOTSUP — audio plugin hosting is out of scope |
+
+**Three new IO-completion `flags` bits are in play** for event-stream
+delivery, so an app polling `wapi_io_poll` can disambiguate:
+
+- `0x10000` — media-session action fired (userData = action enum)
+- `0x20000` — Bluetooth characteristic value changed (userData = char handle)
+- `0x40000` — NFC scan reading available (userData = inbox index)
+- `0x80000` — file watcher change (userData = watch handle)
+- `0x100000` — drop file ready (userData = drop-items index)
+- `0x200000` — drop event fired (userData = item count)
+
+---
+
+
 This directory now serves dual duty: it's the dev web runtime (`serve.js`,
 `index.html`) **and** the unpacked Chrome MV3 extension root. The extension's
 job is to act as a global browser shim so WAPI apps don't have to bundle
@@ -136,9 +280,10 @@ hardware devices, or per-window state: `wapi_window`, `wapi_surface`,
 `wapi_usb`, `wapi_serial`, `wapi_bluetooth`, `wapi_nfc`, `wapi_hid`,
 `wapi_sensors`, `wapi_geolocation`, `wapi_orientation`, `wapi_power`,
 `wapi_haptics`, `wapi_xr`, `wapi_authn`,
-`wapi_biometric`, `wapi_payments`, `wapi_contacts`, `wapi_clipboard`,
-`wapi_dialog`, `wapi_menu`, `wapi_tray`, `wapi_taskbar`, `wapi_share`,
-`wapi_dnd`, `wapi_eyedropper`, `wapi_screencapture`, `wapi_speech`,
+`wapi_biometric`, `wapi_payments`, `wapi_contacts`, `wapi_transfer`,
+`wapi_seat`,
+`wapi_dialog`, `wapi_menu`, `wapi_tray`, `wapi_taskbar`,
+`wapi_eyedropper`, `wapi_screencapture`, `wapi_speech`,
 `wapi_barcode`, `wapi_filewatcher`, `wapi_mediasession`, `wapi_theme`,
 `wapi_thread` (wasm threads + SW is a cross-origin-isolation minefield;
 revisit when a service asks for it), `wapi_process`, `wapi_register`.

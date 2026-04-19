@@ -1,5 +1,5 @@
 /**
- * WAPI - Theme / Appearance Capability
+ * WAPI - Theme / Appearance
  * Version 1.0.0
  *
  * Query the host system's visual preferences: dark mode, accent color,
@@ -12,8 +12,6 @@
  *          GSettings / portal (Linux)
  *
  * Import module: "wapi_theme"
- *
- * Query availability with wapi_capability_supported("wapi.theme", 10)
  */
 
 #ifndef WAPI_THEME_H

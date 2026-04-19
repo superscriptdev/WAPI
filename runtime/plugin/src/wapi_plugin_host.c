@@ -15,7 +15,7 @@
  *   wapi_plugin.param_get     (u32 param_id) -> f32
  *   wapi_plugin.request_gui_resize (i32 width, i32 height) -> i32
  *   wapi_plugin.send_midi     (i32 status, i32 data1, i32 data2) -> i32
- *   wapi.capability_supported (i32 name_ptr, i32 name_len) -> i32
+ *   wapi.cap_supported (i32 name_ptr, i32 name_len) -> i32
  *   wapi.abi_version          (i32 version_ptr) -> i32
  */
 
@@ -173,13 +173,13 @@ static wasm_trap_t* host_send_midi(
 }
 
 /* ============================================================
- * wapi.capability_supported: (i32 name_ptr, i32 name_len) -> i32
+ * wapi.cap_supported: (i32 name_ptr, i32 name_len) -> i32
  * ============================================================
  * Reports whether a capability is supported. The plugin wrapper
  * only supports "wapi.audio_plugin".
  */
 
-static wasm_trap_t* host_capability_supported(
+static wasm_trap_t* host_cap_supported(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
@@ -309,8 +309,8 @@ void wapi_plugin_host_register(wasmtime_linker_t* linker) {
 
     /* --- wapi module imports (generic capability queries) --- */
 
-    /* capability_supported: (i32 name_ptr, i32 name_len) -> i32 */
-    WAPI_DEFINE_2_1(linker, "wapi", "capability_supported", host_capability_supported);
+    /* cap_supported: (i32 name_ptr, i32 name_len) -> i32 */
+    WAPI_DEFINE_2_1(linker, "wapi", "cap_supported", host_cap_supported);
 
     /* abi_version: (i32 version_ptr) -> i32 */
     WAPI_DEFINE_1_1(linker, "wapi", "abi_version", host_abi_version);

@@ -165,7 +165,6 @@ wapi/
 │       ├── wapi_xr.h           # VR/AR (WebXR / OpenXR)
 │       ├── wapi_networkinfo.h
 │       ├── wapi_eyedropper.h
-│       ├── wapi_filewatcher.h
 │       ├── wapi_barcode.h
 │       ├── wapi_sysinfo.h
 │       ├── wapi_thread.h
@@ -270,7 +269,7 @@ The cost is a handful of duplicated enums. The benefit is that every capability 
 
 ### Why string-based capabilities?
 
-Bitmasks are fast but limited to 32 or 64 capabilities before requiring a breaking change. String-based capability names (like Vulkan's extension model) scale indefinitely -- any vendor can add `vendor.mycompany.myfeature` without coordination. Every capability uses the same query path: `io->capability_supported(io->impl, WAPI_STR("wapi.gpu"))`. There is no "core" vs "extension" distinction. Presets are just convenience arrays of these strings. The cost of a few string comparisons at startup is negligible compared to the architectural flexibility this provides.
+Bitmasks are fast but limited to 32 or 64 capabilities before requiring a breaking change. String-based capability names (like Vulkan's extension model) scale indefinitely -- any vendor can add `vendor.mycompany.myfeature` without coordination. Every capability uses the same query path: `wapi_cap_supported(io, WAPI_STR("wapi.gpu"))`. There is no "core" vs "extension" distinction. Presets are just convenience arrays of these strings. The cost of a few string comparisons at startup is negligible compared to the architectural flexibility this provides.
 
 ### Why not the Component Model?
 

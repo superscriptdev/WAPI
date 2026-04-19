@@ -1,5 +1,5 @@
 /**
- * WAPI - Power Management Capability
+ * WAPI - Power Management
  * Version 1.0.0
  *
  * The device's power-management subsystem: battery / AC source,
@@ -28,8 +28,6 @@
  *     OS scheduler uses for core placement.
  *
  * Import module: "wapi_power"
- *
- * Query availability with wapi_capability_supported("wapi.power", 12)
  */
 
 #ifndef WAPI_POWER_H
@@ -83,15 +81,17 @@ _Static_assert(_Alignof(wapi_power_info_t) == 4,
                "wapi_power_info_t must be 4-byte aligned");
 
 /**
- * Get current power source and battery state.
- *
- * @param info  [out] Power info.
- * @return WAPI_OK on success, WAPI_ERR_NOTSUP if no power info available.
- *
- * Wasm signature: (i32) -> i32
+ * Submit a power info query. Completion inlines the 16-byte
+ * wapi_power_info_t into the event's payload (WAPI_IO_CQE_F_INLINE set).
  */
-WAPI_IMPORT(wapi_power, get_info)
-wapi_result_t wapi_power_get_info(wapi_power_info_t* info);
+static inline wapi_result_t wapi_power_get_info(
+    const wapi_io_t* io, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_POWER_INFO_GET;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /* ============================================================
  * Wake Lock
@@ -108,26 +108,25 @@ typedef enum wapi_power_wake_t {
 } wapi_power_wake_t;
 
 /**
- * Acquire a wake lock.
- *
- * @param type  Wake lock type.
- * @param lock  [out] Wake lock handle.
- * @return WAPI_OK on success, WAPI_ERR_ACCES if not permitted.
- *
- * Wasm signature: (i32, i32) -> i32
+ * Submit a wake-lock acquisition. The handle arrives in
+ * *out_lock once the completion fires.
  */
-WAPI_IMPORT(wapi_power, wake_acquire)
-wapi_result_t wapi_power_wake_acquire(wapi_power_wake_t type,
-                                      wapi_handle_t* lock);
+static inline wapi_result_t wapi_power_wake_acquire(
+    const wapi_io_t* io, wapi_power_wake_t type,
+    wapi_handle_t* out_lock, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_POWER_WAKE_ACQUIRE;
+    op.flags      = (uint32_t)type;
+    op.result_ptr = (uint64_t)(uintptr_t)out_lock;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Release a wake lock.
- *
- * @param lock  Wake lock handle.
- * @return WAPI_OK on success, WAPI_ERR_BADF if invalid handle.
- *
- * Wasm signature: (i32) -> i32
- */
+/* wake_release is bounded-local and remains a simple no-op on the
+ * release path; an op-level release equivalent is not required but a
+ * convenience is useful. The host can implement this as a bounded
+ * sync operation by closing the recorded wake-lock sentinel. */
 WAPI_IMPORT(wapi_power, wake_release)
 wapi_result_t wapi_power_wake_release(wapi_handle_t lock);
 
@@ -147,15 +146,18 @@ typedef enum wapi_power_idle_state_t {
 } wapi_power_idle_state_t;
 
 /**
- * Start monitoring for idle state changes.
- *
- * @param threshold_ms  Idle time threshold before ACTIVE -> IDLE.
- * @return WAPI_OK on success, WAPI_ERR_ACCES if not permitted.
- *
- * Wasm signature: (i32) -> i32
+ * Submit an idle-detection start. Once the permission prompt is
+ * resolved, WAPI_EVENT_POWER_IDLE_CHANGED events begin flowing.
  */
-WAPI_IMPORT(wapi_power, idle_start)
-wapi_result_t wapi_power_idle_start(uint32_t threshold_ms);
+static inline wapi_result_t wapi_power_idle_start(
+    const wapi_io_t* io, uint32_t threshold_ms, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_POWER_IDLE_START;
+    op.flags     = threshold_ms;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 /**
  * Stop monitoring for idle state changes.

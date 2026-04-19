@@ -1,5 +1,5 @@
 /**
- * WAPI - Key-Value Storage Capability
+ * WAPI - Key-Value Storage
  * Version 1.0.0
  *
  * Maps to: localStorage (Web), Keychain (macOS/iOS),
@@ -10,8 +10,6 @@
  * (use filesystem for that).
  *
  * Import module: "wapi_kv"
- *
- * Query availability with wapi_capability_supported("wapi.kvstorage", 14)
  */
 
 #ifndef WAPI_KVSTORAGE_H

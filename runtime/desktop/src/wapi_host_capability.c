@@ -1,8 +1,8 @@
 /**
  * WAPI Desktop Runtime - Capability Queries
  *
- * Implements: wapi.capability_supported, wapi.capability_version,
- *             wapi.capability_count, wapi.capability_name, wapi.abi_version
+ * Implements: wapi.cap_supported, wapi.cap_version,
+ *             wapi.cap_count, wapi.cap_name, wapi.abi_version
  *
  * Uses string-based capability names (e.g. "wapi.gpu", "wapi.audio").
  */
@@ -22,6 +22,8 @@ static const char* SUPPORTED_CAPS[] = {
     "wapi.random",
     /* Filesystem & networking */
     "wapi.filesystem",
+    "wapi.sandbox",
+    "wapi.cache",
     "wapi.net",
     /* Graphics & windowing */
     "wapi.gpu",
@@ -63,6 +65,8 @@ static const char* SUPPORTED_CAPS[] = {
     "wapi.barcode",
     "wapi.nfc",
     "wapi.dnd",
+    /* Identity */
+    "wapi.user",
 };
 
 #define SUPPORTED_CAP_COUNT ((int32_t)(sizeof(SUPPORTED_CAPS) / sizeof(SUPPORTED_CAPS[0])))
@@ -79,10 +83,10 @@ static int find_capability(const char* name, uint32_t name_len) {
 }
 
 /* ============================================================
- * capability_supported: (i32 name, i32 name_len) -> i32
+ * cap_supported: (i32 name, i32 name_len) -> i32
  * ============================================================ */
 
-static wasm_trap_t* host_capability_supported(
+static wasm_trap_t* host_cap_supported(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
@@ -103,10 +107,10 @@ static wasm_trap_t* host_capability_supported(
 }
 
 /* ============================================================
- * capability_version: (i32 name, i32 name_len, i32 version_ptr) -> i32
+ * cap_version: (i32 name, i32 name_len, i32 version_ptr) -> i32
  * ============================================================ */
 
-static wasm_trap_t* host_capability_version(
+static wasm_trap_t* host_cap_version(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
@@ -140,10 +144,10 @@ static wasm_trap_t* host_capability_version(
 }
 
 /* ============================================================
- * capability_count: () -> i32
+ * cap_count: () -> i32
  * ============================================================ */
 
-static wasm_trap_t* host_capability_count(
+static wasm_trap_t* host_cap_count(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
@@ -154,10 +158,10 @@ static wasm_trap_t* host_capability_count(
 }
 
 /* ============================================================
- * capability_name: (i32 index, i32 buf, i32 buf_len, i32 name_len_out) -> i32
+ * cap_name: (i32 index, i32 buf, i32 buf_len, i32 name_len_out) -> i32
  * ============================================================ */
 
-static wasm_trap_t* host_capability_name(
+static wasm_trap_t* host_cap_name(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
@@ -234,10 +238,10 @@ static wasm_trap_t* host_panic_report(
  * ============================================================ */
 
 void wapi_host_register_capability(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_2_1(linker, "wapi", "capability_supported", host_capability_supported);
-    WAPI_DEFINE_3_1(linker, "wapi", "capability_version",   host_capability_version);
-    WAPI_DEFINE_0_1(linker, "wapi", "capability_count",     host_capability_count);
-    WAPI_DEFINE_4_1(linker, "wapi", "capability_name",      host_capability_name);
+    WAPI_DEFINE_2_1(linker, "wapi", "cap_supported", host_cap_supported);
+    WAPI_DEFINE_3_1(linker, "wapi", "cap_version",   host_cap_version);
+    WAPI_DEFINE_0_1(linker, "wapi", "cap_count",     host_cap_count);
+    WAPI_DEFINE_4_1(linker, "wapi", "cap_name",      host_cap_name);
     WAPI_DEFINE_1_1(linker, "wapi", "abi_version",          host_abi_version);
     WAPI_DEFINE_2_0(linker, "wapi", "panic_report",         host_panic_report);
 }

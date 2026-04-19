@@ -1,5 +1,5 @@
 /**
- * WAPI - Screen Capture Capability
+ * WAPI - Screen Capture
  * Version 1.0.0
  *
  * Capture screen, window, or tab contents.
@@ -8,8 +8,6 @@
  *          CGDisplayStream (macOS), DXGI Desktop Duplication (Windows)
  *
  * Import module: "wapi_capture"
- *
- * Query availability with wapi_capability_supported("wapi.screencapture", 18)
  */
 
 #ifndef WAPI_SCREENCAPTURE_H
@@ -33,46 +31,29 @@ typedef enum wapi_capture_source_t {
 } wapi_capture_source_t;
 
 /* ============================================================
- * Screen Capture Functions
+ * Screen Capture Operations (request is async, frames are polled)
  * ============================================================ */
 
-/**
- * Request screen capture permission and begin capture.
- *
- * @param source_type  Type of capture source (screen, window, or tab).
- * @param capture      [out] Capture session handle.
- * @return WAPI_OK on success, WAPI_ERR_ACCES if not permitted.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_capture, request)
-wapi_result_t wapi_capture_request(wapi_capture_source_t source_type,
-                                   wapi_handle_t* capture);
+/** Submit a screen-capture request. Shows the system picker. */
+static inline wapi_result_t wapi_capture_request(
+    const wapi_io_t* io, wapi_capture_source_t source_type,
+    wapi_handle_t* out_capture, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_CAPTURE_REQUEST;
+    op.flags      = (uint32_t)source_type;
+    op.result_ptr = (uint64_t)(uintptr_t)out_capture;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Get the next captured frame.
- *
- * @param capture         Capture session handle.
- * @param buf             Buffer to receive frame pixel data.
- * @param buf_len         Size of the buffer.
- * @param frame_info_ptr  [out] Pointer to receive frame metadata.
- * @return WAPI_OK on success, WAPI_ERR_AGAIN if no frame available.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
+/** Bounded-local: read the latest cached frame. */
 WAPI_IMPORT(wapi_capture, get_frame)
 wapi_result_t wapi_capture_get_frame(wapi_handle_t capture, void* buf,
                                      wapi_size_t buf_len,
                                      void* frame_info_ptr);
 
-/**
- * Stop a screen capture session.
- *
- * @param capture  Capture session handle.
- * @return WAPI_OK on success, WAPI_ERR_BADF if invalid handle.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Bounded-local: stop the session (releases the media track). */
 WAPI_IMPORT(wapi_capture, stop)
 wapi_result_t wapi_capture_stop(wapi_handle_t capture);
 

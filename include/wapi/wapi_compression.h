@@ -12,26 +12,10 @@
  * CompressionStream / DecompressionStream APIs naturally without
  * introducing a stateful sync contract that browsers cannot honour.
  *
- * Platform mapping:
+ * Maps to:
  *   Web:     Compression Streams API (gzip/deflate), Wasm polyfill (zstd/lz4)
  *   Native:  zlib, libzstd, lz4
  *
- * Usage:
- *
- *   wapi_io_op_t op = {0};
- *   op.opcode    = WAPI_IO_OP_COMPRESS_PROCESS;
- *   op.addr      = (uintptr_t)input_bytes;
- *   op.len       = input_len;
- *   op.addr2     = (uintptr_t)output_buffer;
- *   op.len2      = output_capacity;
- *   op.flags     = WAPI_COMPRESS_GZIP;
- *   op.flags2    = WAPI_COMPRESS_DECOMPRESS;
- *   op.user_data = my_correlation_token;
- *   io->submit(io->impl, &op, 1);
- *
- *   // Later, a WAPI_EVENT_IO_COMPLETION arrives where
- *   //   event.io.user_data == my_correlation_token
- *   //   event.io.result    == bytes_written (or negative error)
  */
 
 #ifndef WAPI_COMPRESSION_H

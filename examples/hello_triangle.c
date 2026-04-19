@@ -67,15 +67,15 @@ static wapi_result_t init(void) {
     if (!g_io) return WAPI_ERR_UNKNOWN;
 
     /* Check required capabilities */
-    if (!g_io->capability_supported(g_io->impl, WAPI_STR(WAPI_CAP_GPU)) ||
-        !g_io->capability_supported(g_io->impl, WAPI_STR(WAPI_CAP_SURFACE)) ||
-        !g_io->capability_supported(g_io->impl, WAPI_STR(WAPI_CAP_WINDOW)) ||
-        !g_io->capability_supported(g_io->impl, WAPI_STR(WAPI_CAP_INPUT))) {
+    if (!wapi_cap_supported(g_io, WAPI_STR(WAPI_CAP_GPU)) ||
+        !wapi_cap_supported(g_io, WAPI_STR(WAPI_CAP_SURFACE)) ||
+        !wapi_cap_supported(g_io, WAPI_STR(WAPI_CAP_WINDOW)) ||
+        !wapi_cap_supported(g_io, WAPI_STR(WAPI_CAP_INPUT))) {
         return WAPI_ERR_NOTCAPABLE;
     }
 
     /* Create a windowed surface */
-    wapi_window_config_t window_cfg = {
+    wapi_window_desc_t window_cfg = {
         .chain        = { .next = 0, .sType = WAPI_STYPE_WINDOW_CONFIG },
         .title        = WAPI_STR("Hello Triangle"),
         .window_flags = WAPI_WINDOW_FLAG_RESIZABLE,
@@ -108,7 +108,7 @@ static wapi_result_t init(void) {
     /* Configure the surface */
     wapi_gpu_surface_preferred_format(g_surface, &g_surface_format);
 
-    wapi_gpu_surface_config_t surface_config = {
+    wapi_gpu_surface_desc_t surface_config = {
         .nextInChain  = 0,
         .surface      = g_surface,
         .device       = g_gpu_device,

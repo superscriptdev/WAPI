@@ -33,11 +33,22 @@
 #define IO_OP_SIZE  64
 
 /* I/O opcodes */
-#define IO_OP_NOP     0
-#define IO_OP_READ    1
-#define IO_OP_WRITE   2
-#define IO_OP_LOG     6
-#define IO_OP_TIMEOUT 20
+#define IO_OP_NOP             0
+#define IO_OP_READ            1
+#define IO_OP_WRITE           2
+#define IO_OP_LOG             6
+#define IO_OP_TIMEOUT        20
+#define IO_OP_TRANSFER_OFFER 0x310
+#define IO_OP_TRANSFER_READ  0x311
+
+/* From wapi_host_transfer.c */
+int32_t wapi_host_transfer_io_offer(int32_t seat, uint32_t mode,
+                                    uint32_t offer_ptr, uint32_t offer_len,
+                                    uint32_t* out_result);
+int32_t wapi_host_transfer_io_read(int32_t seat, uint32_t mode,
+                                   uint32_t mime_ptr, uint32_t mime_len,
+                                   uint32_t buf_ptr, uint32_t buf_len,
+                                   uint32_t* out_bytes_written);
 
 /* Log levels */
 #define LOG_DEBUG 0
@@ -260,6 +271,29 @@ static wasm_trap_t* cb_submit(
             q->timeouts[slot].user_data   = user_data;
             q->timeouts[slot].deadline_ns  = now + offset;
             q->timeouts[slot].active       = true;
+            submitted++;
+            break;
+        }
+
+        case IO_OP_TRANSFER_OFFER: {
+            uint32_t out_result = 0;
+            int32_t r = wapi_host_transfer_io_offer(fd, op_flags,
+                                                    addr, len, &out_result);
+            io_push_completion_event(user_data,
+                                     r == WAPI_OK ? (int32_t)out_result : r,
+                                     0);
+            submitted++;
+            break;
+        }
+
+        case IO_OP_TRANSFER_READ: {
+            uint32_t bytes_written = 0;
+            int32_t r = wapi_host_transfer_io_read(fd, op_flags,
+                                                   addr, len, addr2, len2,
+                                                   &bytes_written);
+            io_push_completion_event(user_data,
+                                     r == WAPI_OK ? (int32_t)bytes_written : r,
+                                     0);
             submitted++;
             break;
         }

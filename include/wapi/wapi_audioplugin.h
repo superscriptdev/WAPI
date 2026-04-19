@@ -1,5 +1,5 @@
 /**
- * WAPI - Audio Plugin Capability
+ * WAPI - Audio Plugin
  * Version 1.0.0
  *
  * Enables Wasm modules to function as audio plugins (VST3-equivalent).
@@ -14,8 +14,6 @@
  * One Wasm binary works in any DAW that implements this capability.
  *
  * Import module: "wapi_plugin"
- *
- * Query availability with wapi_capability_supported("wapi.audioplugin", 16)
  */
 
 #ifndef WAPI_AUDIOPLUGIN_H

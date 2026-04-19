@@ -27,6 +27,7 @@
 #define WAPI_INPUT_H
 
 #include "wapi.h"
+#include "wapi_seat.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -150,6 +151,15 @@ WAPI_IMPORT(wapi_input, device_get_name)
 wapi_result_t wapi_device_get_name(wapi_handle_t handle, char* buf,
                                    wapi_size_t buf_len,
                                    wapi_size_t* name_len_ptr);
+
+/* Map a device handle to its owning seat. Returns WAPI_SEAT_DEFAULT
+ * for single-seat systems. Use to attribute pointer/key/pen events
+ * to a specific user on multi-seat configurations.
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_input, device_seat)
+wapi_seat_t wapi_device_seat(wapi_handle_t handle);
 
 /* ============================================================
  *  ███╗   ███╗ ██████╗ ██╗   ██╗███████╗███████╗

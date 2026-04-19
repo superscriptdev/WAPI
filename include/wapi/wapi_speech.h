@@ -1,13 +1,11 @@
 /**
- * WAPI - Speech Capability
+ * WAPI - Speech
  * Version 1.0.0
  *
  * Maps to: Web Speech API (SpeechSynthesis, SpeechRecognition),
  *          AVSpeechSynthesizer (iOS), Android TTS/SpeechRecognizer
  *
  * Import module: "wapi_speech"
- *
- * Query availability with wapi_capability_supported("wapi.speech", 9)
  */
 
 #ifndef WAPI_SPEECH_H
@@ -43,68 +41,74 @@ typedef struct wapi_speech_utterance_t {
     uint32_t    _pad;
 } wapi_speech_utterance_t;
 
-/**
- * Speak text.
- * @param utterance  Text and voice parameters.
- * @param id         [out] Utterance handle (for cancel).
- */
-WAPI_IMPORT(wapi_speech, speak)
-wapi_result_t wapi_speech_speak(const wapi_speech_utterance_t* utterance,
-                             wapi_handle_t* id);
+/** Submit an utterance. Completion = synthesis finished. */
+static inline wapi_result_t wapi_speech_speak(
+    const wapi_io_t* io, const wapi_speech_utterance_t* utt,
+    wapi_handle_t* out_id, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_SPEECH_SPEAK;
+    op.addr       = (uint64_t)(uintptr_t)utt;
+    op.len        = sizeof(*utt);
+    op.result_ptr = (uint64_t)(uintptr_t)out_id;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Cancel an in-progress utterance.
- */
-WAPI_IMPORT(wapi_speech, cancel)
-wapi_result_t wapi_speech_cancel(wapi_handle_t id);
+/** Cancel an outstanding speak by its user_data. */
+static inline wapi_result_t wapi_speech_cancel(
+    const wapi_io_t* io, uint64_t speak_user_data)
+{
+    return io->cancel(io->impl, speak_user_data);
+}
 
-/**
- * Cancel all speech.
- */
-WAPI_IMPORT(wapi_speech, cancel_all)
-wapi_result_t wapi_speech_cancel_all(void);
-
-/**
- * Check if speech synthesis is currently speaking.
- */
+/** Bounded-local: is any utterance currently speaking? */
 WAPI_IMPORT(wapi_speech, is_speaking)
 wapi_bool_t wapi_speech_is_speaking(void);
 
+/** Bounded-local: cancel everything (fire-and-forget). */
+WAPI_IMPORT(wapi_speech, cancel_all)
+wapi_result_t wapi_speech_cancel_all(void);
+
 /* ============================================================
- * Speech Recognition (Speech-to-Text)
+ * Speech Recognition (async, submitted via wapi_io_t)
  * ============================================================ */
 
-/**
- * Start speech recognition.
- *
- * @param lang       BCP 47 language tag (NULL for default).
- * @param continuous If true, keep recognizing until stopped.
- * @param session    [out] Recognition session handle.
- */
-WAPI_IMPORT(wapi_speech, recognize_start)
-wapi_result_t wapi_speech_recognize_start(wapi_stringview_t lang,
-                                       wapi_bool_t continuous, wapi_handle_t* session);
+static inline wapi_result_t wapi_speech_recognize_start(
+    const wapi_io_t* io, wapi_stringview_t lang, wapi_bool_t continuous,
+    wapi_handle_t* out_session, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_SPEECH_RECOGNIZE_START;
+    op.flags      = continuous ? 1 : 0;
+    op.addr       = lang.data;
+    op.len        = lang.length;
+    op.result_ptr = (uint64_t)(uintptr_t)out_session;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Stop speech recognition.
- */
-WAPI_IMPORT(wapi_speech, recognize_stop)
-wapi_result_t wapi_speech_recognize_stop(wapi_handle_t session);
+/** Stop recognition — cancels the active recognize_start subscription. */
+static inline wapi_result_t wapi_speech_recognize_stop(
+    const wapi_io_t* io, uint64_t start_user_data)
+{
+    return io->cancel(io->impl, start_user_data);
+}
 
-/**
- * Get the latest recognition result.
- *
- * @param session     Session handle.
- * @param buf         Buffer for recognized text (UTF-8).
- * @param buf_len     Buffer capacity.
- * @param text_len    [out] Actual text length.
- * @param confidence  [out] Confidence 0.0-1.0.
- * @return WAPI_OK on success, WAPI_ERR_AGAIN if no result yet.
- */
-WAPI_IMPORT(wapi_speech, recognize_result)
-wapi_result_t wapi_speech_recognize_result(wapi_handle_t session, char* buf,
-                                        wapi_size_t buf_len, wapi_size_t* text_len,
-                                        float* confidence);
+/** Pull the latest recognition result. Confidence arrives in the
+ *  completion's payload[0..3] as f32 on success. */
+static inline wapi_result_t wapi_speech_recognize_result(
+    const wapi_io_t* io, wapi_handle_t session,
+    char* buf, wapi_size_t buf_len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_SPEECH_RECOGNIZE_RESULT;
+    op.fd        = session;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

@@ -19,7 +19,7 @@
  * @see WAPI_IO_OP_CODEC_DECODE, WAPI_IO_OP_CODEC_ENCODE,
  *      WAPI_IO_OP_CODEC_OUTPUT_GET, WAPI_IO_OP_CODEC_FLUSH
  *
- * Platform mapping:
+ * Maps to:
  *   Web:     WebCodecs (VideoEncoder/Decoder, AudioEncoder/Decoder)
  *   Android: MediaCodec
  *   iOS/Mac: VideoToolbox / AudioToolbox
@@ -151,128 +151,104 @@ _Static_assert(_Alignof(wapi_codec_chunk_t) == 8,
 #define WAPI_CODEC_FLAG_KEYFRAME 0x1
 
 /* ============================================================
- * Codec Lifecycle
+ * Codec Operations
+ *
+ * create/decode/encode/get_output submit through the IO vtable.
+ * destroy, is_supported, flush are bounded-local (act on an
+ * already-owned handle or a local capability probe). query_decode /
+ * query_encode probe the host asynchronously — they go through IO.
  * ============================================================ */
 
-/**
- * Create a video encoder or decoder.
- *
- * @param desc   Video codec descriptor.
- * @param codec  [out] Codec handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_codec, create_video)
-wapi_result_t wapi_codec_create_video(const wapi_video_codec_desc_t* desc,
-                                      wapi_handle_t* codec);
+/** Create a video codec. Config is sync on every platform WebCodecs
+ *  is modelled after; we go through IO so the shim can prepare the
+ *  VideoDecoder/Encoder on the correct thread. */
+static inline wapi_result_t wapi_codec_create_video(
+    const wapi_io_t* io, const wapi_video_codec_desc_t* desc,
+    wapi_handle_t* out_codec, uint64_t user_data)
+{
+    /* Reuse the existing VIDEO_CREATE opcode for codec's video creator too. */
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_VIDEO_CREATE;
+    op.flags      = 1; /* flag: this is a codec create, not a playback element */
+    op.addr       = (uint64_t)(uintptr_t)desc;
+    op.len        = sizeof(*desc);
+    op.result_ptr = (uint64_t)(uintptr_t)out_codec;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Create an audio encoder or decoder.
- *
- * @param desc   Audio codec descriptor.
- * @param codec  [out] Codec handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_codec, create_audio)
-wapi_result_t wapi_codec_create_audio(const wapi_audio_codec_desc_t* desc,
-                                      wapi_handle_t* codec);
+/** Create an audio codec. */
+static inline wapi_result_t wapi_codec_create_audio(
+    const wapi_io_t* io, const wapi_audio_codec_desc_t* desc,
+    wapi_handle_t* out_codec, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_VIDEO_CREATE; /* shared opcode; flags=2 → audio codec */
+    op.flags      = 2;
+    op.addr       = (uint64_t)(uintptr_t)desc;
+    op.len        = sizeof(*desc);
+    op.result_ptr = (uint64_t)(uintptr_t)out_codec;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Destroy a codec instance and release associated resources.
- *
- * @param codec  Codec handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Bounded-local: destroy codec. */
 WAPI_IMPORT(wapi_codec, destroy)
 wapi_result_t wapi_codec_destroy(wapi_handle_t codec);
 
-/**
- * Check if a codec type and mode are supported by the host.
- *
- * @param codec_type  Codec type (wapi_codec_type_t).
- * @param mode        Decode or encode (wapi_codec_mode_t).
- * @return WAPI_OK if supported, WAPI_ERR_NOTSUP otherwise.
- *
- * Wasm signature: (i32, i32) -> i32
- */
+/** Bounded-local: cached capability probe. */
 WAPI_IMPORT(wapi_codec, is_supported)
 wapi_result_t wapi_codec_is_supported(uint32_t codec_type, uint32_t mode);
 
-/* ============================================================
- * Decode / Encode (input side)
- * ============================================================ */
+/** Submit an encoded chunk to a decoder. */
+static inline wapi_result_t wapi_codec_decode(
+    const wapi_io_t* io, wapi_handle_t codec,
+    const wapi_codec_chunk_t* chunk, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_CODEC_DECODE;
+    op.fd        = codec;
+    op.offset    = chunk->timestamp_us;
+    op.addr      = chunk->data;
+    op.len       = chunk->data_len;
+    op.flags     = chunk->flags;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Submit an encoded chunk for decoding.
- * Output arrives asynchronously as WAPI_EVENT_IO_COMPLETION.
- *
- * @param codec  Codec handle (configured for decode).
- * @param chunk  Encoded chunk descriptor.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_codec, decode)
-wapi_result_t wapi_codec_decode(wapi_handle_t codec,
-                                const wapi_codec_chunk_t* chunk);
+/** Submit raw frame data to an encoder. */
+static inline wapi_result_t wapi_codec_encode(
+    const wapi_io_t* io, wapi_handle_t codec,
+    const void* data, wapi_size_t data_len, uint64_t timestamp_us,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_CODEC_ENCODE;
+    op.fd        = codec;
+    op.offset    = timestamp_us;
+    op.addr      = (uint64_t)(uintptr_t)data;
+    op.len       = data_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Submit raw frame data for encoding.
- * Output arrives asynchronously as WAPI_EVENT_IO_COMPLETION.
- *
- * @param codec         Codec handle (configured for encode).
- * @param data          Raw frame data (pixels or PCM samples).
- * @param data_len      Data length in bytes.
- * @param timestamp_us  Presentation timestamp in microseconds.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i64) -> i32
- */
-WAPI_IMPORT(wapi_codec, encode)
-wapi_result_t wapi_codec_encode(wapi_handle_t codec, const void* data,
-                                wapi_size_t data_len, uint64_t timestamp_us);
+/** Pull the next available codec output. Timestamp arrives in the
+ *  completion payload bytes 0..7 as u64 (WAPI_IO_CQE_F_INLINE). */
+static inline wapi_result_t wapi_codec_get_output(
+    const wapi_io_t* io, wapi_handle_t codec,
+    void* buf, wapi_size_t buf_len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_CODEC_OUTPUT_GET;
+    op.fd        = codec;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/* ============================================================
- * Output Retrieval (called after WAPI_EVENT_CODEC_OUTPUT)
- * ============================================================ */
-
-/**
- * Retrieve decoded or encoded output data.
- *
- * Call this after receiving a WAPI_EVENT_IO_COMPLETION event.
- * For a decoder, this returns decoded raw frame data.
- * For an encoder, this returns an encoded chunk.
- *
- * @param codec         Codec handle.
- * @param buf           Buffer to receive output data.
- * @param buf_len       Buffer capacity.
- * @param out_len       [out] Actual bytes written.
- * @param timestamp_us  [out] Presentation timestamp in microseconds.
- * @return WAPI_OK on success, WAPI_ERR_AGAIN if no output ready.
- *
- * Wasm signature: (i32, i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_codec, get_output)
-wapi_result_t wapi_codec_get_output(wapi_handle_t codec, void* buf,
-                                    wapi_size_t buf_len, wapi_size_t* out_len,
-                                    uint64_t* timestamp_us);
-
-/**
- * Flush the codec, signaling end of input stream.
- * The host continues posting WAPI_EVENT_IO_COMPLETION events for any
- * remaining buffered output. When all output is drained, the host
- * posts a final completion with result == 0.
- *
- * @param codec  Codec handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Bounded-local: tell the codec to drain. Subsequent OUTPUT_GET pulls
+ *  any buffered frames out. */
 WAPI_IMPORT(wapi_codec, flush)
 wapi_result_t wapi_codec_flush(wapi_handle_t codec);
 
@@ -326,31 +302,33 @@ _Static_assert(sizeof(wapi_codec_caps_result_t) == 12,
 _Static_assert(_Alignof(wapi_codec_caps_result_t) == 4,
                "wapi_codec_caps_result_t must be 4-byte aligned");
 
-/**
- * Query whether a codec configuration is supported for decoding.
- *
- * @param query   Codec parameters to test.
- * @param result  [out] Capability result.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_codec, query_decode)
-wapi_result_t wapi_codec_query_decode(const wapi_codec_caps_query_t* query,
-                                      wapi_codec_caps_result_t* result);
+/** Decode-capability probe. Async because Media Capabilities API
+ *  (web) is Promise-based. The 12-byte result arrives inline in the
+ *  completion payload (WAPI_IO_CQE_F_INLINE). */
+static inline wapi_result_t wapi_codec_query_decode(
+    const wapi_io_t* io, const wapi_codec_caps_query_t* query,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = 0x104; /* WAPI_IO_OP_CODEC_QUERY_DECODE — reserved in the codec range */
+    op.addr      = (uint64_t)(uintptr_t)query;
+    op.len       = sizeof(*query);
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Query whether a codec configuration is supported for encoding.
- *
- * @param query   Codec parameters to test.
- * @param result  [out] Capability result.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_codec, query_encode)
-wapi_result_t wapi_codec_query_encode(const wapi_codec_caps_query_t* query,
-                                      wapi_codec_caps_result_t* result);
+/** Encode-capability probe. */
+static inline wapi_result_t wapi_codec_query_encode(
+    const wapi_io_t* io, const wapi_codec_caps_query_t* query,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = 0x105; /* WAPI_IO_OP_CODEC_QUERY_ENCODE — reserved in the codec range */
+    op.addr      = (uint64_t)(uintptr_t)query;
+    op.len       = sizeof(*query);
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 /**
- * WAPI - Network Information Capability
+ * WAPI - Network Information
  * Version 1.0.0
  *
  * Query network connection type, effective bandwidth, and online status.
@@ -8,8 +8,6 @@
  *          ConnectivityManager (Android), NetworkInformation (Windows)
  *
  * Import module: "wapi_netinfo"
- *
- * Query availability with wapi_capability_supported("wapi.networkinfo", 16)
  */
 
 #ifndef WAPI_NETWORKINFO_H

@@ -1,5 +1,5 @@
 /**
- * WAPI - Serial Port Capability
+ * WAPI - Serial Port
  * Version 1.0.0
  *
  * Serial port communication for hardware peripherals.
@@ -7,8 +7,6 @@
  * Maps to: Web Serial API (Web), OS serial APIs (Desktop)
  *
  * Import module: "wapi_serial"
- *
- * Query availability with wapi_capability_supported("wapi.serial", 10)
  */
 
 #ifndef WAPI_SERIAL_H
@@ -57,85 +55,72 @@ _Static_assert(_Alignof(wapi_serial_desc_t) == 8,
                "wapi_serial_desc_t must be 8-byte aligned");
 
 /* ============================================================
- * Serial Functions
+ * Serial Operations (async, submitted via wapi_io_t)
  * ============================================================ */
 
-/**
- * Request access to a serial port (shows permission prompt).
- *
- * @see WAPI_IO_OP_SERIAL_PORT_REQUEST
- * @param port  [out] Serial port handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_serial, request_port)
-wapi_result_t wapi_serial_request_port(wapi_handle_t* port);
+/** Request access to a serial port (shows picker). */
+static inline wapi_result_t wapi_serial_request_port(
+    const wapi_io_t* io, wapi_handle_t* out_port, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_SERIAL_PORT_REQUEST;
+    op.result_ptr = (uint64_t)(uintptr_t)out_port;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Open a serial port with the given descriptor.
- *
- * @see WAPI_IO_OP_SERIAL_OPEN
- * @param port  Serial port handle.
- * @param desc  Port descriptor (baud rate, data bits, etc.).
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_serial, open)
-wapi_result_t wapi_serial_open(wapi_handle_t port,
-                               const wapi_serial_desc_t* desc);
+/** Open a serial port with the given descriptor. */
+static inline wapi_result_t wapi_serial_open(
+    const wapi_io_t* io, wapi_handle_t port,
+    const wapi_serial_desc_t* desc, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_SERIAL_OPEN;
+    op.fd        = port;
+    op.addr      = (uint64_t)(uintptr_t)desc;
+    op.len       = sizeof(*desc);
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Close a serial port.
- *
- * @param port  Serial port handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_serial, close)
-wapi_result_t wapi_serial_close(wapi_handle_t port);
+/** Close a serial port. */
+static inline wapi_result_t wapi_serial_close(
+    const wapi_io_t* io, uint64_t open_user_data)
+{
+    return io->cancel(io->impl, open_user_data);
+}
 
-/**
- * Write data to the serial port.
- *
- * @param port      Serial port handle.
- * @param data      Pointer to data to write.
- * @param data_len  Length of the data.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_serial, write)
-wapi_result_t wapi_serial_write(wapi_handle_t port, const void* data,
-                                wapi_size_t data_len);
+/** Write data to a serial port. Returns once queued. */
+static inline wapi_result_t wapi_serial_write(
+    const wapi_io_t* io, wapi_handle_t port,
+    const void* data, wapi_size_t data_len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_SERIAL_WRITE;
+    op.fd        = port;
+    op.addr      = (uint64_t)(uintptr_t)data;
+    op.len       = data_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Read data from the serial port.
- *
- * @param port        Serial port handle.
- * @param buf         Buffer to receive data.
- * @param buf_len     Size of the buffer.
- * @param bytes_read  [out] Actual number of bytes read.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_serial, read)
-wapi_result_t wapi_serial_read(wapi_handle_t port, void* buf,
-                               wapi_size_t buf_len, wapi_size_t* bytes_read);
+/** Read data from a serial port. */
+static inline wapi_result_t wapi_serial_read(
+    const wapi_io_t* io, wapi_handle_t port,
+    void* buf, wapi_size_t buf_len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_SERIAL_READ;
+    op.fd        = port;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = buf_len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Set serial control signals.
- *
- * @param port  Serial port handle.
- * @param dtr   Data Terminal Ready signal (0 or 1).
- * @param rts   Request To Send signal (0 or 1).
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
+/** Set DTR / RTS signals. No corresponding IO opcode today — this is
+ *  a bounded-local flag flip. Kept as a direct sync import because
+ *  every platform's serial stack exposes it synchronously. */
 WAPI_IMPORT(wapi_serial, set_signals)
 wapi_result_t wapi_serial_set_signals(wapi_handle_t port, wapi_bool_t dtr,
                                       wapi_bool_t rts);

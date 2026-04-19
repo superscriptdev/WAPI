@@ -15,8 +15,6 @@
  *          SDL_CreateThread / SDL_CreateMutex et al (SDL3)
  *
  * Import module: "wapi_thread"
- *
- * Query availability with wapi_capability_supported("wapi.thread", 11)
  */
 
 #ifndef WAPI_THREAD_H

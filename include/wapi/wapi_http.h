@@ -13,7 +13,7 @@
  * write/read — that fits the browser's `fetch()` API naturally without
  * introducing a stateful sync contract that browsers cannot honour.
  *
- * Platform mapping:
+ * Maps to:
  *   Web:     fetch() (CORS rules apply)
  *   Native:  libcurl, WinHTTP, NSURLSession
  *

@@ -1,12 +1,10 @@
 /**
- * WAPI - USB Capability
+ * WAPI - USB
  * Version 1.0.0
  *
  * Maps to: WebUSB API, libusb, OS USB APIs
  *
  * Import module: "wapi_usb"
- *
- * Query availability with wapi_capability_supported("wapi.usb", 6)
  */
 
 #ifndef WAPI_USB_H
@@ -52,76 +50,123 @@ typedef struct wapi_usb_filter_t {
     uint8_t  _pad[3];
 } wapi_usb_filter_t;
 
-/**
- * Request access to a USB device (shows permission prompt).
+/* ============================================================
+ * USB Operations (async, submitted via wapi_io_t)
  *
- * @see WAPI_IO_OP_USB_DEVICE_REQUEST
- * @param filters      Array of filters (NULL = any device).
- * @param filter_count Number of filters.
- * @param device       [out] USB device handle.
- */
-WAPI_IMPORT(wapi_usb, request_device)
-wapi_result_t wapi_usb_request_device(const wapi_usb_filter_t* filters,
-                                   uint32_t filter_count, wapi_handle_t* device);
+ * close() and release_interface() are bounded-local (act on an
+ * already-owned handle). The host exposes them as io->cancel targets
+ * keyed on the open / claim user_data.
+ * ============================================================ */
 
-/**
- * Open a USB device for I/O.
- *
- * @see WAPI_IO_OP_USB_OPEN
- */
-WAPI_IMPORT(wapi_usb, open)
-wapi_result_t wapi_usb_open(wapi_handle_t device);
+/** Request USB device access (shows picker). */
+static inline wapi_result_t wapi_usb_request_device(
+    const wapi_io_t* io,
+    const wapi_usb_filter_t* filters, uint32_t filter_count,
+    wapi_handle_t* out_device, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_USB_DEVICE_REQUEST;
+    op.addr       = (uint64_t)(uintptr_t)filters;
+    op.len        = (uint64_t)filter_count * sizeof(wapi_usb_filter_t);
+    op.flags2     = filter_count;
+    op.result_ptr = (uint64_t)(uintptr_t)out_device;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Close a USB device.
- */
-WAPI_IMPORT(wapi_usb, close)
-wapi_result_t wapi_usb_close(wapi_handle_t device);
+/** Open a USB device. */
+static inline wapi_result_t wapi_usb_open(
+    const wapi_io_t* io, wapi_handle_t device, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_USB_OPEN;
+    op.fd        = device;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Claim a USB interface.
- *
- * @see WAPI_IO_OP_USB_INTERFACE_CLAIM
- */
-WAPI_IMPORT(wapi_usb, claim_interface)
-wapi_result_t wapi_usb_claim_interface(wapi_handle_t device, uint8_t interface_num);
+/** Close a USB device. */
+static inline wapi_result_t wapi_usb_close(
+    const wapi_io_t* io, uint64_t open_user_data)
+{
+    return io->cancel(io->impl, open_user_data);
+}
 
-/**
- * Release a USB interface.
- */
-WAPI_IMPORT(wapi_usb, release_interface)
-wapi_result_t wapi_usb_release_interface(wapi_handle_t device, uint8_t interface_num);
+/** Claim a USB interface. */
+static inline wapi_result_t wapi_usb_claim_interface(
+    const wapi_io_t* io, wapi_handle_t device, uint8_t interface_num,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_USB_INTERFACE_CLAIM;
+    op.fd        = device;
+    op.flags     = interface_num;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Bulk/interrupt transfer in.
- *
- * @see WAPI_IO_OP_USB_TRANSFER_IN
- */
-WAPI_IMPORT(wapi_usb, transfer_in)
-wapi_result_t wapi_usb_transfer_in(wapi_handle_t device, uint8_t endpoint,
-                                void* buf, wapi_size_t len, wapi_size_t* transferred);
+/** Release a claimed interface. */
+static inline wapi_result_t wapi_usb_release_interface(
+    const wapi_io_t* io, uint64_t claim_user_data)
+{
+    return io->cancel(io->impl, claim_user_data);
+}
 
-/**
- * Bulk/interrupt transfer out.
- *
- * @see WAPI_IO_OP_USB_TRANSFER_OUT
- */
-WAPI_IMPORT(wapi_usb, transfer_out)
-wapi_result_t wapi_usb_transfer_out(wapi_handle_t device, uint8_t endpoint,
-                                 const void* buf, wapi_size_t len,
-                                 wapi_size_t* transferred);
+/** Bulk/interrupt transfer in. */
+static inline wapi_result_t wapi_usb_transfer_in(
+    const wapi_io_t* io, wapi_handle_t device, uint8_t endpoint,
+    void* buf, wapi_size_t len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_USB_TRANSFER_IN;
+    op.fd        = device;
+    op.flags     = endpoint;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
-/**
- * Control transfer.
- *
- * @see WAPI_IO_OP_USB_CONTROL_TRANSFER
+/** Bulk/interrupt transfer out. */
+static inline wapi_result_t wapi_usb_transfer_out(
+    const wapi_io_t* io, wapi_handle_t device, uint8_t endpoint,
+    const void* buf, wapi_size_t len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_USB_TRANSFER_OUT;
+    op.fd        = device;
+    op.flags     = endpoint;
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+/** Control transfer. The request_type / request / value / index
+ *  fields are packed into op.offset as:
+ *      bits  0-7  request_type
+ *      bits  8-15 request
+ *      bits 16-31 value
+ *      bits 32-47 index
  */
-WAPI_IMPORT(wapi_usb, control_transfer)
-wapi_result_t wapi_usb_control_transfer(wapi_handle_t device,
-                                     uint8_t request_type, uint8_t request,
-                                     uint16_t value, uint16_t index,
-                                     void* buf, wapi_size_t len,
-                                     wapi_size_t* transferred);
+static inline wapi_result_t wapi_usb_control_transfer(
+    const wapi_io_t* io, wapi_handle_t device,
+    uint8_t request_type, uint8_t request,
+    uint16_t value, uint16_t index,
+    void* buf, wapi_size_t len, uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_USB_CONTROL_TRANSFER;
+    op.fd        = device;
+    op.offset    = ((uint64_t)request_type        <<  0)
+                 | ((uint64_t)request             <<  8)
+                 | ((uint64_t)value               << 16)
+                 | ((uint64_t)index               << 32);
+    op.addr      = (uint64_t)(uintptr_t)buf;
+    op.len       = len;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
 
 #ifdef __cplusplus
 }

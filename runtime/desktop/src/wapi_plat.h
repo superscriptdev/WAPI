@@ -233,6 +233,17 @@ enum {
     WAPI_PLAT_EV_GPAD_AXIS         = 72,
     WAPI_PLAT_EV_GPAD_BUTTON_DOWN  = 73,
     WAPI_PLAT_EV_GPAD_BUTTON_UP    = 74,
+
+    /* Hotkey */
+    WAPI_PLAT_EV_HOTKEY            = 80,
+
+    /* Menu / tray */
+    WAPI_PLAT_EV_MENU_SELECT       = 90,
+    WAPI_PLAT_EV_TRAY_CLICK        = 91,
+    WAPI_PLAT_EV_TRAY_MENU         = 92,
+
+    /* File drop (external drag-and-drop) */
+    WAPI_PLAT_EV_DROP_FILES        = 100,
 };
 
 typedef struct wapi_plat_ev_resize_t  { int32_t w, h; }                                        wapi_plat_ev_resize_t;
@@ -296,6 +307,25 @@ typedef struct wapi_plat_ev_gpad_t    {
     int16_t  axis_value;      /* for AXIS events */
     uint8_t  _pad[34];
 }                                                                                              wapi_plat_ev_gpad_t;
+typedef struct wapi_plat_ev_hotkey_t  {
+    uint32_t hotkey_id;
+    uint8_t  _pad[44];
+}                                                                                              wapi_plat_ev_hotkey_t;
+typedef struct wapi_plat_ev_menu_t    {
+    uint32_t menu_token;    /* host-assigned id bound to a menu handle */
+    uint32_t item_id;       /* guest-provided id for the item */
+    uint8_t  _pad[40];
+}                                                                                              wapi_plat_ev_menu_t;
+typedef struct wapi_plat_ev_tray_t    {
+    uint32_t tray_token;    /* host-assigned id bound to a tray handle */
+    uint32_t item_id;       /* 0 for click, non-zero for menu item id */
+    uint8_t  _pad[40];
+}                                                                                              wapi_plat_ev_tray_t;
+typedef struct wapi_plat_ev_drop_t    {
+    float    x, y;          /* client-pixel drop point */
+    uint32_t payload_bytes; /* queryable via wapi_plat_window_drop_payload */
+    uint8_t  _pad[36];
+}                                                                                              wapi_plat_ev_drop_t;
 
 typedef struct wapi_plat_event_t {
     uint32_t type;           /* WAPI_PLAT_EV_* */
@@ -312,6 +342,10 @@ typedef struct wapi_plat_event_t {
         wapi_plat_ev_touch_t  touch;
         wapi_plat_ev_pen_t    pen;
         wapi_plat_ev_gpad_t   gpad;
+        wapi_plat_ev_hotkey_t hotkey;
+        wapi_plat_ev_menu_t   menu;
+        wapi_plat_ev_tray_t   tray;
+        wapi_plat_ev_drop_t   drop;
         uint8_t raw[48];
     } u;
 } wapi_plat_event_t;
@@ -333,6 +367,196 @@ void wapi_plat_wake(void);
 bool     wapi_plat_key_pressed(uint32_t scancode);
 uint16_t wapi_plat_mod_state(void);
 void     wapi_plat_mouse_state(float* out_x, float* out_y, uint32_t* out_buttons);
+
+/* ---- Touch snapshot accessors ----
+ *
+ * Backend tracks active fingers in its event-pump loop; the host
+ * exposes one aggregate touch device that reports device-native
+ * normalized (0..1) positions. `finger_index` is a stable slot id
+ * from the backend's tracking table (NOT the OS-native id, which
+ * has no bound). Positions are in the same coordinate frame the
+ * `WAPI_PLAT_EV_FINGER_*` events carried. */
+/* ---- ROUTED transfer (system share) ----
+ *
+ * Hand `data` off to the OS share sheet. Returns true if the share
+ * UI was invoked successfully (does NOT signal that the user picked
+ * a target — the share sheet is fire-and-forget and completes
+ * asynchronously on the platform side). `mime` matches the LATENT
+ * MIME set: text/plain, image/bmp, text/uri-list.
+ *
+ * The `title` is a short label shown in the share picker when the
+ * platform supports it. The parent window is used to position the
+ * share sheet. */
+bool wapi_plat_share_data(wapi_plat_window_t* parent,
+                          const char* mime, size_t mime_len,
+                          const void* data, size_t data_len,
+                          const char* title, size_t title_len);
+
+bool     wapi_plat_touch_available     (void);
+uint32_t wapi_plat_touch_max_fingers   (void);
+int      wapi_plat_touch_finger_count  (void);
+/* Returns true if slot `index` (0..finger_count-1) is live and fills
+ * out_finger_idx / out_x / out_y / out_pressure. Any out pointer may
+ * be NULL. Positions are normalized 0..1 for the aggregate query
+ * path (no surface context). */
+bool     wapi_plat_touch_get_finger    (int index,
+                                        int32_t* out_finger_idx,
+                                        float* out_x, float* out_y,
+                                        float* out_pressure);
+
+/* ---- Pen snapshot accessors ----
+ *
+ * Backend tracks the currently-active pen (if any) from WM_POINTER* /
+ * equivalent. Position is last known surface-pixel coordinates.
+ * `capabilities_mask` is a bitmask of wapi_pen_axis_t values the
+ * platform reports. */
+bool     wapi_plat_pen_available       (void);
+bool     wapi_plat_pen_get_info        (uint32_t* out_tool_type,
+                                        uint32_t* out_capabilities_mask);
+bool     wapi_plat_pen_get_axis        (int axis, float* out_value);
+bool     wapi_plat_pen_get_position    (float* out_x, float* out_y);
+
+/* ---- Raw HID ----
+ *
+ * Backend enumerates connected HID devices. Guests filter and
+ * (implicitly) request a specific device via
+ * `wapi_plat_hid_request_device`; once granted, the host allocates
+ * a tracked handle and exposes send/receive/feature report I/O.
+ *
+ * Devices are identified by a stable 16-byte uid derived from
+ * SetupDi device instance path so reconnect is detectable. */
+typedef struct wapi_plat_hid_device_t wapi_plat_hid_device_t; /* opaque */
+
+typedef struct wapi_plat_hid_info_t {
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t usage_page;
+    uint16_t usage;
+    uint16_t version;
+    uint8_t  uid[16];
+    char     name[128];
+    uint32_t max_input_report;
+    uint32_t max_output_report;
+    uint32_t max_feature_report;
+} wapi_plat_hid_info_t;
+
+/* Enumerate connected HID devices matching optional filters (0 = any).
+ * Returns the total count of matching devices; fills up to `max`
+ * entries into `out`. Safe to call with out=NULL to probe count. */
+int wapi_plat_hid_enumerate(uint16_t vendor_filter,
+                            uint16_t product_filter,
+                            uint16_t usage_page_filter,
+                            wapi_plat_hid_info_t* out,
+                            int max);
+
+/* Open an enumerated device by its uid (from wapi_plat_hid_info_t).
+ * Returns NULL on failure (device gone, access denied). */
+wapi_plat_hid_device_t* wapi_plat_hid_open(const uint8_t uid[16]);
+void                    wapi_plat_hid_close(wapi_plat_hid_device_t* d);
+bool                    wapi_plat_hid_get_info(wapi_plat_hid_device_t* d,
+                                               wapi_plat_hid_info_t* out);
+
+/* Blocking read of an input report (report_id prefix if numbered
+ * reports are used). Returns bytes written, or <0 on error. */
+int  wapi_plat_hid_read_report(wapi_plat_hid_device_t* d,
+                               void* buf, int buf_len, int timeout_ms);
+/* Write an output report. `data` must be prefixed with the report_id
+ * byte (0 for non-numbered). Returns bytes written, or <0 on error. */
+int  wapi_plat_hid_write_report(wapi_plat_hid_device_t* d,
+                                const void* data, int len);
+int  wapi_plat_hid_send_feature(wapi_plat_hid_device_t* d,
+                                const void* data, int len);
+int  wapi_plat_hid_get_feature (wapi_plat_hid_device_t* d,
+                                void* buf, int buf_len);
+
+/* ---- Native menus ----
+ *
+ * Backend stores an HMENU (Win32) / NSMenu (Cocoa) / Wayland
+ * equivalent per handle. `token` is a short opaque id the host
+ * assigns when binding a menu; the backend uses it as the WM_COMMAND
+ * tag prefix so click dispatch knows which menu an item came from.
+ *
+ * Menu items share a 32-bit id space per menu; [16, 0xBFFF] is the
+ * safe RegisterHotKey-free range on Win32. Submenus are added as
+ * popups whose items carry the parent token so WM_COMMAND routing
+ * still resolves. Flags mirror WAPI_MENU_* (separator / disabled /
+ * checked / submenu). */
+typedef struct wapi_plat_menu_t wapi_plat_menu_t; /* opaque */
+
+wapi_plat_menu_t* wapi_plat_menu_create(uint32_t token);
+void              wapi_plat_menu_destroy(wapi_plat_menu_t* m);
+bool              wapi_plat_menu_add_item(wapi_plat_menu_t* m, uint32_t id,
+                                          const char* utf8, size_t label_len,
+                                          uint32_t flags);
+bool              wapi_plat_menu_add_submenu(wapi_plat_menu_t* m,
+                                             const char* utf8, size_t label_len,
+                                             wapi_plat_menu_t* submenu);
+
+/* Show context menu at screen-space pixel coordinates (converted by
+ * caller from surface coords). Blocks until a choice is made / menu
+ * is dismissed; selections arrive as WAPI_PLAT_EV_MENU_SELECT. */
+bool              wapi_plat_menu_show_context(wapi_plat_menu_t* m,
+                                              wapi_plat_window_t* w,
+                                              int32_t x, int32_t y);
+
+/* Attach a menu as the window's menubar (Win32 SetMenu; NSApp main
+ * menu on macOS). Pass NULL to remove. */
+bool              wapi_plat_menu_set_bar(wapi_plat_window_t* w,
+                                         wapi_plat_menu_t* m);
+
+/* ---- Taskbar / dock ----
+ *
+ * Thin pass-through to platform taskbar integration. `state` uses
+ * the WAPI_TASKBAR_PROGRESS_* enum (0=none,1=indeterminate,2=normal,
+ * 3=error,4=paused). `value` is 0..1 and ignored for none/indeterm. */
+bool wapi_plat_taskbar_set_progress     (wapi_plat_window_t* w, int state, float value);
+bool wapi_plat_taskbar_request_attention(wapi_plat_window_t* w, bool critical);
+bool wapi_plat_taskbar_set_overlay      (wapi_plat_window_t* w,
+                                         const void* icon, size_t icon_len,
+                                         const char* desc, size_t desc_len);
+bool wapi_plat_taskbar_clear_overlay    (wapi_plat_window_t* w);
+
+/* ---- Notifications (balloon) ----
+ *
+ * Show a balloon notification. Returns a non-zero id on success that
+ * the guest can later pass to wapi_plat_notify_close. urgency mirrors
+ * wapi_notify_urgency_t (0=low,1=normal,2=high). */
+uint32_t wapi_plat_notify_show (const char* title, size_t title_len,
+                                const char* body,  size_t body_len,
+                                int urgency);
+bool     wapi_plat_notify_close(uint32_t id);
+
+/* ---- System tray ----
+ *
+ * Backend manages a hidden message-only window that receives tray
+ * notifications. `token` identifies the tray icon in events. The
+ * icon and tooltip live in the backend; the caller owns the image
+ * bytes only for the duration of the call. */
+typedef struct wapi_plat_tray_t wapi_plat_tray_t; /* opaque */
+
+wapi_plat_tray_t* wapi_plat_tray_create(uint32_t token,
+                                        const void* icon_bytes, size_t icon_len,
+                                        const char* tooltip, size_t tooltip_len);
+void              wapi_plat_tray_destroy(wapi_plat_tray_t* t);
+bool              wapi_plat_tray_set_icon(wapi_plat_tray_t* t,
+                                          const void* icon_bytes, size_t icon_len);
+bool              wapi_plat_tray_set_tooltip(wapi_plat_tray_t* t,
+                                             const char* tooltip, size_t len);
+/* Install a context menu for right-click. NULL clears it. */
+bool              wapi_plat_tray_set_menu(wapi_plat_tray_t* t,
+                                          wapi_plat_menu_t* menu);
+
+/* ---- Hotkeys ----
+ *
+ * Register a process-global keyboard hotkey. `hid_scancode` is the
+ * HID Usage Page 0x07 scancode (wapi_scancode_t). `mod_mask` is the
+ * WAPI_KMOD_* bitmask. On fire, backend emits a
+ * WAPI_PLAT_EV_HOTKEY event carrying `id`. Returns false if the
+ * platform cannot bind (unknown scancode, id clash, system
+ * reservation). */
+bool     wapi_plat_hotkey_register     (uint32_t id, uint32_t mod_mask,
+                                        uint32_t hid_scancode);
+void     wapi_plat_hotkey_unregister   (uint32_t id);
 
 /* Gamepad snapshot accessors — backend tracks per-slot state in its
  * event-pump loop. `slot` is 0..N-1 (XInput slots 0..3 on Win32). */
@@ -357,6 +581,37 @@ bool   wapi_plat_clipboard_set_text(const char* utf8, size_t len);
  * truncation (so callers can size correctly). Returns 0 if
  * empty. */
 size_t wapi_plat_clipboard_get_text(char* out, size_t out_len);
+
+/* Image clipboard — BMP file bytes. Backed by CF_DIB on Win32 with
+ * the BITMAPFILEHEADER prepended when reading, stripped when
+ * writing. The guest-facing MIME is image/bmp. */
+bool   wapi_plat_clipboard_has_image(void);
+bool   wapi_plat_clipboard_set_image(const void* bmp_file, size_t len);
+/* Fills `out` with up to out_len bytes. Returns the true total BMP
+ * size regardless of truncation (so callers can size correctly).
+ * Returns 0 when no image is on the clipboard. */
+size_t wapi_plat_clipboard_get_image(void* out, size_t out_len);
+
+/* File clipboard — a text/uri-list of file:// URIs separated by CRLF
+ * (one URI per dropped/copied file). Backed by CF_HDROP on Win32. */
+bool   wapi_plat_clipboard_has_files(void);
+/* Fills `out` with up to out_len bytes. Returns the true total byte
+ * length of the URI list regardless of truncation. Returns 0 when
+ * no files are on the clipboard. */
+size_t wapi_plat_clipboard_get_files(char* out, size_t out_len);
+
+/* Opt a window into WM_DROPFILES so dragging external files onto
+ * the surface fires a drop event carrying a text/uri-list payload.
+ * No-op on backends that don't support file drops. */
+bool   wapi_plat_window_register_drop_target(wapi_plat_window_t* w);
+
+/* Blocking read of the last-delivered drop payload. The backend
+ * stashes the URI list between WM_DROPFILES and the guest's next
+ * io.poll; hosts call this from the drop event translator. Returns
+ * the URI-list length in bytes, or 0 if no drop is pending. */
+size_t wapi_plat_window_drop_payload(wapi_plat_window_t* w,
+                                     char* out, size_t out_len,
+                                     float* out_x, float* out_y);
 
 /* ============================================================
  * Audio (WASAPI / CoreAudio / PipeWire)

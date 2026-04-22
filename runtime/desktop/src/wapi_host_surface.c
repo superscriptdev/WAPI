@@ -115,6 +115,11 @@ static wasm_trap_t* host_surface_create(void* env, wasmtime_caller_t* caller,
 
     wapi_plat_window_t* w = wapi_plat_window_create(&d);
     if (!w) { wapi_set_error("Window creation failed"); WAPI_RET_I32(WAPI_ERR_UNKNOWN); return NULL; }
+    /* Every surface accepts external file drops by default — keeps
+     * the guest-side transfer contract symmetric across platforms.
+     * Backends that can't honour this return false and drops stay
+     * silent. */
+    wapi_plat_window_register_drop_target(w);
 
     int32_t handle = wapi_handle_alloc(WAPI_HTYPE_SURFACE);
     if (handle == 0) {
@@ -186,6 +191,32 @@ static wasm_trap_t* host_surface_request_size(void* env, wasmtime_caller_t* call
     return NULL;
 }
 
+/* Windows desktop windows have no hardware cutouts (no notch, no
+ * rounded corners in a way the client rect has to dodge) and no
+ * system UI inside the client area (taskbar/dock sit outside the
+ * window). Safe rect = full client rect. Mobile / embedded backends
+ * subtract status bar, IME, notch projection, etc. */
+static wasm_trap_t* host_surface_get_safe_rect(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  h     = WAPI_ARG_I32(0);
+    uint32_t x_ptr = WAPI_ARG_U32(1);
+    uint32_t y_ptr = WAPI_ARG_U32(2);
+    uint32_t w_ptr = WAPI_ARG_U32(3);
+    uint32_t h_ptr = WAPI_ARG_U32(4);
+    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
+    int32_t pw, ph;
+    wapi_plat_window_get_size_pixels(g_rt.handles[h].data.window, &pw, &ph);
+    if (x_ptr) wapi_wasm_write_i32(x_ptr, 0);
+    if (y_ptr) wapi_wasm_write_i32(y_ptr, 0);
+    if (w_ptr) wapi_wasm_write_i32(w_ptr, pw);
+    if (h_ptr) wapi_wasm_write_i32(h_ptr, ph);
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
+}
+
 /* ============================================================
  * Registration
  * ============================================================ */
@@ -196,4 +227,5 @@ void wapi_host_register_surface(wasmtime_linker_t* linker) {
     WAPI_DEFINE_3_1(linker, "wapi_surface", "get_size",      host_surface_get_size);
     WAPI_DEFINE_2_1(linker, "wapi_surface", "get_dpi_scale", host_surface_get_dpi_scale);
     WAPI_DEFINE_3_1(linker, "wapi_surface", "request_size",  host_surface_request_size);
+    WAPI_DEFINE_5_1(linker, "wapi_surface", "get_safe_rect", host_surface_get_safe_rect);
 }

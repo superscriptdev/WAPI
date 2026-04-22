@@ -77,7 +77,64 @@ typedef enum wapi_handle_type_t {
     WAPI_HTYPE_VIDEO,
     WAPI_HTYPE_MODULE,
     WAPI_HTYPE_LEASE,
+    WAPI_HTYPE_INPUT_DEVICE,
+    WAPI_HTYPE_MENU,
+    WAPI_HTYPE_TRAY,
+    WAPI_HTYPE_PROCESS,
+    WAPI_HTYPE_PIPE,
 } wapi_handle_type_t;
+
+/* ---- Subprocess record (WAPI_HTYPE_PROCESS) ----
+ * Holds the Win32 HANDLE for the child process, the PID, the
+ * handles for stdin/stdout/stderr pipe-ends we own, and the current
+ * pipe-end handle-table slots so destroy can release them. */
+typedef struct wapi_process_t {
+#ifdef _WIN32
+    void*   h_process;      /* HANDLE */
+    uint32_t pid;
+#else
+    int     pid;
+#endif
+    int32_t stdin_pipe;     /* guest handle of writable pipe (0 = none) */
+    int32_t stdout_pipe;    /* guest handle of readable pipe (0 = none) */
+    int32_t stderr_pipe;    /* guest handle of readable pipe (0 = none) */
+} wapi_process_t;
+
+typedef struct wapi_pipe_t {
+#ifdef _WIN32
+    void*   h;              /* HANDLE — owned, closed on destroy */
+#else
+    int     fd;
+#endif
+    bool    readable;       /* false = write-side of child stdin */
+} wapi_pipe_t;
+
+/* ---- Input device record (WAPI_HTYPE_INPUT_DEVICE) ----
+ * Tracks physical input devices that need hotplug lifecycle: gamepads,
+ * HID devices, and future per-device keyboards / mice. The aggregate
+ * mouse/keyboard/pointer/touch/pen devices also live here so there is
+ * one uniform handle space for all of wapi_input.h's device ids.
+ *
+ * `kind` mirrors wapi_device_type_t from wapi_input.h. `backend_slot`
+ * routes backend queries: for XInput gamepads it is the slot (0..3);
+ * for HID devices it's unused (the platform pointer lives in hid_dev).
+ * `uid` is a stable 16-byte id that persists across reconnect — for
+ * XInput we encode (kind, vendor, product, slot, generation); for HID
+ * we fold the SetupDi device-instance path. */
+struct wapi_plat_hid_device_t;
+typedef struct wapi_input_device_t {
+    uint32_t kind;          /* wapi_device_type_t */
+    uint32_t backend_slot;  /* gamepad: XInput slot; other: 0 */
+    uint8_t  uid[16];
+    char     name[64];
+    /* HID-specific: opaque platform device. Only non-NULL when
+     * kind == WAPI_DEVICE_HID. */
+    struct wapi_plat_hid_device_t* hid_dev;
+    uint16_t hid_vendor;
+    uint16_t hid_product;
+    uint16_t hid_usage_page;
+    uint16_t hid_usage;
+} wapi_input_device_t;
 
 /* ---- I/O Queue ---- */
 #define WAPI_IO_QUEUE_MAX_OPS 256
@@ -123,6 +180,11 @@ typedef struct wapi_net_conn_t {
     uint32_t      transport;
     bool          connected;
     bool          nonblocking;
+    /* Per-transport opaque state. Owned by the host module that
+     * created the connection; freed on close via the tls_/quic_
+     * teardown helpers. NULL for plain TCP/UDP. */
+    void*         tls_state;      /* wapi_host_net_tls.c */
+    void*         quic_state;     /* wapi_host_net_quic.c */
 } wapi_net_conn_t;
 
 /* ---- Crypto ---- */
@@ -222,6 +284,18 @@ typedef struct wapi_handle_entry_t {
         wapi_net_conn_t            net_conn;
         wapi_crypto_hash_ctx_t     crypto_hash;
         wapi_crypto_key_t          crypto_key;
+        wapi_input_device_t        input_device;
+        struct {
+            struct wapi_plat_menu_t* plat;
+            uint32_t                 token;
+        } menu;
+        struct {
+            struct wapi_plat_tray_t* plat;
+            uint32_t                 token;
+            int32_t                  menu_handle; /* bound menu handle (0 = none) */
+        } tray;
+        wapi_process_t             process;
+        wapi_pipe_t                pipe;
     } data;
 } wapi_handle_entry_t;
 
@@ -637,6 +711,95 @@ void wapi_host_register_clock(wasmtime_linker_t* linker);
 void wapi_host_register_surface(wasmtime_linker_t* linker);
 void wapi_host_register_window(wasmtime_linker_t* linker);
 void wapi_host_register_input(wasmtime_linker_t* linker);
+/* Pre-mint aggregate input devices (mouse/keyboard/pointer/touch/pen)
+ * as tracked handles. Call after wapi_plat_init so touch/pen
+ * availability has been queried. */
+void wapi_host_input_init(void);
+
+/* Load the SDL_GameControllerDB mapping table from:
+ *   1. $WAPI_GAMEPADDB   2. <exe>/data/gamepaddb.txt   3. ~/.wapi/gamepaddb.txt
+ * Safe to call repeatedly. Returns the number of mappings loaded
+ * (0 on miss — gamepad enumeration stays XInput-only).
+ *
+ * The full HID-report decoder that consumes these mappings lands with
+ * the HID gamepad path; until then the loader is advisory and the DB
+ * is populated so that wire-in is a one-liner. */
+int  wapi_gamepaddb_load (void);
+int  wapi_gamepaddb_count(void);
+
+/* Cross-platform device / display reference DB (see NEXT_STEPS.md
+ * §A10). A row describes one panel; its fields come entirely from
+ * curation because no OS exposes sub-pixel layout, precise gamut
+ * coverage, or physical envelope/cutouts. Every platform backend
+ * consults the DB via a platform-specific key kind:
+ *   KIND_EDID     desktop monitors, TV-over-HDMI, laptop internals
+ *                 with EDID (7-char <PnP><Product>)
+ *   KIND_APPLE    iOS/iPadOS/macOS Apple-Silicon/watchOS/tvOS/visionOS
+ *                 built-in panel; key is sysctl hw.machine
+ *                 (iPhone16,1 | MacBookPro18,1 | Watch6,1)
+ *   KIND_ANDROID  Android phones/tablets/Wear-OS/AndroidTV built-in
+ *                 panel; key is "<manufacturer>/<model>" lowercase
+ *   KIND_DMI      Chassis identity (Windows/Linux); secondary key
+ *                 for devices whose panel varies by SKU.
+ *   KIND_DT       Linux device-tree model string (embedded).
+ *   KIND_SMARTTV  Tizen / webOS / Fire-TV / Roku model.
+ *   KIND_CONSOLE  Fixed console SKUs (sony/ps5, nintendo/switch-oled).
+ *
+ * Loaded from:
+ *   1. $WAPI_DEVICEDB
+ *   2. <exe>/data/devicedb.txt
+ *   3. ~/.wapi/devicedb.txt
+ * Duplicate keys merge field-by-field so a user override can tune
+ * individual values. Miss = OS-only behaviour. */
+typedef enum wapi_devicedb_kind_t {
+    WAPI_DEVICEDB_KIND_UNKNOWN = 0,
+    WAPI_DEVICEDB_KIND_EDID    = 1,
+    WAPI_DEVICEDB_KIND_APPLE   = 2,
+    WAPI_DEVICEDB_KIND_ANDROID = 3,
+    WAPI_DEVICEDB_KIND_DMI     = 4,
+    WAPI_DEVICEDB_KIND_DT      = 5,
+    WAPI_DEVICEDB_KIND_SMARTTV = 6,
+    WAPI_DEVICEDB_KIND_CONSOLE = 7,
+} wapi_devicedb_kind_t;
+
+int  wapi_devicedb_load (void);
+int  wapi_devicedb_count(void);
+struct wapi_devicedb_entry_t;
+const struct wapi_devicedb_entry_t* wapi_devicedb_lookup(
+    wapi_devicedb_kind_t kind, const char* key, size_t key_len);
+
+/* Sub-pixel / cutout blobs: copy up to `max` wire-format entries
+ * ({u8 color, u8 x, u8 y, u8 _pad} for sub-pixels; {i32 x,y,w,h}
+ * for cutouts) into `out`. Returns the count copied. */
+int         wapi_devicedb_subpixels     (const struct wapi_devicedb_entry_t* e, void* out, int max);
+int         wapi_devicedb_cutouts       (const struct wapi_devicedb_entry_t* e, void* out, int max);
+int         wapi_devicedb_subpixel_count(const struct wapi_devicedb_entry_t* e);
+int         wapi_devicedb_cutout_count  (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_envelope      (const struct wapi_devicedb_entry_t* e);
+void        wapi_devicedb_corner_radii  (const struct wapi_devicedb_entry_t* e, uint16_t out[4]);
+uint32_t    wapi_devicedb_panel_class   (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_width_mm      (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_height_mm     (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_diagonal_mm   (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_peak_sdr_cd_m2(const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_peak_hdr_cd_m2(const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_min_mcd_m2    (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_white_point_k (const struct wapi_devicedb_entry_t* e);
+/* CIE xy primaries as 8 × u16 fixed-point / 65535 in order:
+ * rx, ry, gx, gy, bx, by, wx, wy. All zero if unknown. */
+void        wapi_devicedb_primaries     (const struct wapi_devicedb_entry_t* e, uint16_t out[8]);
+uint32_t    wapi_devicedb_coverage_srgb     (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_coverage_p3       (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_coverage_rec2020  (const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_coverage_adobe_rgb(const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_refresh_min_mhz(const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_refresh_max_mhz(const struct wapi_devicedb_entry_t* e);
+uint32_t    wapi_devicedb_update_class   (const struct wapi_devicedb_entry_t* e);
+int         wapi_devicedb_has_touch     (const struct wapi_devicedb_entry_t* e);
+int         wapi_devicedb_has_stylus    (const struct wapi_devicedb_entry_t* e);
+int         wapi_devicedb_stylus_pressure_levels(const struct wapi_devicedb_entry_t* e);
+int         wapi_devicedb_stylus_has_tilt(const struct wapi_devicedb_entry_t* e);
+const char* wapi_devicedb_name          (const struct wapi_devicedb_entry_t* e);
 void wapi_host_register_audio(wasmtime_linker_t* linker);
 void wapi_host_register_wgpu(wasmtime_linker_t* linker);
 void wapi_host_register_fs(wasmtime_linker_t* linker);
@@ -653,6 +816,13 @@ void wapi_host_register_video(wasmtime_linker_t* linker);
 void wapi_host_register_module(wasmtime_linker_t* linker);
 void wapi_host_register_notifications(wasmtime_linker_t* linker);
 void wapi_host_register_permissions(wasmtime_linker_t* linker);
+void wapi_host_register_menu(wasmtime_linker_t* linker);
+void wapi_host_register_tray(wasmtime_linker_t* linker);
+void wapi_host_register_taskbar(wasmtime_linker_t* linker);
+void wapi_host_register_sysinfo(wasmtime_linker_t* linker);
+void wapi_host_register_display(wasmtime_linker_t* linker);
+void wapi_host_register_theme(wasmtime_linker_t* linker);
+void wapi_host_register_process(wasmtime_linker_t* linker);
 
 /* CLI-seeded hash→path cache (wapi_host_module.c). `spec` is
  * "<64-char lowercase sha256 hex>=<filesystem path>". Returns true on

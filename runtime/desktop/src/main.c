@@ -231,6 +231,9 @@ int main(int argc, char** argv) {
     wapi_host_register_surface(linker);
     wapi_host_register_window(linker);
     wapi_host_register_input(linker);
+    wapi_host_input_init();
+    wapi_gamepaddb_load();
+    wapi_devicedb_load();
     wapi_host_register_audio(linker);
     wapi_host_register_wgpu(linker);
     wapi_host_register_text(linker);
@@ -243,6 +246,13 @@ int main(int argc, char** argv) {
     wapi_host_register_module(linker);
     wapi_host_register_notifications(linker);
     wapi_host_register_permissions(linker);
+    wapi_host_register_menu(linker);
+    wapi_host_register_tray(linker);
+    wapi_host_register_taskbar(linker);
+    wapi_host_register_sysinfo(linker);
+    wapi_host_register_display(linker);
+    wapi_host_register_theme(linker);
+    wapi_host_register_process(linker);
 
     wasm_trap_t* trap = NULL;
     error = wasmtime_linker_instantiate(linker, g_rt.context, module, &g_rt.instance, &trap);

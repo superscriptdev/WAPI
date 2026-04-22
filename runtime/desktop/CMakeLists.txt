@@ -19,6 +19,8 @@ set(CORE_SOURCES
     src/wapi_host_clock.c
     src/wapi_host_fs.c
     src/wapi_host_net.c
+    src/wapi_host_net_tls.c
+    src/wapi_host_net_quic.c
     src/wapi_host_surface.c
     src/wapi_host_window.c
     src/wapi_host_input.c
@@ -35,6 +37,17 @@ set(CORE_SOURCES
     src/wapi_host_module.c
     src/wapi_host_notifications.c
     src/wapi_host_permissions.c
+    src/wapi_host_gamepaddb.c
+    src/wapi_host_dialog.c
+    src/wapi_host_menu.c
+    src/wapi_host_tray.c
+    src/wapi_host_taskbar.c
+    src/wapi_host_sysinfo.c
+    src/wapi_host_display.c
+    src/wapi_host_devicedb.c
+    src/wapi_host_theme.c
+    src/wapi_host_process.c
+    src/wapi_host_http.c
 
     src/third_party/miniz/miniz.c
 )
@@ -48,6 +61,10 @@ if(WIN32)
         src/platform/win32/wapi_plat_win32.c
         src/platform/win32/wapi_plat_win32_audio.c
         src/platform/win32/wapi_plat_win32_gamepad.c
+        src/platform/win32/wapi_plat_win32_hid.c
+        src/platform/win32/wapi_plat_win32_menu.c
+        src/platform/win32/wapi_plat_win32_shell.c
+        src/platform/win32/wapi_plat_win32_share.c
     )
 elseif(APPLE)
     set(PLAT_SOURCES
@@ -137,8 +154,11 @@ if(WIN32)
         dwmapi
         winmm
         bcrypt
+        secur32
         ws2_32
         xinput
+        hid
+        setupapi
         avrt
         d3dcompiler
         d3d12

@@ -58,8 +58,11 @@ typedef struct wapi_surface_desc_t {
  */
 
 typedef enum wapi_surface_event_type_t {
-    WAPI_SURFACE_EVENT_RESIZED      = 0x0200,  /* Surface size changed */
-    WAPI_SURFACE_EVENT_DPI_CHANGED  = 0x020A,  /* Display DPI changed */
+    WAPI_SURFACE_EVENT_RESIZED          = 0x0200,  /* Surface size changed */
+    WAPI_SURFACE_EVENT_DPI_CHANGED      = 0x020A,  /* Display DPI changed */
+    WAPI_SURFACE_EVENT_SAFE_RECT_CHANGED = 0x020B, /* Safe-rect inset changed
+                                                    * (rotation, IME, system UI,
+                                                    * hardware-cutout re-layout) */
     WAPI_SURFACE_EVENT_FORCE32      = 0x7FFFFFFF
 } wapi_surface_event_type_t;
 
@@ -129,6 +132,37 @@ wapi_result_t wapi_surface_get_dpi_scale(wapi_handle_t surface, float* scale);
 WAPI_IMPORT(wapi_surface, request_size)
 wapi_result_t wapi_surface_request_size(wapi_handle_t surface,
                                         int32_t width, int32_t height);
+
+/**
+ * Get the safe rectangle for this surface, in surface pixels.
+ *
+ * The safe rect is the largest axis-aligned rectangle inside the
+ * surface guaranteed to be unobstructed by hardware (the display's
+ * envelope + cutouts projected to current rotation) and by system
+ * UI (status bar, home indicator, IME keyboard, taskbar/dock when
+ * a windowed app is maximised against them).
+ *
+ * Most UI layout code needs only this call. For full-bleed renderers
+ * that want to draw backgrounds across cutouts and route critical
+ * content around them, use wapi_display_get_geometry +
+ * wapi_display_get_cutouts to get the raw physical shape.
+ *
+ * A WAPI_SURFACE_EVENT_SAFE_RECT_CHANGED event is delivered when the
+ * rectangle changes (rotation, IME open/close, system-UI toggle).
+ *
+ * @param surface  Surface handle.
+ * @param x        [out] Safe-rect x origin (surface pixels).
+ * @param y        [out] Safe-rect y origin.
+ * @param w        [out] Safe-rect width.
+ * @param h        [out] Safe-rect height.
+ * @return WAPI_OK on success, WAPI_ERR_BADF if handle is invalid.
+ *
+ * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_surface, get_safe_rect)
+wapi_result_t wapi_surface_get_safe_rect(wapi_handle_t surface,
+                                         int32_t* x, int32_t* y,
+                                         int32_t* w, int32_t* h);
 
 #ifdef __cplusplus
 }

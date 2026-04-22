@@ -273,13 +273,11 @@ static wasm_trap_t* host_audio_device_name(void* env, wasmtime_caller_t* caller,
     uint64_t buf_len = WAPI_ARG_U64(2);
     uint32_t len_ptr = WAPI_ARG_U32(3);
 
-    int resolved = id;
-    if (wapi_handle_valid(id, WAPI_HTYPE_AUDIO_DEVICE)) {
-        /* Backend takes device_id, not our handle — pass default as a
-         * stable lookup. In practice the guest passes enumeration
-         * indices or sentinels, not handles. */
-        resolved = WAPI_PLAT_AUDIO_DEFAULT_PLAYBACK;
-    }
+    /* Guest passes enumeration index (>=0) or sentinel (-1 = default
+     * playback, -2 = default recording). normalize_device_id maps the
+     * guest-facing wapi_audio.h values onto the wapi_plat_audio
+     * sentinels; positive indices flow through unchanged. */
+    int resolved = normalize_device_id(id);
 
     char tmp[256];
     size_t nbytes = wapi_plat_audio_device_name(resolved, tmp, sizeof(tmp));

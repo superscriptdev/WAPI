@@ -1,0 +1,119 @@
+# WAPI Device / Display Reference Database
+#
+# Cross-platform panel reference. One entry describes one physical
+# panel; the keys listed underneath are every identifier that resolves
+# to it on any platform. Curated because no OS exposes the fields
+# guests actually need for rendering (sub-pixel layout, exact panel
+# class, DCI-P3 coverage %, precise envelope / cutouts).
+#
+# Format (TAB-separated):
+#
+#   Entry line   <name>\t<field>:<value>\t<field>:<value>...
+#   Key line     (indented with 2+ spaces) <namespace>:<key>
+#   Comment      # to end of line
+#   Blank        ignored
+#
+# Every key line following an entry line belongs to that entry,
+# until the next entry line or EOF. An entry may have multiple keys.
+#
+# Example entries (not actual data, just layout):
+#
+#   Dell U2723QE\tpanel:ips_lcd\twidth_mm:597\theight_mm:336\tdiagonal_mm:685\tcoverage_srgb:100\tcoverage_p3:98\trefresh:60
+#     edid:DEL40F9
+#
+#   iPhone 15 Pro\tpanel:oled\twidth_mm:70\theight_mm:152\tdiagonal_mm:155\tenvelope:rounded_rect\tcorner_radius:55,55,55,55\tcutouts:1005,33,225,82\thas_touch:1\trefresh:1,120\tpeak_sdr_nits:1000\tpeak_hdr_nits:2000\tcoverage_p3:99
+#     apple:iPhone16,1
+#
+#   Samsung QN90C 75"\tpanel:va_lcd\tpeak_hdr_nits:2000\trefresh:24,120\tcoverage_p3:95\tcoverage_rec2020:70
+#     edid:SAM7177
+#     smarttv:samsung/QN90C-75
+#
+# Key namespaces
+# --------------
+#   edid      7-char <PnP><Product> from EDID bytes 8-11. Covers
+#             external monitors and TVs reached via HDMI/DP, plus
+#             laptop internal panels whose EDID is exposed
+#             (most Windows/Linux laptops; not macOS Apple-Silicon
+#             internals).
+#   apple     sysctl hw.machine (iPhone16,1 | MacBookPro18,1 |
+#             Watch6,1 | AppleTV11,1 | RealityDevice14,1). Commas
+#             inside the key are fine — the field separator is TAB.
+#   android   "<manufacturer>/<model>" lowercase from Build.*
+#             (samsung/sm-s928b, google/pixel9pro).
+#   dmi       "<vendor>/<product>" from SMBIOS product info. Chassis
+#             identifier — secondary key for devices whose panel
+#             varies by SKU.
+#   dt        Linux device-tree model string (raspberrypi,4-model-b).
+#   smarttv   "<vendor>/<model>" for Smart-TV platform APIs (Tizen,
+#             webOS, Fire TV, Roku).
+#   console   "<vendor>/<model>" for fixed console SKUs (sony/ps5,
+#             nintendo/switch-oled). Panel is baked at manufacture.
+#
+# Fields
+# ------
+# Principle: primary measurements, not labels. No hdr400 / gsync /
+# "sRGB" shorthands — those are derived from the real numbers. Curate
+# what was actually measured (peak nits, CIE primaries, coverage
+# percents, refresh range); skip fields you can't verify.
+#
+#   subpixels       Semicolon-list of "<C>@<x>,<y>" entries. C is
+#                   R|G|B|W; x,y are 0..255 within the pixel cell.
+#                   Up to 8 entries. Examples:
+#                     stripe RGB:   R@0,128;G@85,128;B@170,128
+#                     stripe BGR:   B@0,128;G@85,128;R@170,128
+#                     pentile RGBG: R@0,0;G@255,0;B@0,255;G@255,255
+#                     WOLED WRGB:   W@0,128;R@64,128;G@128,128;B@192,128
+#                   Omit for CRTs / DLP / e-ink / projectors — any
+#                   display without a fixed per-pixel grid.
+#   panel           ips_lcd | va_lcd | tn_lcd | stn_lcd |
+#                   passive_lcd | oled | woled | qdoled | microled |
+#                   crt_shadow | crt_trinitron | crt_slot | plasma |
+#                   eink_carta | eink_kaleido | eink_gallery |
+#                   dlp | lcos | projector_other
+#   width_mm        Visible-area physical width in integer mm.
+#   height_mm       Visible-area physical height in integer mm.
+#   diagonal_mm     Convenience; omit if width_mm + height_mm set.
+#
+#   peak_sdr_nits   Measured SDR peak in integer cd/m².
+#   peak_hdr_nits   Measured HDR peak in integer cd/m². 0 = not
+#                   HDR-capable. Skip if you only have the marketing
+#                   claim — lies are worse than unknowns.
+#   min_mnits       Measured floor in milli-cd/m² (1/1000 nit).
+#                   OLED floors hit ~0 (call it 1 mnit); LCD 50-500.
+#
+#   white_point     d50 | d55 | d65 | d75 | d93 | <kelvin-integer>
+#   primaries       "<rx>,<ry>;<gx>,<gy>;<bx>,<by>;<wx>,<wy>" — CIE
+#                   xy of R/G/B/W as decimals 0.0..1.0. Example
+#                   (sRGB/BT.709):
+#                   primaries:0.640,0.330;0.300,0.600;0.150,0.060;0.3127,0.3290
+#
+#   coverage_srgb    0..100, percent of sRGB covered.
+#   coverage_p3      0..100, percent of DCI-P3 covered.
+#   coverage_rec2020 0..100, percent of BT.2020 covered.
+#   coverage_adobe   0..100, percent of AdobeRGB covered.
+#
+#   refresh         "<min>,<max>" in Hz (decimals OK for 47.952 /
+#                   59.94 / 119.88). "<hz>" for fixed refresh.
+#                   Examples: refresh:60 | refresh:48,144
+#                   | refresh:47.952,240
+#   update          fast | slow | very_slow
+#                   Omit for anything not e-ink.
+#
+#   envelope        full | rounded_rect | circle
+#   corner_radius   Four u16 pixels TL,TR,BR,BL — e.g.
+#                   corner_radius:50,50,50,50
+#   cutouts         ";"-separated list of x,y,w,h quadruples in
+#                   canonical (unrotated) pixel coords, e.g.
+#                   cutouts:1005,33,225,82
+#
+#   has_touch       0 | 1
+#   has_stylus      0 | 1
+#   stylus_pressure integer (pressure levels; 0 = unknown)
+#   stylus_tilt     0 | 1
+#
+# Duplicate keys across entries are merged field-by-field — later
+# sources override individual knobs without restating the whole row.
+#
+# This stub is intentionally empty; until populated, the runtime
+# returns OS-only information (no sub-pixel layout, no panel class,
+# no form-factor-specific facts).

@@ -761,6 +761,13 @@ static wasm_trap_t* host_net_resolve(
     return NULL;
 }
 
+/* Forward declaration — probe is defined after resolve_transport in
+ * the async-IO section. The registrar below only needs the symbol. */
+static wasm_trap_t* host_net_qualities_supported(
+    void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults);
+
 /* ============================================================
  * Registration
  * ============================================================ */
@@ -791,4 +798,396 @@ void wapi_host_register_net(wasmtime_linker_t* linker) {
     (void)host_net_send;    (void)host_net_recv;
     (void)host_net_send_datagram; (void)host_net_recv_datagram;
     (void)host_net_resolve;
+
+    /* Sync transport-capability probe — the sole direct import on
+     * module "wapi_network". Everything else is async via the I/O
+     * bridge. */
+    WAPI_DEFINE_1_1(linker, "wapi_network", "qualities_supported",
+                    host_net_qualities_supported);
+}
+
+/* ============================================================
+ * Async I/O op handlers (WAPI_IO_OP_CONNECT / SEND / RECV / CLOSE /
+ * NETWORK_RESOLVE)
+ * ============================================================
+ * Dispatched from wapi_host_io.c. Each runs blocking on the
+ * dispatch thread and completes synchronously — the async shape
+ * matches the spec but the platform impl is sync for now; a
+ * future upgrade can route through IOCP / epoll for true async.
+ */
+
+/* ---- Transport resolution ----
+ *
+ * wapi_network.h models qualities (reliability, ordering, framing,
+ * encryption, multiplexing, low-latency, broadcast) as a bitmask and
+ * lets the platform pick a concrete transport. The table below is
+ * the exhaustive mapping — every quality combination resolves to
+ * exactly one enum value, and unsupported combinations get their own
+ * explicit branch so callers see a precise error (NOTSUP for missing
+ * platform support, INVAL for self-contradictory combinations). */
+
+/* Defined in wapi_host_net_tls.c. */
+int  wapi_host_net_tls_connect(wapi_socket_t sock, const char* sni,
+                               size_t sni_len, bool dtls, void** out_state);
+int  wapi_host_net_tls_send   (void* state, wapi_socket_t sock,
+                               const void* data, size_t len);
+int  wapi_host_net_tls_recv   (void* state, wapi_socket_t sock,
+                               void* buf, size_t buf_len);
+void wapi_host_net_tls_close  (void* state, wapi_socket_t sock);
+
+/* Defined in wapi_host_net_quic.c. */
+int  wapi_host_net_quic_connect(const char* host, size_t host_len,
+                                uint16_t port, void** out_state);
+int  wapi_host_net_quic_send   (void* state, const void* data, size_t len);
+int  wapi_host_net_quic_recv   (void* state, void* buf, size_t cap);
+void wapi_host_net_quic_close  (void* state);
+bool wapi_host_net_quic_available(void);
+
+typedef enum resolved_transport_t {
+    T_TCP           = 1,  /* reliable + ordered (no encryption)        */
+    T_TCP_TLS       = 2,  /* reliable + ordered + encrypted             */
+    T_UDP           = 3,  /* framed + low_latency (no reliability)      */
+    T_UDP_DTLS      = 4,  /* framed + low_latency + encrypted           */
+    T_QUIC          = 5,  /* reliable + ordered + framed + multiplexed  */
+    T_MULTICAST     = 6,  /* reliable + ordered + framed + broadcast    */
+    T_UNSPEC        = 0,
+} resolved_transport_t;
+
+#define Q_RELIABLE    0x01
+#define Q_ORDERED     0x02
+#define Q_FRAMED      0x04
+#define Q_ENCRYPTED   0x08
+#define Q_MULTIPLEXED 0x10
+#define Q_LOW_LATENCY 0x20
+#define Q_BROADCAST   0x40
+
+static resolved_transport_t resolve_transport(uint32_t q) {
+    bool reliable   = (q & Q_RELIABLE)    != 0;
+    bool ordered    = (q & Q_ORDERED)     != 0;
+    bool framed     = (q & Q_FRAMED)      != 0;
+    bool encrypted  = (q & Q_ENCRYPTED)   != 0;
+    bool mux        = (q & Q_MULTIPLEXED) != 0;
+    bool lowlat     = (q & Q_LOW_LATENCY) != 0;
+    bool broadcast  = (q & Q_BROADCAST)   != 0;
+
+    /* Reliable multicast is its own family. */
+    if (broadcast) {
+        if (reliable && ordered && framed) return T_MULTICAST;
+        /* Bare broadcast without reliability = UDP multicast socket,
+         * but the caller should set MESSAGE_FRAMED + LOW_LATENCY for
+         * that. Disallow ambiguous combos. */
+        return T_UNSPEC;
+    }
+
+    /* Multiplexed streams map to QUIC only. */
+    if (mux) {
+        if (reliable && ordered && framed) return T_QUIC;
+        return T_UNSPEC;
+    }
+
+    /* Byte-stream transports: TCP or TCP+TLS. */
+    if (reliable && ordered && !framed) {
+        return encrypted ? T_TCP_TLS : T_TCP;
+    }
+
+    /* Datagram transports: UDP or DTLS. */
+    if (framed && !reliable) {
+        (void)lowlat; /* low_latency is a hint, not a discriminator */
+        return encrypted ? T_UDP_DTLS : T_UDP;
+    }
+
+    /* Any other combination (e.g. ordered without reliable, framed +
+     * reliable without mux, encrypted without reliable) is either
+     * nonsensical or not yet mapped to a concrete transport. */
+    return T_UNSPEC;
+}
+
+/* wapi_net_qualities_supported — pure probe; no sockets or DLL
+ * registration. Forward-declared above the registrar. */
+static wasm_trap_t* host_net_qualities_supported(
+    void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    uint32_t q = WAPI_ARG_U32(0);
+    resolved_transport_t t = resolve_transport(q);
+    int32_t ret;
+    switch (t) {
+    case T_TCP:
+    case T_UDP:
+    case T_TCP_TLS:
+    case T_UDP_DTLS:    ret = 1; break;
+    case T_QUIC:        ret = wapi_host_net_quic_available() ? 1 : 0; break;
+    case T_MULTICAST:   ret = 0; break; /* PGM deprecated on Win */
+    case T_UNSPEC:
+    default:            ret = WAPI_ERR_INVAL; break;
+    }
+    WAPI_RET_I32(ret);
+    return NULL;
+}
+
+/* CONNECT: addr=address_str (utf-8), flags=qualities bitmask.
+ *   result = conn handle on success; negative WAPI_ERR_* on failure. */
+void wapi_host_net_connect_op(op_ctx_t* c) {
+    if (c->len == 0) { c->result = WAPI_ERR_INVAL; return; }
+    const char* url = (const char*)wapi_wasm_ptr((uint32_t)c->addr, (uint32_t)c->len);
+    if (!url) { c->result = WAPI_ERR_INVAL; return; }
+
+    resolved_transport_t t = resolve_transport(c->flags);
+
+    char host[256], port[16];
+    if (!parse_host_port(url, (uint32_t)c->len, host, sizeof(host), port, sizeof(port))) {
+        c->result = WAPI_ERR_INVAL; return;
+    }
+
+    /* QUIC has no Winsock socket — msquic owns the UDP socket
+     * internally. Handle it before the BSD-style branch. */
+    if (t == T_QUIC) {
+        uint16_t p = (uint16_t)atoi(port);
+        void* quic_state = NULL;
+        int rc = wapi_host_net_quic_connect(host, strlen(host), p, &quic_state);
+        if (rc != 0) {
+            c->result = (rc == -2) ? WAPI_ERR_NOTSUP : WAPI_ERR_IO;
+            return;
+        }
+        int32_t h = wapi_handle_alloc(WAPI_HTYPE_NET_CONN);
+        if (h == 0) {
+            wapi_host_net_quic_close(quic_state);
+            c->result = WAPI_ERR_NOMEM; return;
+        }
+        g_rt.handles[h].data.net_conn.sock        = WAPI_INVALID_SOCKET;
+        g_rt.handles[h].data.net_conn.transport   = (uint32_t)t;
+        g_rt.handles[h].data.net_conn.connected   = true;
+        g_rt.handles[h].data.net_conn.nonblocking = false;
+        g_rt.handles[h].data.net_conn.quic_state  = quic_state;
+        c->result = h;
+        c->inline_payload = true;
+        memcpy(c->payload, &h, 4);
+        if (c->result_ptr) wapi_wasm_write_i32((uint32_t)c->result_ptr, h);
+        return;
+    }
+
+    int sock_type, ip_proto;
+    switch (t) {
+    case T_TCP:
+    case T_TCP_TLS:
+        sock_type = SOCK_STREAM; ip_proto = IPPROTO_TCP; break;
+    case T_UDP:
+    case T_UDP_DTLS:
+        sock_type = SOCK_DGRAM;  ip_proto = IPPROTO_UDP; break;
+    case T_MULTICAST: c->result = WAPI_ERR_NOTSUP; return; /* PGM deprecated on Win */
+    default:          c->result = WAPI_ERR_INVAL;  return;
+    }
+
+    struct addrinfo hints; memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = sock_type;
+    hints.ai_protocol = ip_proto;
+
+    struct addrinfo* ai = NULL;
+    if (getaddrinfo(host, port, &hints, &ai) != 0 || !ai) {
+        c->result = WAPI_ERR_IO; return;
+    }
+    wapi_socket_t sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (sock == WAPI_INVALID_SOCKET) {
+        freeaddrinfo(ai); c->result = WAPI_ERR_IO; return;
+    }
+    /* `connect` on a UDP socket sets the peer so subsequent send/recv
+     * uses that address without sendto/recvfrom. For TCP it performs
+     * the three-way handshake. */
+    if (connect(sock, ai->ai_addr, (int)ai->ai_addrlen) != 0) {
+        int err = WAPI_LAST_NET_ERROR;
+        freeaddrinfo(ai); WAPI_CLOSESOCKET(sock);
+        c->result = net_error_to_wapi(err); return;
+    }
+    freeaddrinfo(ai);
+
+    /* TLS/DTLS handshake runs on the still-blocking socket. Only flip
+     * to non-blocking after the handshake so send_all / recv inside
+     * Schannel can loop without juggling EWOULDBLOCK. */
+    void* tls_state = NULL;
+    if (t == T_TCP_TLS || t == T_UDP_DTLS) {
+        if (wapi_host_net_tls_connect(sock, host, strlen(host),
+                                      (t == T_UDP_DTLS), &tls_state) != 0) {
+            WAPI_CLOSESOCKET(sock);
+            c->result = WAPI_ERR_IO; return;
+        }
+    }
+    set_nonblocking(sock);
+
+    int32_t h = wapi_handle_alloc(WAPI_HTYPE_NET_CONN);
+    if (h == 0) {
+        if (tls_state) wapi_host_net_tls_close(tls_state, sock);
+        WAPI_CLOSESOCKET(sock);
+        c->result = WAPI_ERR_NOMEM; return;
+    }
+    g_rt.handles[h].data.net_conn.sock        = sock;
+    g_rt.handles[h].data.net_conn.transport   = (uint32_t)t;
+    g_rt.handles[h].data.net_conn.connected   = true;
+    g_rt.handles[h].data.net_conn.nonblocking = true;
+    g_rt.handles[h].data.net_conn.tls_state   = tls_state;
+    c->result = h;
+    c->inline_payload = true;
+    memcpy(c->payload, &h, 4);
+    if (c->result_ptr) wapi_wasm_write_i32((uint32_t)c->result_ptr, h);
+}
+
+/* SEND: fd=conn_handle, addr=data, len=len.
+ *   result = bytes sent (>=0) or negative error. */
+void wapi_host_net_send_op(op_ctx_t* c) {
+    int32_t conn_h = c->fd;
+    if (!wapi_handle_valid(conn_h, WAPI_HTYPE_NET_CONN)) {
+        c->result = WAPI_ERR_BADF; return;
+    }
+    const void* data = c->len ? wapi_wasm_ptr((uint32_t)c->addr, (uint32_t)c->len) : NULL;
+    if (c->len > 0 && !data) { c->result = WAPI_ERR_INVAL; return; }
+    wapi_socket_t sock = g_rt.handles[conn_h].data.net_conn.sock;
+
+    /* QUIC owns its own transport; no TCP socket. */
+    void* quic_state = g_rt.handles[conn_h].data.net_conn.quic_state;
+    if (quic_state) {
+        int n = wapi_host_net_quic_send(quic_state, data, (size_t)c->len);
+        c->result = (n < 0) ? WAPI_ERR_IO : n;
+        return;
+    }
+
+    /* TLS/DTLS: encrypt path wraps send; it handles partial sends
+     * internally so the caller contract is "all or nothing". */
+    void* tls_state = g_rt.handles[conn_h].data.net_conn.tls_state;
+    if (tls_state) {
+        int n = wapi_host_net_tls_send(tls_state, sock, data, (size_t)c->len);
+        c->result = (n < 0) ? WAPI_ERR_IO : n;
+        return;
+    }
+
+    /* Non-blocking sockets: loop on EAGAIN so callers don't see
+     * partial sends driven by socket buffer pressure. The op stays
+     * a single completion, matching the spec shape. */
+    const uint8_t* p = (const uint8_t*)data;
+    size_t remaining = (size_t)c->len;
+    size_t sent = 0;
+    while (remaining > 0) {
+        int n = send(sock, (const char*)p, (int)remaining, 0);
+        if (n > 0) { p += n; remaining -= (size_t)n; sent += (size_t)n; continue; }
+        int err = WAPI_LAST_NET_ERROR;
+        if (err == WAPI_EWOULDBLOCK) {
+            /* Park briefly; a future async rewrite uses IOCP/epoll. */
+            Sleep(1);
+            continue;
+        }
+        c->result = net_error_to_wapi(err);
+        return;
+    }
+    c->result = (int32_t)sent;
+}
+
+/* RECV: fd=conn_handle, addr=buffer, len=cap.
+ *   result = bytes received (>0), 0=EOF, negative=error. */
+void wapi_host_net_recv_op(op_ctx_t* c) {
+    int32_t conn_h = c->fd;
+    if (!wapi_handle_valid(conn_h, WAPI_HTYPE_NET_CONN)) {
+        c->result = WAPI_ERR_BADF; return;
+    }
+    void* buf = c->len ? wapi_wasm_ptr((uint32_t)c->addr, (uint32_t)c->len) : NULL;
+    if (c->len > 0 && !buf) { c->result = WAPI_ERR_INVAL; return; }
+    wapi_socket_t sock = g_rt.handles[conn_h].data.net_conn.sock;
+
+    void* quic_state = g_rt.handles[conn_h].data.net_conn.quic_state;
+    if (quic_state) {
+        int n = wapi_host_net_quic_recv(quic_state, buf, (size_t)c->len);
+        c->result = (n < 0) ? WAPI_ERR_IO : n;
+        return;
+    }
+
+    void* tls_state = g_rt.handles[conn_h].data.net_conn.tls_state;
+    if (tls_state) {
+        int n = wapi_host_net_tls_recv(tls_state, sock, buf, (size_t)c->len);
+        c->result = (n < 0) ? WAPI_ERR_IO : n;
+        return;
+    }
+
+    for (;;) {
+        int n = recv(sock, (char*)buf, (int)c->len, 0);
+        if (n >= 0) { c->result = n; return; }
+        int err = WAPI_LAST_NET_ERROR;
+        if (err == WAPI_EWOULDBLOCK) { Sleep(1); continue; }
+        c->result = net_error_to_wapi(err);
+        return;
+    }
+}
+
+/* CLOSE: fd=any net handle. */
+void wapi_host_net_close_op(op_ctx_t* c) {
+    int32_t h = c->fd;
+    if (!wapi_handle_valid_any(h)) { c->result = WAPI_ERR_BADF; return; }
+    wapi_handle_type_t t = g_rt.handles[h].type;
+    if (t == WAPI_HTYPE_NET_CONN) {
+        wapi_socket_t sock = g_rt.handles[h].data.net_conn.sock;
+        void* quic_state = g_rt.handles[h].data.net_conn.quic_state;
+        if (quic_state) {
+            wapi_host_net_quic_close(quic_state);
+        } else {
+            void* tls_state = g_rt.handles[h].data.net_conn.tls_state;
+            if (tls_state) wapi_host_net_tls_close(tls_state, sock);
+            WAPI_CLOSESOCKET(sock);
+        }
+    } else if (t == WAPI_HTYPE_NET_LISTENER) {
+        WAPI_CLOSESOCKET(g_rt.handles[h].data.net_conn.sock);
+    } else {
+        c->result = WAPI_ERR_BADF; return;
+    }
+    wapi_handle_free(h);
+    c->result = 0;
+}
+
+/* NETWORK_RESOLVE: addr=hostname, addr2=address buffer.
+ *   Writes a NUL-separated list of "host:port"-style strings (here
+ *   just "ip" — caller re-uses the port from their original request).
+ *   result = count of addresses resolved. */
+void wapi_host_net_resolve_op(op_ctx_t* c) {
+    if (c->len == 0) { c->result = WAPI_ERR_INVAL; return; }
+    const char* hostname = (const char*)wapi_wasm_ptr((uint32_t)c->addr, (uint32_t)c->len);
+    if (!hostname) { c->result = WAPI_ERR_INVAL; return; }
+
+    /* NUL-terminate locally so getaddrinfo can parse. */
+    char host[256];
+    size_t n = c->len < sizeof(host) - 1 ? (size_t)c->len : sizeof(host) - 1;
+    memcpy(host, hostname, n);
+    host[n] = 0;
+
+    struct addrinfo hints; memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* ai = NULL;
+    if (getaddrinfo(host, NULL, &hints, &ai) != 0 || !ai) {
+        c->result = WAPI_ERR_NOENT; return;
+    }
+
+    uint8_t* out    = c->len2 ? (uint8_t*)wapi_wasm_ptr((uint32_t)c->addr2, (uint32_t)c->len2) : NULL;
+    size_t   cap    = (size_t)c->len2;
+    size_t   used   = 0;
+    int32_t  count  = 0;
+    for (struct addrinfo* p = ai; p; p = p->ai_next) {
+        char ipstr[INET6_ADDRSTRLEN] = {0};
+        if (p->ai_family == AF_INET) {
+            struct sockaddr_in* sa = (struct sockaddr_in*)p->ai_addr;
+            inet_ntop(AF_INET, &sa->sin_addr, ipstr, sizeof(ipstr));
+        } else if (p->ai_family == AF_INET6) {
+            struct sockaddr_in6* sa = (struct sockaddr_in6*)p->ai_addr;
+            inet_ntop(AF_INET6, &sa->sin6_addr, ipstr, sizeof(ipstr));
+        } else continue;
+
+        size_t slen = strlen(ipstr);
+        if (out && used + slen + 1 <= cap) {
+            memcpy(out + used, ipstr, slen);
+            out[used + slen] = 0;
+        }
+        used += slen + 1;
+        count++;
+    }
+    freeaddrinfo(ai);
+
+    if (c->result_ptr) wapi_wasm_write_u64((uint32_t)c->result_ptr, (uint64_t)used);
+    c->result = count;
 }

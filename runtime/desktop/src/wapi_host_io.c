@@ -203,6 +203,7 @@ extern void wapi_host_net_send_op(op_ctx_t* c);
 extern void wapi_host_net_recv_op(op_ctx_t* c);
 extern void wapi_host_net_listen_op(op_ctx_t* c);
 extern void wapi_host_net_resolve_op(op_ctx_t* c);
+extern void wapi_host_net_close_op(op_ctx_t* c);
 extern void wapi_host_audio_write_op(op_ctx_t* c);             /* wapi_host_audio.c */
 extern void wapi_host_audio_read_op(op_ctx_t* c);
 extern void wapi_host_http_fetch_op(op_ctx_t* c);              /* wapi_host_http.c (future) */
@@ -270,6 +271,12 @@ extern void wapi_host_codec_flush_op(op_ctx_t* c);
 extern void wapi_host_video_create_op(op_ctx_t* c);            /* wapi_host_video.c */
 extern void wapi_host_video_seek_op(op_ctx_t* c);
 extern void wapi_host_compress_process_op(op_ctx_t* c);        /* wapi_host_compression.c */
+extern void wapi_host_dialog_file_open_op(op_ctx_t* c);        /* wapi_host_dialog.c */
+extern void wapi_host_dialog_file_save_op(op_ctx_t* c);
+extern void wapi_host_dialog_folder_open_op(op_ctx_t* c);
+extern void wapi_host_dialog_messagebox_op(op_ctx_t* c);
+extern void wapi_host_dialog_pick_color_op(op_ctx_t* c);
+extern void wapi_host_dialog_pick_font_op(op_ctx_t* c);
 extern void wapi_host_speech_speak_op(op_ctx_t* c);            /* wapi_host_speech.c */
 extern void wapi_host_speech_recognize_start_op(op_ctx_t* c);
 extern void wapi_host_speech_recognize_result_op(op_ctx_t* c);
@@ -487,24 +494,37 @@ static void dispatch(op_ctx_t* c) {
      * gets implemented, flip the case to call it. */
 
     case OP_OPEN:                    op_nosys(c); break;
-    case OP_CLOSE:                   op_nosys(c); break;
+    case OP_CLOSE: {
+        /* Generic close — route by handle type. File handles have
+         * synchronous close via fs imports; async OP_CLOSE is only
+         * meaningful for net / channel handles today. */
+        int32_t fd = c->fd;
+        if (wapi_handle_valid(fd, WAPI_HTYPE_NET_CONN) ||
+            wapi_handle_valid(fd, WAPI_HTYPE_NET_LISTENER) ||
+            wapi_handle_valid(fd, WAPI_HTYPE_NET_STREAM)) {
+            wapi_host_net_close_op(c);
+        } else {
+            op_nosys(c);
+        }
+        break;
+    }
     case OP_STAT:                    op_nosys(c); break;
     case OP_FWATCH_ADD:              op_nosys(c); break;
     case OP_FWATCH_REMOVE:           op_nosys(c); break;
 
-    case OP_CONNECT:                 op_nosys(c); break;
+    case OP_CONNECT:                 wapi_host_net_connect_op(c); break;
     case OP_ACCEPT:                  op_nosys(c); break;
-    case OP_SEND:                    op_nosys(c); break;
-    case OP_RECV:                    op_nosys(c); break;
+    case OP_SEND:                    wapi_host_net_send_op(c);    break;
+    case OP_RECV:                    wapi_host_net_recv_op(c);    break;
     case OP_NETWORK_LISTEN:          op_nosys(c); break;
     case OP_NETWORK_CHANNEL_OPEN:    op_nosys(c); break;
     case OP_NETWORK_CHANNEL_ACCEPT:  op_nosys(c); break;
-    case OP_NETWORK_RESOLVE:         op_nosys(c); break;
+    case OP_NETWORK_RESOLVE:         wapi_host_net_resolve_op(c); break;
 
     case OP_AUDIO_WRITE:             op_nosys(c); break;
     case OP_AUDIO_READ:              op_nosys(c); break;
 
-    case OP_HTTP_FETCH:              op_nosys(c); break;
+    case OP_HTTP_FETCH:              wapi_host_http_fetch_op(c); break;
 
     case OP_SERIAL_PORT_REQUEST:     op_nosys(c); break;
     case OP_SERIAL_OPEN:             op_nosys(c); break;
@@ -557,12 +577,12 @@ static void dispatch(op_ctx_t* c) {
     case OP_FONT_BYTES_GET:          op_nosys(c); break;
     case OP_FONT_FAMILY_INFO:        op_nosys(c); break;
 
-    case OP_DIALOG_FILE_OPEN:        op_nosys(c); break;
-    case OP_DIALOG_FILE_SAVE:        op_nosys(c); break;
-    case OP_DIALOG_FOLDER_OPEN:      op_nosys(c); break;
-    case OP_DIALOG_MESSAGEBOX:       op_nosys(c); break;
-    case OP_DIALOG_PICK_COLOR:       op_nosys(c); break;
-    case OP_DIALOG_PICK_FONT:        op_nosys(c); break;
+    case OP_DIALOG_FILE_OPEN:        wapi_host_dialog_file_open_op(c);   break;
+    case OP_DIALOG_FILE_SAVE:        wapi_host_dialog_file_save_op(c);   break;
+    case OP_DIALOG_FOLDER_OPEN:      wapi_host_dialog_folder_open_op(c); break;
+    case OP_DIALOG_MESSAGEBOX:       wapi_host_dialog_messagebox_op(c);  break;
+    case OP_DIALOG_PICK_COLOR:       wapi_host_dialog_pick_color_op(c);  break;
+    case OP_DIALOG_PICK_FONT:        wapi_host_dialog_pick_font_op(c);   break;
 
     case OP_BIO_AUTHENTICATE:        op_nosys(c); break;
     case OP_AUTHN_CREDENTIAL_CREATE: op_nosys(c); break;
@@ -590,7 +610,7 @@ static void dispatch(op_ctx_t* c) {
     case OP_CACHE_STAT:              op_nosys(c); break;
     case OP_CACHE_DELETE:            op_nosys(c); break;
 
-    case OP_CRYPTO_HASH:             op_nosys(c); break;
+    case OP_CRYPTO_HASH:             wapi_host_crypto_hash_op(c); break;
     case OP_CRYPTO_HASH_CREATE:      op_nosys(c); break;
     case OP_CRYPTO_ENCRYPT:          op_nosys(c); break;
     case OP_CRYPTO_DECRYPT:          op_nosys(c); break;
@@ -610,7 +630,7 @@ static void dispatch(op_ctx_t* c) {
 
     case OP_SENSOR_START:            op_nosys(c); break;
 
-    case OP_NOTIFY_SHOW:             op_nosys(c); break;
+    case OP_NOTIFY_SHOW:             wapi_host_notify_show_op(c); break;
 
     case OP_TRANSFER_OFFER:          wapi_host_transfer_offer_op(c); break;
     case OP_TRANSFER_READ:           wapi_host_transfer_read_op(c);  break;

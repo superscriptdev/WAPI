@@ -36,8 +36,9 @@
 #pragma comment(lib, "avrt")
 
 /* GUIDs we need that some MinGW toolchains don't export — declare once. */
-static const IID IID_IAudioClient_local       = { 0x1CB9AD4C, 0xDBFA, 0x4c32, { 0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2 } };
-static const IID IID_IAudioRenderClient_local = { 0xF294ACFC, 0x3146, 0x4483, { 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2 } };
+static const IID IID_IAudioClient_local        = { 0x1CB9AD4C, 0xDBFA, 0x4c32, { 0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2 } };
+static const IID IID_IAudioRenderClient_local  = { 0xF294ACFC, 0x3146, 0x4483, { 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2 } };
+static const IID IID_IAudioCaptureClient_local = { 0xC8ADBD64, 0xE71E, 0x48A0, { 0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17 } };
 static const CLSID CLSID_MMDeviceEnumerator_local  = { 0xBCDE0395, 0xE52F, 0x467C, { 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E } };
 static const IID   IID_IMMDeviceEnumerator_local   = { 0xA95664D2, 0x9614, 0x4F35, { 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6 } };
 
@@ -131,9 +132,11 @@ struct wapi_plat_audio_stream_t {
     HANDLE wake_event;             /* WASAPI event-driven callback */
     HANDLE stop_event;             /* set to end worker */
 
-    /* When bound, these point into the device */
+    /* When bound, these point into the device. Exactly one of
+     * render_client / capture_client is non-NULL depending on flow. */
     struct wapi_plat_audio_device_t* device;
-    IAudioRenderClient* render_client;
+    IAudioRenderClient*  render_client;
+    IAudioCaptureClient* capture_client;
 };
 
 /* ============================================================
@@ -295,29 +298,89 @@ static DWORD WINAPI audio_worker(LPVOID param) {
 
     HANDLE waits[2] = { s->stop_event, s->wake_event };
     uint32_t bpf_dst = bytes_per_frame(&s->dst);
+    uint32_t bpf_src = bytes_per_frame(&s->src);
+    bool is_capture  = s->device && s->device->is_capture;
 
     for (;;) {
         DWORD rc = WaitForMultipleObjects(2, waits, FALSE, 2000);
         if (rc == WAIT_OBJECT_0) break; /* stop */
-        /* rc==WAIT_OBJECT_0+1 or WAIT_TIMEOUT — either way, try to fill */
 
-        UINT32 padding = 0;
-        if (FAILED(IAudioClient_GetCurrentPadding(s->device->audio_client, &padding))) continue;
-        UINT32 avail_frames = s->device->buffer_frames - padding;
-        if (avail_frames == 0) continue;
+        if (!is_capture) {
+            UINT32 padding = 0;
+            if (FAILED(IAudioClient_GetCurrentPadding(s->device->audio_client, &padding))) continue;
+            UINT32 avail_frames = s->device->buffer_frames - padding;
+            if (avail_frames == 0) continue;
 
-        BYTE* dst = NULL;
-        if (FAILED(IAudioRenderClient_GetBuffer(s->render_client, avail_frames, &dst))) continue;
+            BYTE* dst = NULL;
+            if (FAILED(IAudioRenderClient_GetBuffer(s->render_client, avail_frames, &dst))) continue;
 
-        UINT32 bytes_needed = avail_frames * bpf_dst;
-        UINT32 got = ring_read(&s->ring, dst, bytes_needed);
-        DWORD flags = 0;
-        if (got < bytes_needed) {
-            /* Silence the rest to avoid audible glitches on underrun */
-            memset(dst + got, 0, bytes_needed - got);
-            flags = 0; /* don't set AUDCLNT_BUFFERFLAGS_SILENT, it breaks on some drivers */
+            UINT32 bytes_needed = avail_frames * bpf_dst;
+            UINT32 got = ring_read(&s->ring, dst, bytes_needed);
+            if (got < bytes_needed) {
+                /* Silence the rest to avoid audible glitches on underrun. */
+                memset(dst + got, 0, bytes_needed - got);
+            }
+            IAudioRenderClient_ReleaseBuffer(s->render_client, avail_frames, 0);
+        } else {
+            /* Drain every available packet until the capture client is
+             * empty, then go back to waiting on the event. */
+            for (;;) {
+                UINT32 next = 0;
+                if (FAILED(IAudioCaptureClient_GetNextPacketSize(s->capture_client, &next))) break;
+                if (next == 0) break;
+
+                BYTE* src = NULL;
+                UINT32 frames = 0;
+                DWORD  flags  = 0;
+                if (FAILED(IAudioCaptureClient_GetBuffer(s->capture_client, &src, &frames,
+                                                         &flags, NULL, NULL))) break;
+
+                /* Convert device(dst) -> guest(src) format and stash
+                 * in the ring for stream_get. Silent packets still
+                 * consume frames so timing stays sample-accurate. */
+                uint32_t in_bytes  = frames * bpf_dst;
+                uint32_t out_bytes = frames * bpf_src;
+                uint8_t  stk[4096];
+                uint8_t* out_buf = stk;
+                bool     heap = false;
+                if (out_bytes > sizeof(stk)) {
+                    out_buf = (uint8_t*)malloc(out_bytes);
+                    heap = (out_buf != NULL);
+                    if (!out_buf) {
+                        IAudioCaptureClient_ReleaseBuffer(s->capture_client, frames);
+                        continue;
+                    }
+                }
+
+                if (flags & 0x1 /* AUDCLNT_BUFFERFLAGS_SILENT */) {
+                    memset(out_buf, 0, out_bytes);
+                } else {
+                    /* convert_frames treats src/dst as (input, output);
+                     * we flip the roles so device format is "input". */
+                    convert_frames(&s->dst, &s->src, src, frames, out_buf);
+                }
+                (void)in_bytes;
+
+                /* Ring full → drop oldest to keep latency bounded
+                 * (capture is producer-paced; no backpressure signal
+                 * back to the device). */
+                uint32_t free_bytes = ring_free_space(&s->ring);
+                if (free_bytes < out_bytes) {
+                    uint32_t drop = out_bytes - free_bytes;
+                    uint8_t  sink[1024];
+                    while (drop > 0) {
+                        uint32_t n = drop > sizeof(sink) ? (uint32_t)sizeof(sink) : drop;
+                        uint32_t r = ring_read(&s->ring, sink, n);
+                        if (r == 0) break;
+                        drop -= r;
+                    }
+                }
+                ring_write(&s->ring, out_buf, out_bytes);
+
+                IAudioCaptureClient_ReleaseBuffer(s->capture_client, frames);
+                if (heap) free(out_buf);
+            }
         }
-        IAudioRenderClient_ReleaseBuffer(s->render_client, avail_frames, flags);
     }
 
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
@@ -549,13 +612,14 @@ void wapi_plat_audio_stream_destroy(wapi_plat_audio_stream_t* s) {
 bool wapi_plat_audio_stream_bind(wapi_plat_audio_device_t* d,
                                  wapi_plat_audio_stream_t* s) {
     if (!d || !s || d->stream) return false;
-    if (d->is_capture) return false;
 
-    /* Device's actual format becomes our dst */
+    /* Device's actual format becomes our dst (what the endpoint
+     * consumes for playback, what it produces for capture). */
     waveformat_to_spec(d->mix_format, &s->dst);
 
-    /* Resize ring if bpf changed */
-    uint32_t bpf = bytes_per_frame(&s->dst);
+    /* Resize ring if bpf changed. For capture we size on src bytes/frame
+     * since the ring holds guest-format data. */
+    uint32_t bpf = d->is_capture ? bytes_per_frame(&s->src) : bytes_per_frame(&s->dst);
     if (bpf == 0) bpf = 8;
     uint32_t want = bpf * (uint32_t)s->dst.freq;
     if (s->ring.cap < want) {
@@ -564,8 +628,14 @@ bool wapi_plat_audio_stream_bind(wapi_plat_audio_device_t* d,
     }
 
     if (FAILED(IAudioClient_SetEventHandle(d->audio_client, s->wake_event))) return false;
-    if (FAILED(IAudioClient_GetService(d->audio_client, &IID_IAudioRenderClient_local,
-                                       (void**)&s->render_client))) return false;
+
+    if (d->is_capture) {
+        if (FAILED(IAudioClient_GetService(d->audio_client, &IID_IAudioCaptureClient_local,
+                                           (void**)&s->capture_client))) return false;
+    } else {
+        if (FAILED(IAudioClient_GetService(d->audio_client, &IID_IAudioRenderClient_local,
+                                           (void**)&s->render_client))) return false;
+    }
 
     s->device = d;
     d->stream = s;
@@ -574,8 +644,8 @@ bool wapi_plat_audio_stream_bind(wapi_plat_audio_device_t* d,
     DWORD tid = 0;
     s->thread = CreateThread(NULL, 0, audio_worker, s, 0, &tid);
     if (!s->thread) {
-        IAudioRenderClient_Release(s->render_client);
-        s->render_client = NULL;
+        if (s->render_client)  { IAudioRenderClient_Release(s->render_client);  s->render_client  = NULL; }
+        if (s->capture_client) { IAudioCaptureClient_Release(s->capture_client); s->capture_client = NULL; }
         s->device = NULL;
         d->stream = NULL;
         return false;
@@ -599,6 +669,10 @@ void wapi_plat_audio_stream_unbind(wapi_plat_audio_stream_t* s) {
     if (s->render_client) {
         IAudioRenderClient_Release(s->render_client);
         s->render_client = NULL;
+    }
+    if (s->capture_client) {
+        IAudioCaptureClient_Release(s->capture_client);
+        s->capture_client = NULL;
     }
     if (s->device->stream == s) s->device->stream = NULL;
     s->device = NULL;
@@ -663,9 +737,11 @@ bool wapi_plat_audio_stream_put(wapi_plat_audio_stream_t* s, const void* data, i
 }
 
 int wapi_plat_audio_stream_get(wapi_plat_audio_stream_t* s, void* data, int len) {
-    /* Capture not implemented in phase 2 */
-    (void)s; (void)data; (void)len;
-    return 0;
+    if (!s || !data || len <= 0) return 0;
+    /* Capture path: ring holds guest-format (src) bytes produced by
+     * the worker. Playback streams have no data to return. */
+    if (!s->device || !s->device->is_capture) return 0;
+    return (int)ring_read(&s->ring, data, (uint32_t)len);
 }
 
 int wapi_plat_audio_stream_available(wapi_plat_audio_stream_t* s) {

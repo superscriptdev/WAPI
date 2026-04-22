@@ -334,6 +334,31 @@ static inline int32_t wapi_network_resolve(const wapi_io_t* io,
     return io->submit(io->impl, &op, 1);
 }
 
+/* ============================================================
+ * Capability Probe
+ * ============================================================
+ *
+ * Ask the host whether a CONNECT request with a given qualities
+ * bitmask will succeed. Pure query — no sockets opened, no backing
+ * libraries loaded, no side effects. Use this at startup to pick
+ * between transport options (e.g. "prefer QUIC, fall back to TLS")
+ * instead of try-and-fail via WAPI_IO_OP_CONNECT.
+ *
+ * Qualities carry the same WAPI_NET_* bits the CONNECT opcode
+ * accepts in its flags field.
+ *
+ * Returns 1 if the host can honour the combination, 0 if the
+ * combination maps to a concrete transport the host does not
+ * provide (e.g. QUIC on a machine without msquic), and
+ * WAPI_ERR_INVAL if the combination is self-contradictory
+ * (ordered without reliable, broadcast without framing, etc.) on
+ * every platform.
+ *
+ * Wasm signature: (i32) -> i32
+ */
+WAPI_IMPORT(wapi_network, qualities_supported)
+int32_t wapi_net_qualities_supported(uint32_t qualities);
+
 #ifdef __cplusplus
 }
 #endif

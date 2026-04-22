@@ -1161,3 +1161,32 @@ void wapi_host_register_crypto(wasmtime_linker_t* linker) {
     (void)cb_encrypt; (void)cb_decrypt; (void)cb_sign; (void)cb_verify;
     (void)cb_derive_key;
 }
+
+/* ============================================================
+ * Async I/O op handlers (WAPI_IO_OP_CRYPTO_HASH)
+ * ============================================================
+ * One-shot hash op: flags = wapi_hash_algo_t, addr/len = input bytes,
+ * addr2/len2 = output digest buffer. result = digest bytes written.
+ */
+
+void wapi_host_crypto_hash_op(op_ctx_t* c) {
+    uint32_t algo = c->flags;
+    if (!hash_algo_valid(algo)) { c->result = WAPI_ERR_INVAL; return; }
+    uint32_t dsize = hash_digest_size(algo);
+
+    const uint8_t* data = c->len
+        ? (const uint8_t*)wapi_wasm_ptr((uint32_t)c->addr, (uint32_t)c->len)
+        : NULL;
+    if (c->len > 0 && !data) { c->result = WAPI_ERR_INVAL; return; }
+
+    if (c->len2 < dsize) { c->result = WAPI_ERR_OVERFLOW; return; }
+    uint8_t* out = (uint8_t*)wapi_wasm_ptr((uint32_t)c->addr2, (uint32_t)c->len2);
+    if (!out) { c->result = WAPI_ERR_INVAL; return; }
+
+    if (platform_hash(algo, data ? data : (const uint8_t*)"", (size_t)c->len,
+                      out, (size_t)c->len2) != 0) {
+        c->result = WAPI_ERR_IO;
+        return;
+    }
+    c->result = (int32_t)dsize;
+}

@@ -45,6 +45,91 @@
 #pragma comment(lib, "shell32")
 #pragma comment(lib, "winmm")
 
+/* WM_POINTER / RegisterTouchWindow / pointer_* require Win8+ headers. */
+#ifndef WM_POINTERDOWN
+#define WM_POINTERDOWN           0x0246
+#define WM_POINTERUP             0x0247
+#define WM_POINTERUPDATE         0x0245
+#define WM_POINTERENTER          0x0249
+#define WM_POINTERLEAVE          0x024A
+#define WM_POINTERCAPTURECHANGED 0x024C
+#endif
+#ifndef TOUCHEVENTF_MOVE
+#define TOUCHEVENTF_MOVE     0x0001
+#define TOUCHEVENTF_DOWN     0x0002
+#define TOUCHEVENTF_UP       0x0004
+#define TOUCHEVENTF_INRANGE  0x0008
+#define TOUCHEVENTF_PRIMARY  0x0010
+#define TOUCHEVENTF_NOCOALESCE 0x0020
+#define TOUCHEVENTF_PEN      0x0040
+#define TOUCHEVENTF_PALM     0x0080
+typedef struct tagTOUCHINPUT {
+    LONG      x;
+    LONG      y;
+    HANDLE    hSource;
+    DWORD     dwID;
+    DWORD     dwFlags;
+    DWORD     dwMask;
+    DWORD     dwTime;
+    ULONG_PTR dwExtraInfo;
+    DWORD     cxContact;
+    DWORD     cyContact;
+} TOUCHINPUT, *PTOUCHINPUT;
+typedef TOUCHINPUT const * PCTOUCHINPUT;
+#define TOUCH_COORD_TO_PIXEL(l) ((l) / 100)
+#endif
+
+/* Pointer / pen info — use our own struct layout and cast to the
+ * SDK type at the call site. Mirrors <winuser.h>
+ * (POINTER_INFO + POINTER_PEN_INFO) per Win10 SDK; we only read
+ * what we care about. */
+#define WAPI_PT_POINTER 1
+#define WAPI_PT_TOUCH   2
+#define WAPI_PT_PEN     3
+#define WAPI_PT_MOUSE   4
+
+#define WAPI_PEN_FLAG_BARREL    0x00000001
+#define WAPI_PEN_FLAG_INVERTED  0x00000002
+#define WAPI_PEN_FLAG_ERASER    0x00000004
+
+#define WAPI_PEN_MASK_PRESSURE  0x00000001
+#define WAPI_PEN_MASK_ROTATION  0x00000002
+#define WAPI_PEN_MASK_TILT_X    0x00000004
+#define WAPI_PEN_MASK_TILT_Y    0x00000008
+
+typedef struct wapi_pointer_info_win_t {
+    UINT32       pointerType;
+    UINT32       pointerId;
+    UINT32       frameId;
+    UINT32       pointerFlags;
+    HANDLE       sourceDevice;
+    HWND         hwndTarget;
+    POINT        ptPixelLocation;
+    POINT        ptHimetricLocation;
+    POINT        ptPixelLocationRaw;
+    POINT        ptHimetricLocationRaw;
+    DWORD        dwTime;
+    UINT32       historyCount;
+    INT32        inputData;
+    DWORD        dwKeyStates;
+    UINT64       PerformanceCount;
+    INT          ButtonChangeType;
+} wapi_pointer_info_win_t;
+
+typedef struct wapi_pointer_pen_info_win_t {
+    wapi_pointer_info_win_t pointerInfo;
+    UINT32  penFlags;
+    UINT32  penMask;
+    UINT32  pressure;      /* 0..1024 */
+    UINT32  rotation;      /* 0..359 degrees */
+    INT32   tiltX;         /* -90..90 */
+    INT32   tiltY;         /* -90..90 */
+} wapi_pointer_pen_info_win_t;
+
+#ifndef GET_POINTERID_WPARAM
+#define GET_POINTERID_WPARAM(w) ((UINT32)(LOWORD(w)))
+#endif
+
 /* ============================================================
  * Storage
  * ============================================================ */
@@ -88,7 +173,35 @@ struct wapi_plat_window_t {
     uint32_t      preedit_seg_count;
     POINT         ime_candidate_pt;  /* client-space anchor */
     bool          ime_candidate_set;
+
+    /* Drop-target side-store. The last WM_DROPFILES payload is kept
+     * on the window until the host drains it via
+     * wapi_plat_window_drop_payload. Overwritten on each drop. */
+    bool          drop_enabled;
+    char*         drop_payload;      /* heap-allocated URI list; LF-separated */
+    size_t        drop_payload_len;
+    float         drop_point_x;
+    float         drop_point_y;
 };
+
+#define WAPI_WIN32_MAX_FINGERS 10
+#define WAPI_WIN32_MAX_HOTKEYS 64
+
+typedef struct touch_finger_t {
+    bool     active;
+    uint32_t os_id;          /* TOUCHINPUT.dwID / POINTER pointerId  */
+    int32_t  finger_idx;     /* stable slot index 0..MAX_FINGERS-1   */
+    float    norm_x, norm_y; /* screen-normalized 0..1 for raw query */
+    float    pressure;
+} touch_finger_t;
+
+typedef struct hotkey_slot_t {
+    bool     active;
+    uint32_t id;             /* guest-visible id   */
+    int      atom_id;        /* RegisterHotKey id (1..0xBFFF)       */
+    uint32_t mod_mask;       /* WAPI_KMOD_* for diag                 */
+    uint32_t scancode;       /* HID scancode for diag                */
+} hotkey_slot_t;
 
 typedef struct plat_state_t {
     /* Window pool (index 0 unused so id=0 means "none") */
@@ -114,6 +227,36 @@ typedef struct plat_state_t {
     /* Mouse (last known client-space position on the active window) */
     float    mouse_x, mouse_y;
     uint32_t mouse_buttons;
+
+    /* Touch tracking — active fingers across all windows */
+    touch_finger_t  fingers[WAPI_WIN32_MAX_FINGERS];
+    bool            touch_available;   /* SM_DIGITIZER query */
+    uint32_t        touch_max_fingers; /* SM_MAXIMUMTOUCHES  */
+
+    /* Pen tracking — last known state */
+    bool     pen_active;
+    bool     pen_in_range;
+    uint32_t pen_tool;            /* 0=pen, 1=eraser */
+    float    pen_x, pen_y;        /* surface-pixel   */
+    float    pen_pressure;
+    float    pen_tilt_x, pen_tilt_y;
+    float    pen_twist;
+    float    pen_distance;
+    uint32_t pen_capabilities;    /* bitmask of (1 << wapi_pen_axis_t) */
+
+    /* Hotkeys */
+    hotkey_slot_t hotkeys[WAPI_WIN32_MAX_HOTKEYS];
+    int           hotkeys_next_atom; /* next RegisterHotKey id to try */
+
+    /* Dynamically-resolved Win8+ entry points */
+    BOOL (WINAPI *fn_RegisterTouchWindow)(HWND, ULONG);
+    BOOL (WINAPI *fn_UnregisterTouchWindow)(HWND);
+    BOOL (WINAPI *fn_GetTouchInputInfo)(HANDLE, UINT, PTOUCHINPUT, int);
+    BOOL (WINAPI *fn_CloseTouchInputHandle)(HANDLE);
+    BOOL (WINAPI *fn_EnableMouseInPointer)(BOOL);
+    BOOL (WINAPI *fn_GetPointerType)(UINT32, UINT32*);
+    BOOL (WINAPI *fn_GetPointerPenInfo)(UINT32, wapi_pointer_pen_info_win_t*);
+    BOOL (WINAPI *fn_GetPointerInfo)(UINT32, wapi_pointer_info_win_t*);
 
     /* Win32 window class */
     ATOM   wclass_atom;
@@ -163,10 +306,19 @@ static void ev_push(const wapi_plat_event_t* ev) {
     g.ev_count++;
 }
 
-/* Exposed to sibling TUs in platform/win32 (gamepad, audio) for
- * event injection and timestamping. */
+/* Exposed to sibling TUs in platform/win32 (gamepad, audio, menu/tray)
+ * for event injection and timestamping. */
 void wapi_plat_win32_push_event(const wapi_plat_event_t* ev) { ev_push(ev); }
 uint64_t wapi_plat_win32_now_ns(void)                        { return now_ns(); }
+
+/* Forward decl — defined alongside the clipboard section below. The
+ * WM_DROPFILES handler in wndproc needs it. */
+static size_t hdrop_to_uri_list(HDROP hdrop, char* out, size_t out_cap);
+
+/* Implemented in wapi_plat_win32_menu.c. Returns true if the command
+ * id was a registered menu/tray item (in which case an event has
+ * been queued); false lets DefWindowProc handle it. */
+bool wapi_plat_win32_menu_dispatch_command(uint32_t id);
 
 /* Forward decl — implemented in wapi_plat_win32_gamepad.c. */
 void wapi_plat_win32_gamepad_poll(void);
@@ -289,6 +441,55 @@ static uint32_t win32_lparam_to_hid(LPARAM lParam, WPARAM vk) {
 
     uint32_t idx = (ext << 7) | (scan & 0x7F);
     return kWinPS2ToHid[idx];
+}
+
+/* HID Usage Page 0x07 scancode -> Win32 VK_. 0 = unmapped.
+ * Used by wapi_plat_hotkey_register to convert guest-supplied
+ * HID scancodes into RegisterHotKey's VK parameter. */
+static const uint16_t kHidToVk[256] = {
+    [0x04]='A', [0x05]='B', [0x06]='C', [0x07]='D', [0x08]='E',
+    [0x09]='F', [0x0A]='G', [0x0B]='H', [0x0C]='I', [0x0D]='J',
+    [0x0E]='K', [0x0F]='L', [0x10]='M', [0x11]='N', [0x12]='O',
+    [0x13]='P', [0x14]='Q', [0x15]='R', [0x16]='S', [0x17]='T',
+    [0x18]='U', [0x19]='V', [0x1A]='W', [0x1B]='X', [0x1C]='Y',
+    [0x1D]='Z',
+    [0x1E]='1', [0x1F]='2', [0x20]='3', [0x21]='4', [0x22]='5',
+    [0x23]='6', [0x24]='7', [0x25]='8', [0x26]='9', [0x27]='0',
+    [0x28]=VK_RETURN, [0x29]=VK_ESCAPE, [0x2A]=VK_BACK,
+    [0x2B]=VK_TAB,    [0x2C]=VK_SPACE,  [0x2D]=VK_OEM_MINUS,
+    [0x2E]=VK_OEM_PLUS, [0x2F]=VK_OEM_4, [0x30]=VK_OEM_6,
+    [0x31]=VK_OEM_5,    [0x33]=VK_OEM_1, [0x34]=VK_OEM_7,
+    [0x35]=VK_OEM_3,    [0x36]=VK_OEM_COMMA,
+    [0x37]=VK_OEM_PERIOD, [0x38]=VK_OEM_2,
+    [0x39]=VK_CAPITAL,
+    [0x3A]=VK_F1,  [0x3B]=VK_F2,  [0x3C]=VK_F3,  [0x3D]=VK_F4,
+    [0x3E]=VK_F5,  [0x3F]=VK_F6,  [0x40]=VK_F7,  [0x41]=VK_F8,
+    [0x42]=VK_F9,  [0x43]=VK_F10, [0x44]=VK_F11, [0x45]=VK_F12,
+    [0x46]=VK_SNAPSHOT, [0x47]=VK_SCROLL, [0x48]=VK_PAUSE,
+    [0x49]=VK_INSERT,   [0x4A]=VK_HOME,   [0x4B]=VK_PRIOR,
+    [0x4C]=VK_DELETE,   [0x4D]=VK_END,    [0x4E]=VK_NEXT,
+    [0x4F]=VK_RIGHT,    [0x50]=VK_LEFT,   [0x51]=VK_DOWN,
+    [0x52]=VK_UP,
+    [0x53]=VK_NUMLOCK,
+    [0x54]=VK_DIVIDE, [0x55]=VK_MULTIPLY, [0x56]=VK_SUBTRACT,
+    [0x57]=VK_ADD,    [0x58]=VK_RETURN,
+    [0x59]=VK_NUMPAD1,[0x5A]=VK_NUMPAD2,  [0x5B]=VK_NUMPAD3,
+    [0x5C]=VK_NUMPAD4,[0x5D]=VK_NUMPAD5,  [0x5E]=VK_NUMPAD6,
+    [0x5F]=VK_NUMPAD7,[0x60]=VK_NUMPAD8,  [0x61]=VK_NUMPAD9,
+    [0x62]=VK_NUMPAD0,[0x63]=VK_DECIMAL,
+    [0xE0]=VK_LCONTROL,[0xE1]=VK_LSHIFT,[0xE2]=VK_LMENU,[0xE3]=VK_LWIN,
+    [0xE4]=VK_RCONTROL,[0xE5]=VK_RSHIFT,[0xE6]=VK_RMENU,[0xE7]=VK_RWIN,
+};
+
+/* WAPI_KMOD_* bits -> RegisterHotKey fsModifiers. Left/right variants
+ * collapse to the side-agnostic MOD_*, matching Win32's behavior. */
+static UINT wapi_mod_to_winmod(uint32_t wapi_mod) {
+    UINT m = 0;
+    if (wapi_mod & (0x0001 | 0x0002)) m |= MOD_SHIFT;
+    if (wapi_mod & (0x0040 | 0x0080)) m |= MOD_CONTROL;
+    if (wapi_mod & (0x0100 | 0x0200)) m |= MOD_ALT;
+    if (wapi_mod & (0x0400 | 0x0800)) m |= MOD_WIN;
+    return m;
 }
 
 /* ============================================================
@@ -847,6 +1048,56 @@ static LRESULT CALLBACK wapi_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         return 0;
     }
 
+    case WM_COMMAND: {
+        /* HIWORD(wp)==0 = menu, ==1 = accelerator, else control
+         * notification. We only care about menu clicks here. */
+        if (HIWORD(wp) == 0) {
+            uint32_t id = (uint32_t)LOWORD(wp);
+            if (wapi_plat_win32_menu_dispatch_command(id)) return 0;
+        }
+        break;
+    }
+
+    case WM_DROPFILES: {
+        if (!w) break;
+        HDROP drop = (HDROP)wp;
+
+        /* Drop point in client coords. */
+        POINT pt;
+        if (DragQueryPoint(drop, &pt) == 0) {
+            /* Point was outside the client rect; still deliver, at 0,0. */
+            pt.x = 0; pt.y = 0;
+        }
+
+        /* Build the text/uri-list payload. Reuse the clipboard
+         * helper so CF_HDROP and WM_DROPFILES share one path. */
+        size_t need = hdrop_to_uri_list(drop, NULL, 0);
+        if (need > 0) {
+            free(w->drop_payload);
+            w->drop_payload = (char*)malloc(need);
+            if (w->drop_payload) {
+                hdrop_to_uri_list(drop, w->drop_payload, need);
+                w->drop_payload_len = need;
+            } else {
+                w->drop_payload_len = 0;
+            }
+        }
+        w->drop_point_x = (float)pt.x;
+        w->drop_point_y = (float)pt.y;
+        DragFinish(drop);
+
+        wapi_plat_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = WAPI_PLAT_EV_DROP_FILES;
+        ev.window_id = w->id;
+        ev.timestamp_ns = now_ns();
+        ev.u.drop.x = w->drop_point_x;
+        ev.u.drop.y = w->drop_point_y;
+        ev.u.drop.payload_bytes = (uint32_t)w->drop_payload_len;
+        ev_push(&ev);
+        return 0;
+    }
+
     case WM_IME_SETCONTEXT:
         /* Hide the system candidate window when we own placement (we
          * already positioned it via ImmSetCandidateWindow). Mask off
@@ -858,6 +1109,145 @@ static LRESULT CALLBACK wapi_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                             (ISC_SHOWUICANDIDATEWINDOW << 3));
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
+
+    case 0x0240 /* WM_TOUCH */: {
+        if (!w || !g.fn_GetTouchInputInfo || !g.fn_CloseTouchInputHandle) break;
+        UINT count = LOWORD(wp);
+        if (count == 0) break;
+        if (count > WAPI_WIN32_MAX_FINGERS) count = WAPI_WIN32_MAX_FINGERS;
+        TOUCHINPUT inputs[WAPI_WIN32_MAX_FINGERS];
+        if (!g.fn_GetTouchInputInfo((HANDLE)lp, count, inputs, sizeof(TOUCHINPUT))) break;
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int cw = rc.right - rc.left; if (cw <= 0) cw = 1;
+        int ch = rc.bottom - rc.top; if (ch <= 0) ch = 1;
+
+        /* Screen dimensions for device-normalized coords */
+        int sw = GetSystemMetrics(SM_CXSCREEN); if (sw <= 0) sw = 1;
+        int sh = GetSystemMetrics(SM_CYSCREEN); if (sh <= 0) sh = 1;
+
+        for (UINT i = 0; i < count; i++) {
+            const TOUCHINPUT* ti = &inputs[i];
+            int px_screen_x = TOUCH_COORD_TO_PIXEL(ti->x);
+            int px_screen_y = TOUCH_COORD_TO_PIXEL(ti->y);
+            POINT pt = { px_screen_x, px_screen_y };
+            ScreenToClient(hwnd, &pt);
+
+            /* Find or allocate a finger slot keyed on OS dwID */
+            int slot = -1;
+            for (int k = 0; k < WAPI_WIN32_MAX_FINGERS; k++) {
+                if (g.fingers[k].active && g.fingers[k].os_id == ti->dwID) { slot = k; break; }
+            }
+            if (slot < 0 && (ti->dwFlags & TOUCHEVENTF_DOWN)) {
+                for (int k = 0; k < WAPI_WIN32_MAX_FINGERS; k++) {
+                    if (!g.fingers[k].active) {
+                        g.fingers[k].active = true;
+                        g.fingers[k].os_id = ti->dwID;
+                        g.fingers[k].finger_idx = k;
+                        slot = k;
+                        break;
+                    }
+                }
+            }
+            if (slot < 0) continue;
+
+            float prev_x = g.fingers[slot].norm_x;
+            float prev_y = g.fingers[slot].norm_y;
+            float norm_x = (float)px_screen_x / (float)sw;
+            float norm_y = (float)px_screen_y / (float)sh;
+            g.fingers[slot].norm_x = norm_x;
+            g.fingers[slot].norm_y = norm_y;
+            g.fingers[slot].pressure = (ti->dwFlags & TOUCHEVENTF_UP) ? 0.0f : 1.0f;
+
+            wapi_plat_event_t ev; memset(&ev, 0, sizeof(ev));
+            if      (ti->dwFlags & TOUCHEVENTF_DOWN) ev.type = WAPI_PLAT_EV_FINGER_DOWN;
+            else if (ti->dwFlags & TOUCHEVENTF_UP)   ev.type = WAPI_PLAT_EV_FINGER_UP;
+            else                                     ev.type = WAPI_PLAT_EV_FINGER_MOTION;
+            ev.window_id = w->id;
+            ev.timestamp_ns = now_ns();
+            ev.u.touch.touch_id  = 1;              /* aggregate touch device */
+            ev.u.touch.finger_id = (uint64_t)g.fingers[slot].finger_idx;
+            ev.u.touch.x = (float)pt.x;
+            ev.u.touch.y = (float)pt.y;
+            ev.u.touch.dx = (norm_x - prev_x) * (float)cw;
+            ev.u.touch.dy = (norm_y - prev_y) * (float)ch;
+            ev.u.touch.pressure = g.fingers[slot].pressure;
+            ev_push(&ev);
+
+            if (ti->dwFlags & TOUCHEVENTF_UP) {
+                g.fingers[slot].active = false;
+                g.fingers[slot].os_id = 0;
+            }
+        }
+        g.fn_CloseTouchInputHandle((HANDLE)lp);
+        return 0;
+    }
+
+    case WM_POINTERDOWN:
+    case WM_POINTERUP:
+    case WM_POINTERUPDATE: {
+        if (!w || !g.fn_GetPointerType || !g.fn_GetPointerPenInfo) break;
+        UINT32 pid = GET_POINTERID_WPARAM(wp);
+        UINT32 ptype = 0;
+        if (!g.fn_GetPointerType(pid, &ptype)) break;
+        if (ptype != WAPI_PT_PEN) break; /* touch is covered by WM_TOUCH */
+
+        wapi_pointer_pen_info_win_t pen; memset(&pen, 0, sizeof(pen));
+        if (!g.fn_GetPointerPenInfo(pid, &pen)) break;
+
+        POINT pt = pen.pointerInfo.ptPixelLocation;
+        ScreenToClient(hwnd, &pt);
+
+        bool eraser  = (pen.penFlags & WAPI_PEN_FLAG_ERASER) != 0 ||
+                       (pen.penFlags & WAPI_PEN_FLAG_INVERTED) != 0;
+        bool barrel  = (pen.penFlags & WAPI_PEN_FLAG_BARREL) != 0;
+        float pressure = (pen.penMask & WAPI_PEN_MASK_PRESSURE)
+                       ? (float)pen.pressure / 1024.0f : 0.5f;
+        float tilt_x  = (pen.penMask & WAPI_PEN_MASK_TILT_X)
+                       ? (float)pen.tiltX / 90.0f : 0.0f;
+        float tilt_y  = (pen.penMask & WAPI_PEN_MASK_TILT_Y)
+                       ? (float)pen.tiltY / 90.0f : 0.0f;
+        float twist   = (pen.penMask & WAPI_PEN_MASK_ROTATION)
+                       ? (float)pen.rotation * (6.2831853f / 360.0f) : 0.0f;
+
+        uint32_t caps = 0;
+        if (pen.penMask & WAPI_PEN_MASK_PRESSURE) caps |= (1u << 0); /* PRESSURE */
+        if (pen.penMask & WAPI_PEN_MASK_TILT_X)   caps |= (1u << 1); /* TILT_X   */
+        if (pen.penMask & WAPI_PEN_MASK_TILT_Y)   caps |= (1u << 2); /* TILT_Y   */
+        if (pen.penMask & WAPI_PEN_MASK_ROTATION) caps |= (1u << 3); /* ROTATION */
+
+        g.pen_active    = (msg != WM_POINTERUP);
+        g.pen_in_range  = g.pen_active;
+        g.pen_tool      = eraser ? 1u : 0u;
+        g.pen_x         = (float)pt.x;
+        g.pen_y         = (float)pt.y;
+        g.pen_pressure  = pressure;
+        g.pen_tilt_x    = tilt_x;
+        g.pen_tilt_y    = tilt_y;
+        g.pen_twist     = twist;
+        g.pen_distance  = 0.0f;
+        g.pen_capabilities = caps;
+
+        wapi_plat_event_t ev; memset(&ev, 0, sizeof(ev));
+        if      (msg == WM_POINTERDOWN) ev.type = WAPI_PLAT_EV_PEN_DOWN;
+        else if (msg == WM_POINTERUP)   ev.type = WAPI_PLAT_EV_PEN_UP;
+        else                            ev.type = WAPI_PLAT_EV_PEN_MOTION;
+        ev.window_id = w->id;
+        ev.timestamp_ns = now_ns();
+        ev.u.pen.pen_id    = 1;
+        ev.u.pen.tool_type = eraser ? 1 : 0;
+        ev.u.pen.button    = barrel ? 1 : 0;
+        ev.u.pen.x         = (float)pt.x;
+        ev.u.pen.y         = (float)pt.y;
+        ev.u.pen.pressure  = pressure;
+        ev.u.pen.tilt_x    = tilt_x;
+        ev.u.pen.tilt_y    = tilt_y;
+        ev.u.pen.twist     = twist;
+        ev.u.pen.distance  = 0.0f;
+        ev_push(&ev);
+        return 0;
+    }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -932,6 +1322,37 @@ bool wapi_plat_init(void) {
     /* Wake event */
     g.wake_event = CreateEventW(NULL, FALSE /* auto-reset */, FALSE, NULL);
 
+    /* Dynamically resolve Win8+ input APIs; fall back silently when
+     * missing so core windowing keeps working on older / stripped
+     * Windows images. */
+    if (user32) {
+        g.fn_RegisterTouchWindow   = (BOOL (WINAPI*)(HWND, ULONG))            GetProcAddress(user32, "RegisterTouchWindow");
+        g.fn_UnregisterTouchWindow = (BOOL (WINAPI*)(HWND))                   GetProcAddress(user32, "UnregisterTouchWindow");
+        g.fn_GetTouchInputInfo     = (BOOL (WINAPI*)(HANDLE, UINT, PTOUCHINPUT, int)) GetProcAddress(user32, "GetTouchInputInfo");
+        g.fn_CloseTouchInputHandle = (BOOL (WINAPI*)(HANDLE))                 GetProcAddress(user32, "CloseTouchInputHandle");
+        g.fn_EnableMouseInPointer  = (BOOL (WINAPI*)(BOOL))                   GetProcAddress(user32, "EnableMouseInPointer");
+        g.fn_GetPointerType        = (BOOL (WINAPI*)(UINT32, UINT32*))        GetProcAddress(user32, "GetPointerType");
+        g.fn_GetPointerPenInfo     = (BOOL (WINAPI*)(UINT32, wapi_pointer_pen_info_win_t*)) GetProcAddress(user32, "GetPointerPenInfo");
+        g.fn_GetPointerInfo        = (BOOL (WINAPI*)(UINT32, wapi_pointer_info_win_t*)) GetProcAddress(user32, "GetPointerInfo");
+    }
+
+    /* Touch availability: SM_DIGITIZER bit 0 = NID_INTEGRATED_TOUCH, bit 1 = NID_EXTERNAL_TOUCH. */
+    int digi = GetSystemMetrics(94 /* SM_DIGITIZER */);
+    g.touch_available   = (g.fn_RegisterTouchWindow && (digi & 0x03)) ? true : false;
+    int maxfingers = GetSystemMetrics(95 /* SM_MAXIMUMTOUCHES */);
+    if (maxfingers < 0) maxfingers = 0;
+    if (maxfingers > WAPI_WIN32_MAX_FINGERS) maxfingers = WAPI_WIN32_MAX_FINGERS;
+    g.touch_max_fingers = (uint32_t)maxfingers;
+
+    /* Route pen/touch through the pointer stack so WM_POINTER* arrives
+     * for pens; touch keeps going through WM_TOUCH since we register
+     * those windows explicitly. Best-effort: some sessions reject this. */
+    if (g.fn_EnableMouseInPointer) {
+        g.fn_EnableMouseInPointer(TRUE);
+    }
+
+    g.hotkeys_next_atom = 1;
+
     g.next_window_id = 0;
     g.initialized = true;
     return true;
@@ -940,9 +1361,20 @@ bool wapi_plat_init(void) {
 void wapi_plat_shutdown(void) {
     if (!g.initialized) return;
 
+    /* Release any live global hotkeys before the thread message pump goes away. */
+    for (int i = 0; i < WAPI_WIN32_MAX_HOTKEYS; i++) {
+        if (g.hotkeys[i].active) {
+            UnregisterHotKey(NULL, g.hotkeys[i].atom_id);
+            g.hotkeys[i].active = false;
+        }
+    }
+
     /* Destroy all windows */
     for (int i = 1; i < WAPI_WIN32_MAX_WINDOWS; i++) {
         if (g.windows[i].hwnd) {
+            if (g.touch_available && g.fn_UnregisterTouchWindow) {
+                g.fn_UnregisterTouchWindow(g.windows[i].hwnd);
+            }
             DestroyWindow(g.windows[i].hwnd);
             win_free(&g.windows[i]);
         }
@@ -1018,6 +1450,24 @@ static void drain_messages(void) {
             ev.type = WAPI_PLAT_EV_QUIT;
             ev.timestamp_ns = now_ns();
             ev_push(&ev);
+            continue;
+        }
+        if (m.message == WM_HOTKEY) {
+            /* wParam is the RegisterHotKey atom id; map back to the
+             * guest-visible id through our table so modules never see
+             * raw Win32 ids. */
+            int atom_id = (int)m.wParam;
+            for (int i = 0; i < WAPI_WIN32_MAX_HOTKEYS; i++) {
+                if (g.hotkeys[i].active && g.hotkeys[i].atom_id == atom_id) {
+                    wapi_plat_event_t ev; memset(&ev, 0, sizeof(ev));
+                    ev.type = WAPI_PLAT_EV_HOTKEY;
+                    ev.window_id = 0;
+                    ev.timestamp_ns = now_ns();
+                    ev.u.hotkey.hotkey_id = g.hotkeys[i].id;
+                    ev_push(&ev);
+                    break;
+                }
+            }
             continue;
         }
         TranslateMessage(&m);
@@ -1166,6 +1616,172 @@ bool wapi_plat_clipboard_set_text(const char* utf8, size_t len) {
     return true;
 }
 
+/* Image clipboard (CF_DIB).
+ * Windows stores device-independent bitmap *contents* (BITMAPINFOHEADER
+ * + palette + pixels) without the 14-byte BITMAPFILEHEADER. We produce
+ * a standalone BMP by prefixing a file header when reading, and strip
+ * it when writing. */
+
+bool wapi_plat_clipboard_has_image(void) {
+    return IsClipboardFormatAvailable(CF_DIB) ? true : false;
+}
+
+size_t wapi_plat_clipboard_get_image(void* out, size_t out_len) {
+    if (!OpenClipboard(NULL)) return 0;
+    HANDLE h = GetClipboardData(CF_DIB);
+    if (!h) { CloseClipboard(); return 0; }
+    BITMAPINFOHEADER* bih = (BITMAPINFOHEADER*)GlobalLock(h);
+    if (!bih) { CloseClipboard(); return 0; }
+    size_t dib_size = GlobalSize(h);
+    if (dib_size < sizeof(BITMAPINFOHEADER)) {
+        GlobalUnlock(h); CloseClipboard(); return 0;
+    }
+
+    /* Compute palette + pixel offset within the DIB. */
+    size_t hdr = bih->biSize;
+    size_t pal = 0;
+    if (bih->biBitCount <= 8) {
+        DWORD n = bih->biClrUsed ? bih->biClrUsed : (1u << bih->biBitCount);
+        pal = (size_t)n * sizeof(RGBQUAD);
+    } else if (bih->biCompression == BI_BITFIELDS) {
+        pal = 3 * sizeof(DWORD);
+    }
+    size_t total = 14 /* BITMAPFILEHEADER */ + dib_size;
+
+    if (out && out_len > 0) {
+        size_t copy = total < out_len ? total : out_len;
+        uint8_t* dst = (uint8_t*)out;
+        if (copy >= 14) {
+            /* BITMAPFILEHEADER: 'BM', size (total), reserved, pixel offset */
+            dst[0] = 'B'; dst[1] = 'M';
+            uint32_t sz = (uint32_t)total;
+            memcpy(dst + 2, &sz, 4);
+            uint32_t zero = 0;
+            memcpy(dst + 6, &zero, 4);
+            uint32_t pix_off = 14 + (uint32_t)(hdr + pal);
+            memcpy(dst + 10, &pix_off, 4);
+            size_t body = copy - 14;
+            if (body > dib_size) body = dib_size;
+            memcpy(dst + 14, bih, body);
+        } else {
+            memset(dst, 0, copy);
+        }
+    }
+    GlobalUnlock(h);
+    CloseClipboard();
+    return total;
+}
+
+bool wapi_plat_clipboard_set_image(const void* bmp_file, size_t len) {
+    if (!bmp_file || len < 14 + sizeof(BITMAPINFOHEADER)) return false;
+    const uint8_t* p = (const uint8_t*)bmp_file;
+    if (p[0] != 'B' || p[1] != 'M') return false;
+    size_t dib_size = len - 14;
+
+    HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, dib_size);
+    if (!hmem) return false;
+    void* dst = GlobalLock(hmem);
+    if (!dst) { GlobalFree(hmem); return false; }
+    memcpy(dst, p + 14, dib_size);
+    GlobalUnlock(hmem);
+
+    if (!OpenClipboard(NULL)) { GlobalFree(hmem); return false; }
+    EmptyClipboard();
+    if (!SetClipboardData(CF_DIB, hmem)) {
+        GlobalFree(hmem); CloseClipboard(); return false;
+    }
+    CloseClipboard();
+    return true;
+}
+
+/* File clipboard (CF_HDROP).
+ * Win32 stores UTF-16 paths; we emit them as a text/uri-list of
+ * file:// URIs separated by CRLF, with percent-encoding applied to
+ * spaces and other reserved bytes. Path-to-URI encoding follows
+ * RFC 8089 for the "file" scheme. */
+
+static const char HEXCHARS[] = "0123456789ABCDEF";
+
+/* Percent-encode a UTF-8 path chunk into `out`, returning bytes
+ * written. `out_cap` caps the write; returns the byte count that
+ * WOULD have been written when `out`/`out_cap` are NULL/0. */
+static size_t uri_encode(const char* utf8, size_t len, char* out, size_t out_cap) {
+    size_t w = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)utf8[i];
+        bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9') ||
+                    c == '-' || c == '_' || c == '.' || c == '~' ||
+                    c == '/';
+        if (safe) {
+            if (out && w < out_cap) out[w] = (char)c;
+            w++;
+        } else {
+            if (out && w + 2 < out_cap) {
+                out[w + 0] = '%';
+                out[w + 1] = HEXCHARS[(c >> 4) & 0xF];
+                out[w + 2] = HEXCHARS[c & 0xF];
+            }
+            w += 3;
+        }
+    }
+    return w;
+}
+
+bool wapi_plat_clipboard_has_files(void) {
+    return IsClipboardFormatAvailable(CF_HDROP) ? true : false;
+}
+
+/* Build a text/uri-list from a CF_HDROP (or HDROP from WM_DROPFILES).
+ * Shared between wapi_plat_clipboard_get_files and the drop path. */
+static size_t hdrop_to_uri_list(HDROP hdrop, char* out, size_t out_cap) {
+    UINT n = DragQueryFileW(hdrop, 0xFFFFFFFF, NULL, 0);
+    size_t total = 0;
+    for (UINT i = 0; i < n; i++) {
+        UINT wlen = DragQueryFileW(hdrop, i, NULL, 0);
+        if (wlen == 0) continue;
+        WCHAR* wbuf = (WCHAR*)malloc((size_t)(wlen + 1) * sizeof(WCHAR));
+        if (!wbuf) continue;
+        DragQueryFileW(hdrop, i, wbuf, wlen + 1);
+
+        /* Normalize backslashes to forward slashes for the URI. */
+        for (UINT k = 0; k < wlen; k++) if (wbuf[k] == L'\\') wbuf[k] = L'/';
+
+        int u8len = WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen, NULL, 0, NULL, NULL);
+        if (u8len <= 0) { free(wbuf); continue; }
+        char* u8 = (char*)malloc((size_t)u8len);
+        if (!u8) { free(wbuf); continue; }
+        WideCharToMultiByte(CP_UTF8, 0, wbuf, wlen, u8, u8len, NULL, NULL);
+
+        /* "file:///" + percent-encoded path. Absolute Win32 paths start
+         * with a drive letter, so we prefix with three slashes to make
+         * a canonical file URI. */
+        const char* prefix = "file:///";
+        size_t plen = 8;
+        size_t enc_need = uri_encode(u8, (size_t)u8len, NULL, 0);
+
+        if (out && total + plen + enc_need + 2 <= out_cap) {
+            memcpy(out + total, prefix, plen);
+            uri_encode(u8, (size_t)u8len, out + total + plen, out_cap - (total + plen));
+            out[total + plen + enc_need + 0] = '\r';
+            out[total + plen + enc_need + 1] = '\n';
+        }
+        total += plen + enc_need + 2;
+
+        free(u8);
+        free(wbuf);
+    }
+    return total;
+}
+
+size_t wapi_plat_clipboard_get_files(char* out, size_t out_len) {
+    if (!OpenClipboard(NULL)) return 0;
+    HDROP h = (HDROP)GetClipboardData(CF_HDROP);
+    size_t total = h ? hdrop_to_uri_list(h, out, out_len) : 0;
+    CloseClipboard();
+    return total;
+}
+
 size_t wapi_plat_clipboard_get_text(char* out, size_t out_len) {
     if (!OpenClipboard(NULL)) return 0;
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
@@ -1243,6 +1859,14 @@ wapi_plat_window_t* wapi_plat_window_create(const wapi_plat_window_desc_t* desc)
         SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     }
 
+    /* Opt this window into WM_TOUCH delivery when the platform supports
+     * it. Fine-touch mode disables palm rejection so the backend can
+     * report palm flags via TOUCHEVENTF_PALM if needed; keep the default
+     * (coalesced) for now. */
+    if (g.touch_available && g.fn_RegisterTouchWindow) {
+        g.fn_RegisterTouchWindow(hwnd, 0);
+    }
+
     /* Text input disabled by default: detach the IMC */
     w->saved_imc = ImmAssociateContext(hwnd, NULL);
     w->text_input_on = false;
@@ -1260,6 +1884,9 @@ wapi_plat_window_t* wapi_plat_window_create(const wapi_plat_window_desc_t* desc)
 
 void wapi_plat_window_destroy(wapi_plat_window_t* w) {
     if (!w || !w->hwnd) return;
+    if (g.touch_available && g.fn_UnregisterTouchWindow) {
+        g.fn_UnregisterTouchWindow(w->hwnd);
+    }
     if (w->text_input_on && w->saved_imc) {
         ImmAssociateContext(w->hwnd, w->saved_imc);
     }
@@ -1267,8 +1894,39 @@ void wapi_plat_window_destroy(wapi_plat_window_t* w) {
         DestroyCursor(w->custom_cursor);
         w->custom_cursor = NULL;
     }
+    if (w->drop_payload) {
+        free(w->drop_payload);
+        w->drop_payload = NULL;
+        w->drop_payload_len = 0;
+    }
     DestroyWindow(w->hwnd);
     win_free(w);
+}
+
+/* ============================================================
+ * Drag-and-drop (external file drops via WM_DROPFILES)
+ * ============================================================ */
+
+bool wapi_plat_window_register_drop_target(wapi_plat_window_t* w) {
+    if (!w || !w->hwnd) return false;
+    DragAcceptFiles(w->hwnd, TRUE);
+    w->drop_enabled = true;
+    return true;
+}
+
+size_t wapi_plat_window_drop_payload(wapi_plat_window_t* w,
+                                     char* out, size_t out_len,
+                                     float* out_x, float* out_y)
+{
+    if (!w) return 0;
+    if (out_x) *out_x = w->drop_point_x;
+    if (out_y) *out_y = w->drop_point_y;
+    if (w->drop_payload_len == 0 || !w->drop_payload) return 0;
+    if (out && out_len > 0) {
+        size_t copy = w->drop_payload_len < out_len ? w->drop_payload_len : out_len;
+        memcpy(out, w->drop_payload, copy);
+    }
+    return w->drop_payload_len;
 }
 
 uint32_t wapi_plat_window_id(wapi_plat_window_t* w) {
@@ -1632,5 +2290,113 @@ void wapi_plat_window_ime_force_cancel(wapi_plat_window_t* w) {
     if (himc) {
         ImmNotifyIME(himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
         ImmReleaseContext(w->hwnd, himc);
+    }
+}
+
+/* ============================================================
+ * Touch / pen / hotkey accessors
+ * ============================================================ */
+
+bool wapi_plat_touch_available(void) { return g.touch_available; }
+
+uint32_t wapi_plat_touch_max_fingers(void) {
+    return g.touch_max_fingers ? g.touch_max_fingers : (uint32_t)WAPI_WIN32_MAX_FINGERS;
+}
+
+int wapi_plat_touch_finger_count(void) {
+    int n = 0;
+    for (int i = 0; i < WAPI_WIN32_MAX_FINGERS; i++) if (g.fingers[i].active) n++;
+    return n;
+}
+
+bool wapi_plat_touch_get_finger(int index, int32_t* out_finger_idx,
+                                float* out_x, float* out_y, float* out_pressure)
+{
+    int seen = 0;
+    for (int i = 0; i < WAPI_WIN32_MAX_FINGERS; i++) {
+        if (!g.fingers[i].active) continue;
+        if (seen == index) {
+            if (out_finger_idx) *out_finger_idx = g.fingers[i].finger_idx;
+            if (out_x)          *out_x          = g.fingers[i].norm_x;
+            if (out_y)          *out_y          = g.fingers[i].norm_y;
+            if (out_pressure)   *out_pressure   = g.fingers[i].pressure;
+            return true;
+        }
+        seen++;
+    }
+    return false;
+}
+
+bool wapi_plat_pen_available(void) { return g.fn_GetPointerPenInfo != NULL; }
+
+bool wapi_plat_pen_get_info(uint32_t* out_tool_type, uint32_t* out_caps_mask) {
+    if (out_tool_type) *out_tool_type = g.pen_tool;
+    if (out_caps_mask) *out_caps_mask = g.pen_capabilities;
+    return wapi_plat_pen_available();
+}
+
+bool wapi_plat_pen_get_axis(int axis, float* out_value) {
+    if (!out_value) return false;
+    switch (axis) {
+    case 0: *out_value = g.pen_pressure; return true;
+    case 1: *out_value = g.pen_tilt_x;   return true;
+    case 2: *out_value = g.pen_tilt_y;   return true;
+    case 3: *out_value = g.pen_twist;    return true;
+    case 4: *out_value = g.pen_distance; return true;
+    default: return false;
+    }
+}
+
+bool wapi_plat_pen_get_position(float* out_x, float* out_y) {
+    if (out_x) *out_x = g.pen_x;
+    if (out_y) *out_y = g.pen_y;
+    return wapi_plat_pen_available();
+}
+
+bool wapi_plat_hotkey_register(uint32_t id, uint32_t mod_mask, uint32_t hid_scancode) {
+    if (hid_scancode == 0 || hid_scancode >= 256) return false;
+    UINT vk = kHidToVk[hid_scancode];
+    if (vk == 0) return false;
+
+    /* Reuse existing slot if id is already registered (re-register). */
+    int slot = -1;
+    for (int i = 0; i < WAPI_WIN32_MAX_HOTKEYS; i++) {
+        if (g.hotkeys[i].active && g.hotkeys[i].id == id) { slot = i; break; }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < WAPI_WIN32_MAX_HOTKEYS; i++) {
+            if (!g.hotkeys[i].active) { slot = i; break; }
+        }
+    }
+    if (slot < 0) return false;
+
+    /* Unregister any prior binding on this slot before rebinding. */
+    if (g.hotkeys[slot].active) {
+        UnregisterHotKey(NULL, g.hotkeys[slot].atom_id);
+        g.hotkeys[slot].active = false;
+    }
+
+    /* Pick a fresh atom id (1..0xBFFF per RegisterHotKey contract). */
+    int atom = g.hotkeys_next_atom++;
+    if (g.hotkeys_next_atom > 0xBFFE) g.hotkeys_next_atom = 1;
+
+    UINT fs = wapi_mod_to_winmod(mod_mask) | MOD_NOREPEAT;
+    if (!RegisterHotKey(NULL, atom, fs, vk)) return false;
+
+    g.hotkeys[slot].active   = true;
+    g.hotkeys[slot].id       = id;
+    g.hotkeys[slot].atom_id  = atom;
+    g.hotkeys[slot].mod_mask = mod_mask;
+    g.hotkeys[slot].scancode = hid_scancode;
+    return true;
+}
+
+void wapi_plat_hotkey_unregister(uint32_t id) {
+    for (int i = 0; i < WAPI_WIN32_MAX_HOTKEYS; i++) {
+        if (g.hotkeys[i].active && g.hotkeys[i].id == id) {
+            UnregisterHotKey(NULL, g.hotkeys[i].atom_id);
+            memset(&g.hotkeys[i], 0, sizeof(g.hotkeys[i]));
+            return;
+        }
     }
 }

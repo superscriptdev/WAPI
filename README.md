@@ -4,6 +4,8 @@
 
 A capability-based ABI that turns WebAssembly into a universal application platform. One compilation target, one binary, runs everywhere. The host provides capabilities (graphics, audio, input, networking, filesystem) and the module uses them.
 
+> **Where this is going:** see [VISION.md](VISION.md) for the strategic picture — system runtime, browser extension, shared module cache across host types, and the staged path to native OS / browser adoption.
+
 ## What This Is
 
 A concrete proposal for the platform WebAssembly was supposed to enable: a thin, capability-based ABI where a single `.wasm` binary runs identically in a browser tab, on a desktop, on a phone, or on a server.
@@ -170,17 +172,30 @@ wapi/
 │       ├── wapi_thread.h
 │       └── wapi_process.h
 ├── runtime/
-│   └── browser/
-│       ├── wapi_shim.js        # JS host shim (~6k lines, all Web APIs)
-│       ├── bridge.js           # Module loader / linker
-│       ├── ready.js            # Boot sequencing
-│       ├── serve.js            # Local dev server
-│       ├── index.html          # HTML loader
-│       └── sw.js               # Service worker
+│   ├── browser/
+│   │   ├── wapi_shim.js        # JS host shim (~6k lines, all Web APIs)
+│   │   ├── bridge.js           # Module loader / linker
+│   │   ├── ready.js            # Boot sequencing
+│   │   ├── serve.js            # Local dev server
+│   │   ├── index.html          # HTML loader
+│   │   └── sw.js               # Service worker
+│   └── desktop/                # Native host (Windows today; Cocoa/Wayland stubbed)
+│       ├── CMakeLists.txt
+│       ├── build.bat           # vcvarsall + ninja wrapper
+│       └── src/
+│           ├── main.c
+│           ├── wapi_host_*.c   # One per capability (gpu, audio, io, …)
+│           └── platform/win32/ # Win32 / XInput / WASAPI backends
+├── bindings/c/
+│   └── wapi_reactor.c          # Guest-side io/allocator vtable shim
 └── examples/
     ├── hello_headless.c        # Headless preset demo
-    ├── hello_triangle.c        # Graphical preset demo
-    └── hello_audio.c           # Audio preset demo
+    ├── hello_triangle.c        # GPU + surface + input — desktop-verified
+    ├── hello_audio.c           # Audio preset demo
+    └── hello_game/             # Full showcase: GPU sprites + audio + gamepad
+        ├── game.c              #   + random + compression + module linking
+        ├── ai.c                # Child AI module, loaded at runtime
+        └── build.bat           # wasi-sdk clang → two .wasm files + ai_hash.h
 ```
 
 ## Quick Start
@@ -322,12 +337,15 @@ Both modules are *advisory*. The app remains in charge of pixels: it asks `wapi_
 
 ## Status
 
-This is an in-progress specification with one working host. The headers define the ABI surface; a conforming host implements these imported functions.
+This is an in-progress specification with two working hosts. The headers define the ABI surface; a conforming host implements these imported functions.
 
-- **Browser shim** — `runtime/browser/wapi_shim.js` (~6k lines) maps the imports to Web APIs (WebGPU, Web Audio, `fetch`, `DecompressionStream`, Pointer Events, etc.). It is the host used by the PanGui WAPI port and is the reference implementation that exercises the spec end-to-end.
-- **Native host** — not yet written. A minimal graphical host should be a weekend's work on top of Wasmtime + SDL3 + Dawn; the ABI is deliberately small enough that the missing pieces are integration glue, not design work.
+- **Browser shim** — `runtime/browser/wapi_shim.js` (~6k lines) maps the imports to Web APIs (WebGPU, Web Audio, `fetch`, `DecompressionStream`, Pointer Events, etc.). Reference implementation exercising the spec end-to-end.
+- **Desktop (Windows)** — `runtime/desktop/` is a native host built on Wasmtime C API v44 + wgpu-native v29. It implements the capabilities exercised by the bundled examples: `wapi` (core), `wapi_io_bridge`, `wapi_surface`, `wapi_window`, `wapi_input` (keyboard / mouse / XInput gamepad), `wapi_audio` (WASAPI), `wapi_env`, `wapi_random` (BCryptGenRandom), `wapi_clock`, `wapi_filesystem`, `wapi_module` (runtime library-mode linking with host-owned shared memory), `wapi_compression` (deflate/gzip via vendored miniz), and the full `env.wgpu*` surface needed for webgpu.h sprite pipelines. Cocoa and Wayland backends are sketched in `CMakeLists.txt` but not yet implemented.
+- **Examples**
+  - `hello_triangle.c` — spec-complete WebGPU triangle driven through the WAPI reactor shim. Desktop-verified.
+  - `hello_game/` — textured sprites, keyboard + gamepad, procedural audio, cryptographic RNG, a compressed atlas decompressed at startup, and a second wasm module (`ai.c`) loaded at runtime over the spec §10 host-shared-memory path. Desktop-verified.
 
-The spec, headers, and shim move together: when something is unclear in the header, the shim is the tiebreaker until the spec catches up.
+The spec, headers, browser shim, and desktop runtime move together: when something is unclear in the header, the running hosts are the tiebreakers until the spec catches up. See [NEXT_STEPS.md](NEXT_STEPS.md) for what's left across the repo (Windows → Web → interop → macOS/Linux), scoped against [VISION.md](VISION.md).
 
 ## License
 

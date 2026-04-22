@@ -111,21 +111,10 @@ WAPI_IMPORT(wapi_env, getenv)
 wapi_result_t wapi_env_getenv(wapi_stringview_t name,
                            char* buf, wapi_size_t buf_len, wapi_size_t* val_len);
 
-/* ============================================================
- * Cryptographic Random
- * ============================================================ */
-
-/**
- * Fill a buffer with cryptographically secure random bytes.
- *
- * @param buf  Buffer to fill.
- * @param len  Number of random bytes to generate.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i64) -> i32
- */
-WAPI_IMPORT(wapi_env, random_get)
-wapi_result_t wapi_env_random_get(void* buf, wapi_size_t len);
+/* Random bytes live in wapi_random.h — they are not part of
+ * wapi_env because not every runtime (embedded MCU, sandboxed
+ * child module) can provide entropy. Guests that need random
+ * bytes import wapi_random.h directly and gate on WAPI_CAP_RANDOM. */
 
 /* ============================================================
  * Process Control

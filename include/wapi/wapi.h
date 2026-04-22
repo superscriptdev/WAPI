@@ -214,6 +214,7 @@ typedef enum wapi_stype_t {
     WAPI_STYPE_WINDOW_CONFIG           = 0x0001,
     /* GPU extensions */
     WAPI_STYPE_GPU_SURFACE_CONFIG      = 0x0100,
+    WAPI_STYPE_GPU_SURFACE_SOURCE_WAPI = 0x0101,
     /* Audio extensions */
     WAPI_STYPE_AUDIO_SPATIAL_CONFIG    = 0x0200,
     /* Content extensions */

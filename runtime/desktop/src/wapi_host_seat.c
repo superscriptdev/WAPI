@@ -46,6 +46,22 @@ static wasm_trap_t* host_seat_at(
     return NULL;
 }
 
+int wapi_host_user_current_id(char* out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+#ifdef _WIN32
+    DWORD n = (DWORD)out_size;
+    if (GetUserNameA(out, &n) && n > 0) return (int)(n - 1); /* n includes NUL */
+    out[0] = '\0';
+    return 0;
+#else
+    uid_t u = getuid();
+    int n = snprintf(out, out_size, "%u", (unsigned)u);
+    if (n < 0) { out[0] = '\0'; return 0; }
+    if ((size_t)n >= out_size) n = (int)out_size - 1;
+    return n;
+#endif
+}
+
 static void get_user_name(char* out, size_t out_size) {
 #ifdef _WIN32
     DWORD n = (DWORD)out_size;
@@ -175,6 +191,8 @@ void wapi_host_register_seat(wasmtime_linker_t* linker) {
         4, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I64, WASM_I32},
         1, (wasm_valkind_t[]){WASM_I32});
 
-    /* wapi_input.device_seat: (i32) -> i32 */
-    WAPI_DEFINE_1_1(linker, "wapi_input", "device_seat", host_input_device_seat);
+    /* wapi_input.device_seat is already registered in
+     * wapi_host_input.c alongside the rest of the wapi_input
+     * module — registering it a second time here would collide. */
+    (void)host_input_device_seat;
 }

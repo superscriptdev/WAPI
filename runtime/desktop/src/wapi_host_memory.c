@@ -308,9 +308,14 @@ static wasm_trap_t* cb_usable_size(
  * Registration
  * ============================================================ */
 
+/* Per wapi.h (§Allocator Vtable / §PART 5 Vtables): the guest obtains
+ * its allocator via the `wapi.allocator_get` import returning a
+ * wapi_allocator_t vtable (impl + 3 fn pointers) in wasm memory. There
+ * is no `wapi_memory` import module. The cb_alloc / cb_free / cb_realloc
+ * / cb_usable_size callbacks below become the backing for that vtable
+ * once the reactor-shim allocator integration in wapi_host_core.c
+ * lands — see NEXT_STEPS.md. */
 void wapi_host_register_memory(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_2_1(linker, "wapi_memory", "alloc",        cb_alloc);
-    WAPI_DEFINE_1_0(linker, "wapi_memory", "free",         cb_free);
-    WAPI_DEFINE_3_1(linker, "wapi_memory", "realloc",      cb_realloc);
-    WAPI_DEFINE_1_1(linker, "wapi_memory", "usable_size",  cb_usable_size);
+    (void)linker;
+    (void)cb_alloc; (void)cb_free; (void)cb_realloc; (void)cb_usable_size;
 }

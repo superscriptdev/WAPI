@@ -28,7 +28,11 @@ static wasm_trap_t* cb_cap_request(void* env, wasmtime_caller_t* caller,
  * Registration
  * ============================================================ */
 
+/* Per wapi.h (§PART 5 Vtables) and the verified ABI baseline:
+ * capability queries/grants flow through the wapi_io_t vtable
+ * (cap_supported / cap_version / cap_query on the vtable, plus
+ * WAPI_IO_OP_CAP_REQUEST submitted via wapi_io_bridge.submit).
+ * There is no "wapi_cap" import module. */
 void wapi_host_register_permissions(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_3_1(linker, "wapi_cap", "query",   cb_cap_query);
-    WAPI_DEFINE_3_1(linker, "wapi_cap", "request", cb_cap_request);
+    (void)linker; (void)cb_cap_query; (void)cb_cap_request;
 }

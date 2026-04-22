@@ -1,0 +1,121 @@
+# ============================================================
+# Build outputs
+# ============================================================
+
+# CMake / Ninja / MSBuild
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CMakeUserPresets.json
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+Testing/
+.ninja_deps
+.ninja_log
+*.ninja
+
+# Native artefacts
+*.obj
+*.o
+*.lib
+*.a
+*.exp
+*.ilk
+*.pdb
+*.idb
+*.res
+*.rc.log
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.dll
+*.so
+*.so.*
+*.dylib
+*.exe
+*.out
+*.tlog
+*.cache
+*.log
+
+# Runtime-local build wrapper scratch
+runtime/desktop/build_out.txt
+runtime/desktop/build.log
+runtime/desktop/*.log
+
+# ============================================================
+# Wasm / toolchain outputs
+# ============================================================
+
+# Guest example artefacts (examples/*.wasm are checked in where tests need
+# them; intermediate object files and debug variants are not).
+*.wasm.map
+*.wat
+examples/**/*.o
+examples/**/build/
+bindings/**/build/
+
+# ============================================================
+# Third-party / vendored fetch caches
+# ============================================================
+third_party/**/build/
+runtime/desktop/src/third_party/**/*.o
+
+# ============================================================
+# Runtime state (written by running `wapi_runtime.exe`)
+# ============================================================
+.wapi_kv/
+*.wapi_kv/
+
+# ============================================================
+# IDE / editor
+# ============================================================
+
+# VS / Rider / VSCode
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# JetBrains
+.idea/
+*.iml
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# Claude Code scratch
+.claude/
+
+# ============================================================
+# OS-generated
+# ============================================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# ============================================================
+# Misc
+# ============================================================
+*.tmp
+*.bak
+*.orig
+*.rej

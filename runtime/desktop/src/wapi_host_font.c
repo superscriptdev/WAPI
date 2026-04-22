@@ -316,22 +316,20 @@ static wasm_trap_t* cb_fallback_get(
  * Registration
  * ============================================================ */
 
+/* Per wapi_font.h: `family_info` is not a sync import — it's an async
+ * IO op (WAPI_IO_OP_FONT_FAMILY_INFO) dispatched via wapi_host_io.c.
+ * All stringview args collapse to a single i32 pointer; `fallback_get`
+ * uses i64 for `wapi_size_t buf_len`. */
 void wapi_host_register_font(wasmtime_linker_t* linker) {
-    /* family_count: () -> i32 */
     WAPI_DEFINE_0_1(linker, "wapi_font", "family_count",    cb_family_count);
+    WAPI_DEFINE_1_1(linker, "wapi_font", "supports_script", cb_supports_script);
+    WAPI_DEFINE_2_1(linker, "wapi_font", "has_feature",     cb_has_feature);
+    WAPI_DEFINE_1_1(linker, "wapi_font", "fallback_count",  cb_fallback_count);
 
-    /* family_info: (i32, i32) -> i32 */
-    WAPI_DEFINE_2_1(linker, "wapi_font", "family_info",     cb_family_info);
+    /* fallback_get: (i32 family_sv, i32 index, i32 buf, i64 buf_len, i32 name_len_out) -> i32 */
+    wapi_linker_define(linker, "wapi_font", "fallback_get", cb_fallback_get,
+        5, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
 
-    /* supports_script: (i32, i32) -> i32 */
-    WAPI_DEFINE_2_1(linker, "wapi_font", "supports_script", cb_supports_script);
-
-    /* has_feature: (i32, i32, i32) -> i32 */
-    WAPI_DEFINE_3_1(linker, "wapi_font", "has_feature",     cb_has_feature);
-
-    /* fallback_count: (i32, i32) -> i32 */
-    WAPI_DEFINE_2_1(linker, "wapi_font", "fallback_count",  cb_fallback_count);
-
-    /* fallback_get: (i32, i32, i32, i32, i32, i32) -> i32 */
-    WAPI_DEFINE_6_1(linker, "wapi_font", "fallback_get",    cb_fallback_get);
+    (void)cb_family_info; /* scaffolding for WAPI_IO_OP_FONT_FAMILY_INFO handler */
 }

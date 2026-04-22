@@ -779,15 +779,16 @@ void wapi_host_register_net(wasmtime_linker_t* linker) {
     g_rt.net_initialized = true;
 #endif
 
-    WAPI_DEFINE_2_1(linker, "wapi_net", "connect",         host_net_connect);
-    WAPI_DEFINE_2_1(linker, "wapi_net", "listen",          host_net_listen);
-    WAPI_DEFINE_2_1(linker, "wapi_net", "accept",          host_net_accept);
-    WAPI_DEFINE_1_1(linker, "wapi_net", "close",           host_net_close);
-    WAPI_DEFINE_3_1(linker, "wapi_net", "stream_open",     host_net_stream_open);
-    WAPI_DEFINE_2_1(linker, "wapi_net", "stream_accept",   host_net_stream_accept);
-    WAPI_DEFINE_4_1(linker, "wapi_net", "send",            host_net_send);
-    WAPI_DEFINE_4_1(linker, "wapi_net", "recv",            host_net_recv);
-    WAPI_DEFINE_3_1(linker, "wapi_net", "send_datagram",   host_net_send_datagram);
-    WAPI_DEFINE_4_1(linker, "wapi_net", "recv_datagram",   host_net_recv_datagram);
-    WAPI_DEFINE_5_1(linker, "wapi_net", "resolve",         host_net_resolve);
+    /* Per wapi_network.h: "All operations go through the async I/O
+     * object as wapi_io_op_t submissions. There are no direct imports."
+     * The host_net_* functions below are retained as scaffolding for
+     * the op_ctx_t handlers that wapi_host_io.c will call for
+     * WAPI_IO_OP_CONNECT / ACCEPT / SEND / RECV / NETWORK_LISTEN /
+     * NETWORK_CHANNEL_OPEN / NETWORK_CHANNEL_ACCEPT / NETWORK_RESOLVE.
+     * See NEXT_STEPS.md. */
+    (void)host_net_connect; (void)host_net_listen; (void)host_net_accept;
+    (void)host_net_close;   (void)host_net_stream_open; (void)host_net_stream_accept;
+    (void)host_net_send;    (void)host_net_recv;
+    (void)host_net_send_datagram; (void)host_net_recv_datagram;
+    (void)host_net_resolve;
 }

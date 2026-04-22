@@ -671,6 +671,9 @@ _Static_assert(sizeof(wapi_touchpad_finger_t) == 16,
 _Static_assert(_Alignof(wapi_touchpad_finger_t) == 4,
                "wapi_touchpad_finger_t must be 4-byte aligned");
 
+/* wapi_gamepad_button_t / wapi_gamepad_axis_t enums are declared in
+ * wapi.h (alongside the event structs that reference them). */
+
 /* ---- Gamepad Functions ---- */
 
 /**

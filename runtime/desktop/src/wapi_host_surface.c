@@ -1,449 +1,187 @@
 /**
- * WAPI Desktop Runtime - Surfaces / Windowing
+ * WAPI Desktop Runtime - Surfaces (render targets)
  *
- * Implements all wapi_surface.* imports using SDL3 windowing.
- * Each WAPI surface handle maps to an SDL_Window*.
+ * "wapi_surface" module:
+ *   create, destroy, get_size, get_dpi_scale, request_size
+ *
+ * Window management (title, fullscreen, show/hide, min/max) lives
+ * in wapi_host_window.c under the "wapi_window" module, per the
+ * header split in wapi_surface.h / wapi_window.h.
+ *
+ * wapi_surface_desc_t layout (24B, align 8):
+ *   +0   u64 nextInChain
+ *   +8   i32 width
+ *   +12  i32 height
+ *   +16  u64 flags   (WAPI_SURFACE_FLAG_*)
+ *
+ * If nextInChain is non-zero it points at a wapi_window_desc_t
+ * (sType == WAPI_STYPE_WINDOW_CONFIG = 0x0001). We read the title +
+ * window_flags from there and hand the merged descriptor to
+ * wapi_plat.
  */
 
 #include "wapi_host.h"
 
+#define WAPI_STYPE_WINDOW_CONFIG 0x0001u
+
+/* Walk nextInChain looking for WAPI_STYPE_WINDOW_CONFIG.
+ * On match, fills title_buf (NUL-terminated, up to 255 chars) and
+ * writes *window_flags. Returns false if no window config chained. */
+static bool read_window_config(uint64_t chain_addr,
+                               char title_buf[256],
+                               uint32_t* window_flags)
+{
+    while (chain_addr != 0) {
+        /* wapi_chain_t: {u64 next @0, u32 sType @8, u32 _pad @12} */
+        void* ch = wapi_wasm_ptr((uint32_t)chain_addr, 16);
+        if (!ch) return false;
+        uint64_t next;  memcpy(&next,  (uint8_t*)ch + 0, 8);
+        uint32_t stype; memcpy(&stype, (uint8_t*)ch + 8, 4);
+
+        if (stype == WAPI_STYPE_WINDOW_CONFIG) {
+            /* wapi_window_desc_t (40B):
+             *   +0  wapi_chain_t chain (16B)
+             *   +16 wapi_stringview_t title {u64 data, u64 length}
+             *   +32 u32 window_flags
+             *   +36 u32 _pad */
+            void* wd = wapi_wasm_ptr((uint32_t)chain_addr, 40);
+            if (!wd) return false;
+
+            uint64_t title_data, title_len;
+            uint32_t wflags;
+            memcpy(&title_data, (uint8_t*)wd + 16, 8);
+            memcpy(&title_len,  (uint8_t*)wd + 24, 8);
+            memcpy(&wflags,     (uint8_t*)wd + 32, 4);
+            *window_flags = wflags;
+
+            if (title_data != 0) {
+                if (title_len == UINT64_MAX) {
+                    /* null-terminated */
+                    const char* t = (const char*)wapi_wasm_ptr((uint32_t)title_data, 1);
+                    if (t) {
+                        size_t l = strnlen(t, 255);
+                        memcpy(title_buf, t, l);
+                        title_buf[l] = '\0';
+                    }
+                } else {
+                    uint32_t copy = (uint32_t)(title_len < 255 ? title_len : 255);
+                    const char* t = (const char*)wapi_wasm_ptr((uint32_t)title_data, copy);
+                    if (t) {
+                        memcpy(title_buf, t, copy);
+                        title_buf[copy] = '\0';
+                    }
+                }
+            }
+            return true;
+        }
+        chain_addr = next;
+    }
+    return false;
+}
+
 /* ============================================================
- * Surface Create / Destroy
+ * Imports
  * ============================================================ */
 
-/* create: (i32 desc_ptr, i32 surface_out_ptr) -> i32 */
-static wasm_trap_t* host_surface_create(
-    void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* host_surface_create(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
-    uint32_t desc_ptr = WAPI_ARG_U32(0);
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    uint32_t desc_ptr        = WAPI_ARG_U32(0);
     uint32_t surface_out_ptr = WAPI_ARG_U32(1);
 
-    /* Read the descriptor from Wasm memory.
-     * wapi_surface_desc_t layout (wasm32):
-     *   +0: u32 nextInChain (ptr, ignored)
-     *   +4: u32 title (ptr)
-     *   +8: u32 title_len
-     *  +12: i32 width
-     *  +16: i32 height
-     *  +20: u32 flags
-     */
-    void* desc_host = wapi_wasm_ptr(desc_ptr, 24);
-    if (!desc_host) {
-        wapi_set_error("Invalid descriptor pointer");
-        WAPI_RET_I32(WAPI_ERR_INVAL);
-        return NULL;
-    }
+    void* desc = wapi_wasm_ptr(desc_ptr, 24);
+    if (!desc) { wapi_set_error("Invalid descriptor"); WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
 
-    uint32_t title_ptr, title_len;
-    int32_t width, height;
-    uint32_t flags;
+    uint64_t next_in_chain, flags;
+    int32_t  width, height;
+    memcpy(&next_in_chain, (uint8_t*)desc +  0, 8);
+    memcpy(&width,         (uint8_t*)desc +  8, 4);
+    memcpy(&height,        (uint8_t*)desc + 12, 4);
+    memcpy(&flags,         (uint8_t*)desc + 16, 8);
 
-    memcpy(&title_ptr, (uint8_t*)desc_host + 4, 4);
-    memcpy(&title_len, (uint8_t*)desc_host + 8, 4);
-    memcpy(&width,     (uint8_t*)desc_host + 12, 4);
-    memcpy(&height,    (uint8_t*)desc_host + 16, 4);
-    memcpy(&flags,     (uint8_t*)desc_host + 20, 4);
+    char     title_buf[256] = "WAPI Application";
+    uint32_t window_flags   = 0;
+    (void)read_window_config(next_in_chain, title_buf, &window_flags);
 
-    /* Get title string */
-    char title_buf[256] = "WAPI Application";
-    if (title_ptr != 0 && title_len > 0) {
-        const char* title_str = wapi_wasm_read_string(title_ptr, title_len);
-        if (title_str) {
-            uint32_t copy = title_len < 255 ? title_len : 255;
-            memcpy(title_buf, title_str, copy);
-            title_buf[copy] = '\0';
-        }
-    } else if (title_ptr != 0 && title_len == UINT32_MAX) {
-        /* WAPI_STRLEN: null-terminated */
-        const char* title_str = wapi_wasm_read_string(title_ptr, 256);
-        if (title_str) {
-            size_t len = strnlen(title_str, 255);
-            memcpy(title_buf, title_str, len);
-            title_buf[len] = '\0';
-        }
-    }
+    wapi_plat_window_desc_t d = {0};
+    d.title  = title_buf;
+    d.width  = (width  > 0) ? width  : 800;
+    d.height = (height > 0) ? height : 600;
+    /* surface flags live in the low bits, window flags are merged in;
+     * wapi_plat flag fields match WAPI bits 1:1. */
+    d.flags  = (uint32_t)(flags & 0xFFFFFFFFu) | window_flags;
 
-    /* Default sizes */
-    if (width <= 0) width = 1280;
-    if (height <= 0) height = 720;
-
-    /* Map WAPI flags to SDL flags */
-    SDL_WindowFlags sdl_flags = 0;
-    if (flags & 0x0001) sdl_flags |= SDL_WINDOW_RESIZABLE;       /* RESIZABLE */
-    if (flags & 0x0002) sdl_flags |= SDL_WINDOW_BORDERLESS;      /* BORDERLESS */
-    if (flags & 0x0004) sdl_flags |= SDL_WINDOW_FULLSCREEN;      /* FULLSCREEN */
-    if (flags & 0x0008) sdl_flags |= SDL_WINDOW_HIDDEN;          /* HIDDEN */
-    if (flags & 0x0010) sdl_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY; /* HIGH_DPI */
-    if (flags & 0x0020) sdl_flags |= SDL_WINDOW_ALWAYS_ON_TOP;   /* ALWAYS_ON_TOP */
-    if (flags & 0x0040) sdl_flags |= SDL_WINDOW_TRANSPARENT;     /* TRANSPARENT */
-
-    SDL_Window* window = SDL_CreateWindow(title_buf, width, height, sdl_flags);
-    if (!window) {
-        wapi_set_error(SDL_GetError());
-        WAPI_RET_I32(WAPI_ERR_UNKNOWN);
-        return NULL;
-    }
+    wapi_plat_window_t* w = wapi_plat_window_create(&d);
+    if (!w) { wapi_set_error("Window creation failed"); WAPI_RET_I32(WAPI_ERR_UNKNOWN); return NULL; }
 
     int32_t handle = wapi_handle_alloc(WAPI_HTYPE_SURFACE);
     if (handle == 0) {
-        SDL_DestroyWindow(window);
+        wapi_plat_window_destroy(w);
         wapi_set_error("Handle table full");
         WAPI_RET_I32(WAPI_ERR_NOMEM);
         return NULL;
     }
-
-    g_rt.handles[handle].data.window = window;
+    g_rt.handles[handle].data.window = w;
     wapi_wasm_write_i32(surface_out_ptr, handle);
-
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* destroy: (i32 surface) -> i32 */
-static wasm_trap_t* host_surface_destroy(
-    void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* host_surface_destroy(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)nresults;
     int32_t h = WAPI_ARG_I32(0);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    SDL_DestroyWindow(g_rt.handles[h].data.window);
+    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
+    wapi_plat_window_destroy(g_rt.handles[h].data.window);
     wapi_handle_free(h);
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* ============================================================
- * Surface Queries
- * ============================================================ */
-
-/* get_size: (i32 surface, i32 w_ptr, i32 h_ptr) -> i32 */
-static wasm_trap_t* host_surface_get_size(
-    void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* host_surface_get_size(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)nresults;
     int32_t h = WAPI_ARG_I32(0);
-    uint32_t w_ptr = WAPI_ARG_U32(1);
-    uint32_t h_ptr = WAPI_ARG_U32(2);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    int w, hi;
-    SDL_GetWindowSizeInPixels(g_rt.handles[h].data.window, &w, &hi);
-    wapi_wasm_write_i32(w_ptr, (int32_t)w);
-    wapi_wasm_write_i32(h_ptr, (int32_t)hi);
+    uint32_t w_ptr = WAPI_ARG_U32(1), h_ptr = WAPI_ARG_U32(2);
+    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
+    int32_t pw, ph;
+    wapi_plat_window_get_size_pixels(g_rt.handles[h].data.window, &pw, &ph);
+    wapi_wasm_write_i32(w_ptr, pw);
+    wapi_wasm_write_i32(h_ptr, ph);
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* get_size_logical: (i32 surface, i32 w_ptr, i32 h_ptr) -> i32 */
-static wasm_trap_t* host_surface_get_size_logical(
-    void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* host_surface_get_dpi_scale(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    uint32_t w_ptr = WAPI_ARG_U32(1);
-    uint32_t h_ptr = WAPI_ARG_U32(2);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    int w, hi;
-    SDL_GetWindowSize(g_rt.handles[h].data.window, &w, &hi);
-    wapi_wasm_write_i32(w_ptr, (int32_t)w);
-    wapi_wasm_write_i32(h_ptr, (int32_t)hi);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* get_dpi_scale: (i32 surface, i32 scale_ptr) -> i32 */
-static wasm_trap_t* host_surface_get_dpi_scale(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)nresults;
     int32_t h = WAPI_ARG_I32(0);
     uint32_t scale_ptr = WAPI_ARG_U32(1);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    float scale = SDL_GetWindowDisplayScale(g_rt.handles[h].data.window);
-    wapi_wasm_write_f32(scale_ptr, scale);
+    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
+    float s = wapi_plat_window_get_dpi_scale(g_rt.handles[h].data.window);
+    wapi_wasm_write_f32(scale_ptr, s);
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* request_size: (i32 surface, i32 w, i32 h) -> i32 */
-static wasm_trap_t* host_surface_request_size(
-    void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* host_surface_request_size(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    int32_t w = WAPI_ARG_I32(1);
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t h  = WAPI_ARG_I32(0);
+    int32_t w  = WAPI_ARG_I32(1);
     int32_t hi = WAPI_ARG_I32(2);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    if (!SDL_SetWindowSize(g_rt.handles[h].data.window, w, hi)) {
-        wapi_set_error(SDL_GetError());
-        WAPI_RET_I32(WAPI_ERR_UNKNOWN);
-        return NULL;
-    }
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* set_title: (i32 surface, i32 title_ptr, i32 title_len) -> i32 */
-static wasm_trap_t* host_surface_set_title(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    uint32_t title_ptr = WAPI_ARG_U32(1);
-    uint32_t title_len = WAPI_ARG_U32(2);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    const char* title = wapi_wasm_read_string(title_ptr, title_len);
-    if (!title) {
-        WAPI_RET_I32(WAPI_ERR_INVAL);
-        return NULL;
-    }
-
-    char buf[256];
-    uint32_t copy = title_len < 255 ? title_len : 255;
-    memcpy(buf, title, copy);
-    buf[copy] = '\0';
-
-    if (!SDL_SetWindowTitle(g_rt.handles[h].data.window, buf)) {
-        wapi_set_error(SDL_GetError());
-        WAPI_RET_I32(WAPI_ERR_UNKNOWN);
-        return NULL;
-    }
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* set_fullscreen: (i32 surface, i32 fullscreen) -> i32 */
-static wasm_trap_t* host_surface_set_fullscreen(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    int32_t fullscreen = WAPI_ARG_I32(1);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    if (!SDL_SetWindowFullscreen(g_rt.handles[h].data.window, fullscreen ? true : false)) {
-        wapi_set_error(SDL_GetError());
-        WAPI_RET_I32(WAPI_ERR_UNKNOWN);
-        return NULL;
-    }
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* set_visible: (i32 surface, i32 visible) -> i32 */
-static wasm_trap_t* host_surface_set_visible(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    int32_t visible = WAPI_ARG_I32(1);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    if (visible)
-        SDL_ShowWindow(g_rt.handles[h].data.window);
-    else
-        SDL_HideWindow(g_rt.handles[h].data.window);
-
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* minimize: (i32 surface) -> i32 */
-static wasm_trap_t* host_surface_minimize(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
     if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
-    SDL_MinimizeWindow(g_rt.handles[h].data.window);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* maximize: (i32 surface) -> i32 */
-static wasm_trap_t* host_surface_maximize(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
-    SDL_MaximizeWindow(g_rt.handles[h].data.window);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* restore: (i32 surface) -> i32 */
-static wasm_trap_t* host_surface_restore(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
-    SDL_RestoreWindow(g_rt.handles[h].data.window);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* set_cursor: (i32 surface, i32 cursor_type) -> i32 */
-static wasm_trap_t* host_surface_set_cursor(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t h = WAPI_ARG_I32(0);
-    int32_t cursor_type = WAPI_ARG_I32(1);
-
-    if (!wapi_handle_valid(h, WAPI_HTYPE_SURFACE)) {
-        WAPI_RET_I32(WAPI_ERR_BADF);
-        return NULL;
-    }
-
-    /* Map WAPI cursor types to SDL system cursors */
-    SDL_SystemCursor sdl_cursor;
-    switch (cursor_type) {
-    case 0:  sdl_cursor = SDL_SYSTEM_CURSOR_DEFAULT;    break; /* DEFAULT */
-    case 1:  sdl_cursor = SDL_SYSTEM_CURSOR_POINTER;    break; /* POINTER */
-    case 2:  sdl_cursor = SDL_SYSTEM_CURSOR_TEXT;       break; /* TEXT */
-    case 3:  sdl_cursor = SDL_SYSTEM_CURSOR_CROSSHAIR;  break; /* CROSSHAIR */
-    case 4:  sdl_cursor = SDL_SYSTEM_CURSOR_MOVE;       break; /* MOVE */
-    case 5:  sdl_cursor = SDL_SYSTEM_CURSOR_NS_RESIZE;  break; /* RESIZE_NS */
-    case 6:  sdl_cursor = SDL_SYSTEM_CURSOR_EW_RESIZE;  break; /* RESIZE_EW */
-    case 7:  sdl_cursor = SDL_SYSTEM_CURSOR_NWSE_RESIZE; break; /* RESIZE_NWSE */
-    case 8:  sdl_cursor = SDL_SYSTEM_CURSOR_NESW_RESIZE; break; /* RESIZE_NESW */
-    case 9:  sdl_cursor = SDL_SYSTEM_CURSOR_NOT_ALLOWED; break; /* NOT_ALLOWED */
-    case 10: sdl_cursor = SDL_SYSTEM_CURSOR_WAIT;       break; /* WAIT */
-    case 11: sdl_cursor = SDL_SYSTEM_CURSOR_POINTER;    break; /* GRAB (approx) */
-    case 12: sdl_cursor = SDL_SYSTEM_CURSOR_POINTER;    break; /* GRABBING (approx) */
-    case 13:
-        SDL_HideCursor();
-        WAPI_RET_I32(WAPI_OK);
-        return NULL;
-    default:
-        sdl_cursor = SDL_SYSTEM_CURSOR_DEFAULT;
-        break;
-    }
-
-    SDL_Cursor* cursor = SDL_CreateSystemCursor(sdl_cursor);
-    if (cursor) {
-        SDL_SetCursor(cursor);
-        SDL_ShowCursor();
-    }
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* ============================================================
- * Display Functions
- * ============================================================ */
-
-/* display_count: () -> i32 */
-static wasm_trap_t* host_surface_display_count(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)args;
-    int count = 0;
-    SDL_DisplayID* displays = SDL_GetDisplays(&count);
-    SDL_free(displays);
-    WAPI_RET_I32(count);
-    return NULL;
-}
-
-/* display_info: (i32 index, i32 w_ptr, i32 h_ptr, i32 hz_ptr) -> i32 */
-static wasm_trap_t* host_surface_display_info(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    int32_t index = WAPI_ARG_I32(0);
-    uint32_t w_ptr = WAPI_ARG_U32(1);
-    uint32_t h_ptr = WAPI_ARG_U32(2);
-    uint32_t hz_ptr = WAPI_ARG_U32(3);
-
-    int count = 0;
-    SDL_DisplayID* displays = SDL_GetDisplays(&count);
-    if (!displays || index < 0 || index >= count) {
-        SDL_free(displays);
-        WAPI_RET_I32(WAPI_ERR_RANGE);
-        return NULL;
-    }
-
-    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(displays[index]);
-    SDL_free(displays);
-
-    if (!mode) {
-        WAPI_RET_I32(WAPI_ERR_UNKNOWN);
-        return NULL;
-    }
-
-    wapi_wasm_write_i32(w_ptr, mode->w);
-    wapi_wasm_write_i32(h_ptr, mode->h);
-    wapi_wasm_write_i32(hz_ptr, (int32_t)mode->refresh_rate);
+    wapi_plat_window_set_size(g_rt.handles[h].data.window, w, hi);
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
@@ -453,19 +191,9 @@ static wasm_trap_t* host_surface_display_info(
  * ============================================================ */
 
 void wapi_host_register_surface(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_2_1(linker, "wapi_surface", "create",           host_surface_create);
-    WAPI_DEFINE_1_1(linker, "wapi_surface", "destroy",          host_surface_destroy);
-    WAPI_DEFINE_3_1(linker, "wapi_surface", "get_size",         host_surface_get_size);
-    WAPI_DEFINE_3_1(linker, "wapi_surface", "get_size_logical", host_surface_get_size_logical);
-    WAPI_DEFINE_2_1(linker, "wapi_surface", "get_dpi_scale",    host_surface_get_dpi_scale);
-    WAPI_DEFINE_3_1(linker, "wapi_surface", "request_size",     host_surface_request_size);
-    WAPI_DEFINE_3_1(linker, "wapi_surface", "set_title",        host_surface_set_title);
-    WAPI_DEFINE_2_1(linker, "wapi_surface", "set_fullscreen",   host_surface_set_fullscreen);
-    WAPI_DEFINE_2_1(linker, "wapi_surface", "set_visible",      host_surface_set_visible);
-    WAPI_DEFINE_1_1(linker, "wapi_surface", "minimize",         host_surface_minimize);
-    WAPI_DEFINE_1_1(linker, "wapi_surface", "maximize",         host_surface_maximize);
-    WAPI_DEFINE_1_1(linker, "wapi_surface", "restore",          host_surface_restore);
-    WAPI_DEFINE_2_1(linker, "wapi_surface", "set_cursor",       host_surface_set_cursor);
-    WAPI_DEFINE_0_1(linker, "wapi_surface", "display_count",    host_surface_display_count);
-    WAPI_DEFINE_4_1(linker, "wapi_surface", "display_info",     host_surface_display_info);
+    WAPI_DEFINE_2_1(linker, "wapi_surface", "create",        host_surface_create);
+    WAPI_DEFINE_1_1(linker, "wapi_surface", "destroy",       host_surface_destroy);
+    WAPI_DEFINE_3_1(linker, "wapi_surface", "get_size",      host_surface_get_size);
+    WAPI_DEFINE_2_1(linker, "wapi_surface", "get_dpi_scale", host_surface_get_dpi_scale);
+    WAPI_DEFINE_3_1(linker, "wapi_surface", "request_size",  host_surface_request_size);
 }

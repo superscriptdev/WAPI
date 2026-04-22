@@ -1,8 +1,10 @@
 /**
  * WAPI Desktop Runtime - Shared Host Types
  *
- * Global handle table, Wasm memory helpers, and shared state
- * used by all wapi_host_*.c implementation files.
+ * Handle table, Wasm memory helpers, and runtime state used by
+ * all wapi_host_*.c files. Windowing / input / audio / clock /
+ * clipboard go through wapi_plat.h (platform abstraction) — no
+ * SDL, no framework: backends call OS APIs directly.
  */
 
 #ifndef WAPI_HOST_H
@@ -18,14 +20,14 @@
 /* Wasmtime C API */
 #include <wasmtime.h>
 
-/* SDL3 (windowing, input, audio -- no SDL GPU) */
-#include <SDL3/SDL.h>
-
 /* wgpu-native (WebGPU) */
 #include <webgpu.h>
 
-/* WAPI ABI headers (for constants and type sizes only) */
-#include "wapi/wapi_types.h"
+/* Platform abstraction — no SDL here. */
+#include "wapi_plat.h"
+
+/* WAPI ABI headers */
+#include "wapi/wapi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,9 +36,8 @@ extern "C" {
 /* ============================================================
  * Handle Table
  * ============================================================
- * Maps wapi_handle_t (int32_t > 0) to host-side objects.
- * Handle 0 is invalid. Handles 1-3 are stdin/stdout/stderr.
- * Handle 4+ are pre-opened directories, then dynamically allocated.
+ * int32_t > 0. 0 is invalid. 1-3 are stdin/stdout/stderr.
+ * 4+ are preopen dirs, then dynamically allocated.
  */
 
 #define WAPI_MAX_HANDLES 4096
@@ -46,10 +47,23 @@ typedef enum wapi_handle_type_t {
     WAPI_HTYPE_FILE,
     WAPI_HTYPE_DIRECTORY,
     WAPI_HTYPE_SURFACE,
+    WAPI_HTYPE_GPU_INSTANCE,
+    WAPI_HTYPE_GPU_ADAPTER,
     WAPI_HTYPE_GPU_DEVICE,
     WAPI_HTYPE_GPU_QUEUE,
+    WAPI_HTYPE_GPU_SURFACE,
     WAPI_HTYPE_GPU_TEXTURE,
     WAPI_HTYPE_GPU_TEXTURE_VIEW,
+    WAPI_HTYPE_GPU_BUFFER,
+    WAPI_HTYPE_GPU_SAMPLER,
+    WAPI_HTYPE_GPU_BIND_GROUP,
+    WAPI_HTYPE_GPU_BIND_GROUP_LAYOUT,
+    WAPI_HTYPE_GPU_PIPELINE_LAYOUT,
+    WAPI_HTYPE_GPU_SHADER_MODULE,
+    WAPI_HTYPE_GPU_RENDER_PIPELINE,
+    WAPI_HTYPE_GPU_COMMAND_ENCODER,
+    WAPI_HTYPE_GPU_COMMAND_BUFFER,
+    WAPI_HTYPE_GPU_RENDER_PASS,
     WAPI_HTYPE_AUDIO_DEVICE,
     WAPI_HTYPE_AUDIO_STREAM,
     WAPI_HTYPE_PREOPEN_DIR,
@@ -80,10 +94,9 @@ typedef struct wapi_io_queue_t {
     int tail;
     int count;
     int capacity;
-    /* Pending timeouts */
     struct {
         uint64_t user_data;
-        uint64_t deadline_ns;  /* absolute monotonic time */
+        uint64_t deadline_ns;
         bool     active;
     } timeouts[64];
     int timeout_count;
@@ -107,15 +120,15 @@ typedef int wapi_socket_t;
 
 typedef struct wapi_net_conn_t {
     wapi_socket_t sock;
-    uint32_t    transport;  /* wapi_net_transport_t */
-    bool        connected;
-    bool        nonblocking;
+    uint32_t      transport;
+    bool          connected;
+    bool          nonblocking;
 } wapi_net_conn_t;
 
 /* ---- Crypto ---- */
 typedef struct wapi_crypto_hash_ctx_t {
     uint32_t algo;
-    uint8_t  state[256]; /* opaque platform hash state */
+    uint8_t  state[256];
     size_t   state_size;
 } wapi_crypto_hash_ctx_t;
 
@@ -127,34 +140,88 @@ typedef struct wapi_crypto_key_t {
 
 /* ---- Memory allocator state ---- */
 typedef struct wapi_mem_alloc_t {
-    uint32_t offset; /* offset in wasm linear memory */
+    uint32_t offset;
     uint32_t size;
 } wapi_mem_alloc_t;
 
 #define WAPI_MEM_MAX_ALLOCS 4096
 
+/* ---- Module linking (wapi_module) ---- */
+
+#define WAPI_MODULE_MAX_FUNCS 64
+
+typedef struct wapi_module_func_slot_t {
+    wasmtime_func_t fn;
+    bool            in_use;
+} wapi_module_func_slot_t;
+
+typedef struct wapi_module_slot_t {
+    wasmtime_module_t*       module;
+    wasmtime_instance_t      instance;
+    wasmtime_memory_t        memory;      /* child's memory 0 */
+    bool                     memory_valid;
+    uint8_t                  hash[32];    /* SHA-256 of wasm bytes */
+    wapi_module_func_slot_t  funcs[WAPI_MODULE_MAX_FUNCS];
+} wapi_module_slot_t;
+
+/* ---- Shared memory pool (wapi_module memory 1, host-owned) ---- */
+
+#define WAPI_SHARED_MEM_CAPACITY (16u * 1024u * 1024u)  /* 16 MiB */
+#define WAPI_SHARED_MAX_ALLOCS   1024
+
+typedef struct wapi_shared_alloc_t {
+    uint64_t offset;       /* byte offset into g_rt.shared_mem (0 = empty slot) */
+    uint64_t size;         /* allocation size in bytes */
+    bool     in_use;
+} wapi_shared_alloc_t;
+
+typedef struct wapi_shared_mem_t {
+    uint8_t*             bytes;
+    uint64_t             capacity;
+    uint64_t             bump;         /* high-water mark */
+    wapi_shared_alloc_t  allocs[WAPI_SHARED_MAX_ALLOCS];
+} wapi_shared_mem_t;
+
+/* Hash → filesystem path cache, seeded from CLI --module flags. */
+#define WAPI_MODULE_CACHE_MAX 16
+
+typedef struct wapi_module_cache_entry_t {
+    uint8_t  hash[32];
+    char     path[512];
+    bool     in_use;
+} wapi_module_cache_entry_t;
+
+/* ---- Handle entry ---- */
 typedef struct wapi_handle_entry_t {
     wapi_handle_type_t type;
     union {
-        FILE*               file;
-        struct {
-            char             path[512];
-        } dir;
-        SDL_Window*         window;
-        struct {
-            WGPUDevice       device;
-            WGPUAdapter      adapter;
-            WGPUInstance      instance;
-        } gpu_device;
-        WGPUQueue           gpu_queue;
-        WGPUTexture         gpu_texture;
-        WGPUTextureView     gpu_texture_view;
-        SDL_AudioDeviceID   audio_device_id;
-        SDL_AudioStream*    audio_stream;
-        wapi_io_queue_t*    io_queue;
-        wapi_net_conn_t     net_conn;
-        wapi_crypto_hash_ctx_t crypto_hash;
-        wapi_crypto_key_t   crypto_key;
+        FILE*                      file;
+        struct { char path[512]; } dir;
+        wapi_plat_window_t*        window;
+        WGPUInstance               gpu_instance;
+        WGPUAdapter                gpu_adapter;
+        WGPUDevice                 gpu_device;
+        WGPUQueue                  gpu_queue;
+        WGPUSurface                gpu_surface;
+        WGPUTexture                gpu_texture;
+        WGPUTextureView            gpu_texture_view;
+        WGPUBuffer                 gpu_buffer;
+        WGPUSampler                gpu_sampler;
+        WGPUBindGroup              gpu_bind_group;
+        WGPUBindGroupLayout        gpu_bind_group_layout;
+        WGPUPipelineLayout         gpu_pipeline_layout;
+        WGPUShaderModule           gpu_shader_module;
+        WGPURenderPipeline         gpu_render_pipeline;
+        WGPUCommandEncoder         gpu_command_encoder;
+        WGPUCommandBuffer          gpu_command_buffer;
+        WGPURenderPassEncoder      gpu_render_pass;
+        wapi_module_slot_t*        module_slot;
+        wapi_plat_audio_device_t*  audio_device;
+        wapi_plat_audio_stream_t*  audio_stream;
+        wapi_io_queue_t*           io_queue;
+        wapi_net_conn_t            net_conn;
+        wapi_crypto_hash_ctx_t     crypto_hash;
+        wapi_crypto_key_t          crypto_key;
     } data;
 } wapi_handle_entry_t;
 
@@ -164,35 +231,16 @@ typedef struct wapi_handle_entry_t {
 
 #define WAPI_EVENT_QUEUE_SIZE 256
 
-/* A 128-byte event blob matching wapi_event_t layout */
 typedef struct wapi_host_event_t {
     uint8_t data[128];
 } wapi_host_event_t;
 
 typedef struct wapi_event_queue_t {
     wapi_host_event_t events[WAPI_EVENT_QUEUE_SIZE];
-    int             head;
-    int             tail;
-    int             count;
+    int               head;
+    int               tail;
+    int               count;
 } wapi_event_queue_t;
-
-/* ============================================================
- * GPU Surface State
- * ============================================================
- * Tracks the wgpu surface object associated with a WAPI surface handle.
- */
-
-#define WAPI_MAX_GPU_SURFACES 16
-
-typedef struct wapi_gpu_surface_state_t {
-    int32_t         wapi_surface_handle;  /* WAPI surface handle */
-    WGPUSurface     wgpu_surface;
-    WGPUDevice      wgpu_device;
-    uint32_t        format;
-    uint32_t        present_mode;
-    uint32_t        usage;
-    bool            configured;
-} wapi_gpu_surface_state_t;
 
 /* ============================================================
  * Pre-opened Directory
@@ -201,80 +249,101 @@ typedef struct wapi_gpu_surface_state_t {
 #define WAPI_MAX_PREOPENS 32
 
 typedef struct wapi_preopen_t {
-    char        guest_path[256];   /* Path as seen by the guest */
-    char        host_path[512];    /* Actual host filesystem path */
-    int32_t     handle;            /* Handle in the handle table */
+    char    guest_path[256];
+    char    host_path[512];
+    int32_t handle;
 } wapi_preopen_t;
 
 /* ============================================================
- * Runtime State (global singleton)
+ * Runtime State
  * ============================================================ */
 
 typedef struct wapi_runtime_t {
     /* Wasmtime */
-    wasm_engine_t*          engine;
-    wasmtime_store_t*       store;
-    wasmtime_context_t*     context;
-    wasmtime_module_t*      module;
-    wasmtime_instance_t     instance;
-    wasmtime_memory_t       memory;
-    bool                    memory_valid;
+    wasm_engine_t*      engine;
+    wasmtime_store_t*   store;
+    wasmtime_context_t* context;
+    wasmtime_module_t*  module;
+    wasmtime_instance_t instance;
+    wasmtime_memory_t   memory;
+    bool                memory_valid;
 
     /* Handle table */
-    wapi_handle_entry_t       handles[WAPI_MAX_HANDLES];
-    int32_t                 next_handle;  /* Next free handle to try */
+    wapi_handle_entry_t handles[WAPI_MAX_HANDLES];
+    int32_t             next_handle;
 
-    /* Event queue */
-    wapi_event_queue_t        event_queue;
+    /* Event queue (host side — carries I/O completions + translated platform events) */
+    wapi_event_queue_t  event_queue;
 
-    /* GPU surface tracking */
-    wapi_gpu_surface_state_t  gpu_surfaces[WAPI_MAX_GPU_SURFACES];
-    int                     gpu_surface_count;
+    /* Guest indirect function table (for invoking guest-supplied callbacks) */
+    wasmtime_table_t    indirect_table;
+    bool                indirect_table_valid;
 
-    /* Pre-opened directories */
-    wapi_preopen_t            preopens[WAPI_MAX_PREOPENS];
-    int                     preopen_count;
+    /* Preopens */
+    wapi_preopen_t preopens[WAPI_MAX_PREOPENS];
+    int            preopen_count;
 
-    /* Application args passed to the Wasm module */
-    int                     app_argc;
-    char**                  app_argv;
-
-    /* Keyboard state (256 scancodes) */
-    bool                    key_state[256];
-    uint16_t                mod_state;
-
-    /* Mouse state */
-    float                   mouse_x;
-    float                   mouse_y;
-    uint32_t                mouse_buttons;
-
-    /* Pointer state (unified — tracks most recent position from any source) */
-    float                   pointer_x;
-    float                   pointer_y;
-    uint32_t                pointer_buttons;
+    /* App args */
+    int    app_argc;
+    char** app_argv;
 
     /* Host memory allocator for wasm heap */
-    wapi_mem_alloc_t        mem_allocs[WAPI_MEM_MAX_ALLOCS];
-    int                     mem_alloc_count;
-    uint32_t                mem_heap_top;  /* bump pointer in wasm memory */
-    bool                    mem_initialized;
+    wapi_mem_alloc_t mem_allocs[WAPI_MEM_MAX_ALLOCS];
+    int              mem_alloc_count;
+    uint32_t         mem_heap_top;
+    bool             mem_initialized;
 
-    /* KV storage directory path */
-    char                    kv_storage_path[512];
+    /* KV storage */
+    char kv_storage_path[512];
+
+    /* Module linking: host-owned shared memory + hash-path cache */
+    wapi_shared_mem_t         shared_mem;
+    wapi_module_cache_entry_t module_cache[WAPI_MODULE_CACHE_MAX];
+    wasmtime_linker_t*        linker;     /* kept live for child instantiation */
 
     /* Net init state */
-    bool                    net_initialized;
+    bool net_initialized;
 
     /* Last error message */
-    char                    last_error[512];
+    char last_error[512];
 
     /* Running state */
-    bool                    running;
-    bool                    has_wapi_frame;
+    bool running;
+    bool has_wapi_frame;
 } wapi_runtime_t;
 
-/* Global runtime instance */
 extern wapi_runtime_t g_rt;
+
+/* ============================================================
+ * I/O Dispatch Context
+ * ============================================================
+ * Shared between wapi_host_io.c (dispatch table) and per-capability
+ * modules that implement async opcode handlers.  Field layout is
+ * pinned — the IO bridge fills it in from the 80-byte wapi_io_op_t
+ * read out of wasm memory, handlers write `result` / `cqe_flags` /
+ * `payload` / `inline_payload` / `suppress_completion`.
+ */
+typedef struct op_ctx_t {
+    /* Op fields, already read from wasm memory */
+    uint32_t opcode;
+    uint32_t flags;
+    int32_t  fd;
+    uint32_t flags2;
+    uint64_t offset;
+    uint64_t addr;
+    uint64_t len;
+    uint64_t addr2;
+    uint64_t len2;
+    uint64_t user_data;
+    uint64_t result_ptr;
+
+    /* Completion fields — handler writes these */
+    int32_t  result;
+    uint32_t cqe_flags;
+    uint8_t  payload[96];
+    bool     inline_payload;
+    bool     suppress_completion; /* fire-and-forget (LOG, TIMEOUT) */
+} op_ctx_t;
 
 /* ============================================================
  * Handle Table Operations
@@ -289,7 +358,6 @@ static inline int32_t wapi_handle_alloc(wapi_handle_type_t type) {
             return (int32_t)i;
         }
     }
-    /* Wrap around */
     for (int i = 4; i < g_rt.next_handle; i++) {
         if (g_rt.handles[i].type == WAPI_HTYPE_FREE) {
             g_rt.handles[i].type = type;
@@ -298,7 +366,7 @@ static inline int32_t wapi_handle_alloc(wapi_handle_type_t type) {
             return (int32_t)i;
         }
     }
-    return 0; /* WAPI_HANDLE_INVALID */
+    return 0;
 }
 
 static inline bool wapi_handle_valid(int32_t h, wapi_handle_type_t expected) {
@@ -308,7 +376,6 @@ static inline bool wapi_handle_valid(int32_t h, wapi_handle_type_t expected) {
     return true;
 }
 
-/* Validate handle accepting any of several types */
 static inline bool wapi_handle_valid_any(int32_t h) {
     if (h <= 0 || h >= WAPI_MAX_HANDLES) return false;
     return g_rt.handles[h].type != WAPI_HTYPE_FREE;
@@ -328,12 +395,23 @@ static inline wapi_handle_entry_t* wapi_handle_get(int32_t h) {
     return NULL;
 }
 
+/* Map a platform window id to the WAPI surface handle. O(N) over
+ * handle table; N is small (<= 4096) and surface creation is rare. */
+static inline int32_t wapi_surface_handle_from_window_id(uint32_t window_id) {
+    if (window_id == 0) return 0;
+    for (int i = 1; i < WAPI_MAX_HANDLES; i++) {
+        if (g_rt.handles[i].type == WAPI_HTYPE_SURFACE &&
+            g_rt.handles[i].data.window != NULL &&
+            wapi_plat_window_id(g_rt.handles[i].data.window) == window_id) {
+            return (int32_t)i;
+        }
+    }
+    return 0;
+}
+
 /* ============================================================
  * Wasm Memory Helpers
- * ============================================================
- * Read/write data from the Wasm linear memory. All guest pointers
- * are uint32_t offsets into the memory.
- */
+ * ============================================================ */
 
 static inline uint8_t* wapi_wasm_memory_base(void) {
     if (!g_rt.memory_valid) return NULL;
@@ -345,20 +423,17 @@ static inline size_t wapi_wasm_memory_size(void) {
     return wasmtime_memory_data_size(g_rt.context, &g_rt.memory);
 }
 
-/* Validate a guest pointer + length is within memory bounds */
 static inline bool wapi_wasm_validate_ptr(uint32_t ptr, uint32_t len) {
     if (len == 0) return true;
     size_t mem_size = wapi_wasm_memory_size();
     return (ptr < mem_size && (uint64_t)ptr + len <= mem_size);
 }
 
-/* Get a host pointer from a guest pointer, with bounds checking */
 static inline void* wapi_wasm_ptr(uint32_t guest_ptr, uint32_t len) {
     if (!wapi_wasm_validate_ptr(guest_ptr, len)) return NULL;
     return wapi_wasm_memory_base() + guest_ptr;
 }
 
-/* Read an i32 from guest memory */
 static inline bool wapi_wasm_read_i32(uint32_t ptr, int32_t* out) {
     void* host = wapi_wasm_ptr(ptr, 4);
     if (!host) return false;
@@ -366,7 +441,6 @@ static inline bool wapi_wasm_read_i32(uint32_t ptr, int32_t* out) {
     return true;
 }
 
-/* Write an i32 to guest memory */
 static inline bool wapi_wasm_write_i32(uint32_t ptr, int32_t val) {
     void* host = wapi_wasm_ptr(ptr, 4);
     if (!host) return false;
@@ -374,7 +448,6 @@ static inline bool wapi_wasm_write_i32(uint32_t ptr, int32_t val) {
     return true;
 }
 
-/* Write a u32 to guest memory */
 static inline bool wapi_wasm_write_u32(uint32_t ptr, uint32_t val) {
     void* host = wapi_wasm_ptr(ptr, 4);
     if (!host) return false;
@@ -382,7 +455,6 @@ static inline bool wapi_wasm_write_u32(uint32_t ptr, uint32_t val) {
     return true;
 }
 
-/* Write an i64/u64 to guest memory */
 static inline bool wapi_wasm_write_u64(uint32_t ptr, uint64_t val) {
     void* host = wapi_wasm_ptr(ptr, 8);
     if (!host) return false;
@@ -390,7 +462,6 @@ static inline bool wapi_wasm_write_u64(uint32_t ptr, uint64_t val) {
     return true;
 }
 
-/* Write a float to guest memory */
 static inline bool wapi_wasm_write_f32(uint32_t ptr, float val) {
     void* host = wapi_wasm_ptr(ptr, 4);
     if (!host) return false;
@@ -398,14 +469,12 @@ static inline bool wapi_wasm_write_f32(uint32_t ptr, float val) {
     return true;
 }
 
-/* Read a string from guest memory (returns host pointer, not owned) */
 static inline const char* wapi_wasm_read_string(uint32_t ptr, uint32_t len) {
     if (len == 0) return "";
     void* host = wapi_wasm_ptr(ptr, len);
     return (const char*)host;
 }
 
-/* Write bytes to guest memory */
 static inline bool wapi_wasm_write_bytes(uint32_t ptr, const void* src, uint32_t len) {
     if (len == 0) return true;
     void* host = wapi_wasm_ptr(ptr, len);
@@ -442,7 +511,6 @@ static inline void wapi_event_queue_flush(uint32_t event_type) {
         q->head = q->tail = q->count = 0;
         return;
     }
-    /* Flush only specific type: rebuild queue in place */
     wapi_host_event_t temp[WAPI_EVENT_QUEUE_SIZE];
     int new_count = 0;
     while (q->count > 0) {
@@ -457,19 +525,6 @@ static inline void wapi_event_queue_flush(uint32_t event_type) {
     for (int i = 0; i < new_count; i++) {
         wapi_event_queue_push(&temp[i]);
     }
-}
-
-/* ============================================================
- * GPU Surface Lookup
- * ============================================================ */
-
-static inline wapi_gpu_surface_state_t* wapi_gpu_surface_find(int32_t surface_handle) {
-    for (int i = 0; i < g_rt.gpu_surface_count; i++) {
-        if (g_rt.gpu_surfaces[i].wapi_surface_handle == surface_handle) {
-            return &g_rt.gpu_surfaces[i];
-        }
-    }
-    return NULL;
 }
 
 /* ============================================================
@@ -489,103 +544,10 @@ static inline void wapi_set_error(const char* msg) {
 
 /* ============================================================
  * Host Function Registration Helper
- * ============================================================
- * Convenience for defining wasmtime host functions (import callbacks).
- *
- * All WAPI import callbacks use the wasmtime_func_callback_t signature:
- *   wasm_trap_t* callback(void* env, wasmtime_caller_t* caller,
- *                         const wasmtime_val_t* args, size_t nargs,
- *                         wasmtime_val_t* results, size_t nresults);
- */
+ * ============================================================ */
 
-/* Forward declarations for all host import registration functions */
-void wapi_host_register_capability(wasmtime_linker_t* linker);
-void wapi_host_register_env(wasmtime_linker_t* linker);
-void wapi_host_register_clock(wasmtime_linker_t* linker);
-void wapi_host_register_surface(wasmtime_linker_t* linker);
-void wapi_host_register_input(wasmtime_linker_t* linker);
-void wapi_host_register_audio(wasmtime_linker_t* linker);
-void wapi_host_register_gpu(wasmtime_linker_t* linker);
-void wapi_host_register_fs(wasmtime_linker_t* linker);
-void wapi_host_register_memory(wasmtime_linker_t* linker);
-void wapi_host_register_io(wasmtime_linker_t* linker);
-void wapi_host_register_net(wasmtime_linker_t* linker);
-void wapi_host_register_transfer(wasmtime_linker_t* linker);
-void wapi_host_register_seat(wasmtime_linker_t* linker);
-void wapi_host_register_kv(wasmtime_linker_t* linker);
-void wapi_host_register_crypto(wasmtime_linker_t* linker);
-void wapi_host_register_content(wasmtime_linker_t* linker);
-void wapi_host_register_text(wasmtime_linker_t* linker);
-void wapi_host_register_font(wasmtime_linker_t* linker);
-void wapi_host_register_video(wasmtime_linker_t* linker);
-void wapi_host_register_module(wasmtime_linker_t* linker);
-void wapi_host_register_notifications(wasmtime_linker_t* linker);
-void wapi_host_register_geolocation(wasmtime_linker_t* linker);
-void wapi_host_register_sensors(wasmtime_linker_t* linker);
-void wapi_host_register_speech(wasmtime_linker_t* linker);
-void wapi_host_register_biometric(wasmtime_linker_t* linker);
-void wapi_host_register_payments(wasmtime_linker_t* linker);
-void wapi_host_register_usb(wasmtime_linker_t* linker);
-void wapi_host_register_midi(wasmtime_linker_t* linker);
-void wapi_host_register_bluetooth(wasmtime_linker_t* linker);
-void wapi_host_register_camera(wasmtime_linker_t* linker);
-void wapi_host_register_xr(wasmtime_linker_t* linker);
-void wapi_host_register_register(wasmtime_linker_t* linker);
-void wapi_host_register_taskbar(wasmtime_linker_t* linker);
-void wapi_host_register_permissions(wasmtime_linker_t* linker);
-void wapi_host_register_wake_lock(wasmtime_linker_t* linker);
-void wapi_host_register_orientation(wasmtime_linker_t* linker);
-void wapi_host_register_codec(wasmtime_linker_t* linker);
-void wapi_host_register_compression(wasmtime_linker_t* linker);
-void wapi_host_register_media_session(wasmtime_linker_t* linker);
-
-void wapi_host_register_encoding(wasmtime_linker_t* linker);
-void wapi_host_register_authn(wasmtime_linker_t* linker);
-void wapi_host_register_network_info(wasmtime_linker_t* linker);
-void wapi_host_register_battery(wasmtime_linker_t* linker);
-void wapi_host_register_idle(wasmtime_linker_t* linker);
-void wapi_host_register_haptics(wasmtime_linker_t* linker);
-void wapi_host_register_p2p(wasmtime_linker_t* linker);
-void wapi_host_register_hid(wasmtime_linker_t* linker);
-void wapi_host_register_serial(wasmtime_linker_t* linker);
-void wapi_host_register_screen_capture(wasmtime_linker_t* linker);
-void wapi_host_register_contacts(wasmtime_linker_t* linker);
-void wapi_host_register_barcode(wasmtime_linker_t* linker);
-void wapi_host_register_nfc(wasmtime_linker_t* linker);
-void wapi_host_register_user(wasmtime_linker_t* linker);
-
-/* Exposed by wapi_host_user.c; writes current user's stable id (SID/UID
- * string) to `out`. Returns length on success, -1 on failure. */
-int wapi_host_user_current_id(char* out, size_t out_size);
-
-/* Helper to define a linker function with proper error checking */
-#define WAPI_LINK_FUNC(linker, module, name, callback, param_types, param_count, result_types, result_count) \
-    do { \
-        wasm_functype_t* ftype = wasm_functype_new( \
-            &(wasm_valtype_vec_t){ .size = param_count, .data = param_types }, \
-            &(wasm_valtype_vec_t){ .size = result_count, .data = result_types }); \
-        wasmtime_error_t* err = wasmtime_linker_define_func( \
-            linker, module, strlen(module), name, strlen(name), \
-            ftype, callback, NULL, NULL); \
-        wasm_functype_delete(ftype); \
-        if (err) { \
-            wasm_message_t msg; \
-            wasmtime_error_message(err, &msg); \
-            fprintf(stderr, "Failed to link %s.%s: %.*s\n", \
-                    module, name, (int)msg.size, msg.data); \
-            wasm_byte_vec_delete(&msg); \
-            wasmtime_error_delete(err); \
-        } \
-    } while(0)
-
-/* Shorthand wasm_valtype creators */
-static inline wasm_valtype_t* vt_i32(void) { return wasm_valtype_new(WASM_I32); }
-static inline wasm_valtype_t* vt_i64(void) { return wasm_valtype_new(WASM_I64); }
-static inline wasm_valtype_t* vt_f32(void) { return wasm_valtype_new(WASM_F32); }
-
-/* Helper to build functype more easily */
 static inline wasm_functype_t* wapi_functype(int np, wasm_valkind_t* ptypes,
-                                            int nr, wasm_valkind_t* rtypes) {
+                                             int nr, wasm_valkind_t* rtypes) {
     wasm_valtype_vec_t params, results;
     if (np > 0) {
         wasm_valtype_t* pv[16];
@@ -604,25 +566,20 @@ static inline wasm_functype_t* wapi_functype(int np, wasm_valkind_t* ptypes,
     return wasm_functype_new(&params, &results);
 }
 
-/* Even more convenient: build functype from inline arrays */
-#define WAPI_FUNCTYPE(ptypes, pcnt, rtypes, rcnt) \
-    wapi_functype(pcnt, (wasm_valkind_t[]){ ptypes }, rcnt, (wasm_valkind_t[]){ rtypes })
-
-/* Common WAPI callback macro for Wasmtime: extract i32 args easily */
 #define WAPI_ARG_I32(n) ((int32_t)args[n].of.i32)
 #define WAPI_ARG_I64(n) ((int64_t)args[n].of.i64)
 #define WAPI_ARG_U32(n) ((uint32_t)args[n].of.i32)
 #define WAPI_ARG_U64(n) ((uint64_t)args[n].of.i64)
+#define WAPI_ARG_F32(n) (args[n].of.f32)
 
 #define WAPI_RET_I32(val) do { results[0].kind = WASMTIME_I32; results[0].of.i32 = (int32_t)(val); } while(0)
 #define WAPI_RET_I64(val) do { results[0].kind = WASMTIME_I64; results[0].of.i64 = (int64_t)(val); } while(0)
 
-/* Define a linker func using the helper that constructs functype */
 static inline void wapi_linker_define(wasmtime_linker_t* linker,
-                                     const char* module, const char* name,
-                                     wasmtime_func_callback_t cb,
-                                     int np, wasm_valkind_t ptypes[],
-                                     int nr, wasm_valkind_t rtypes[]) {
+                                      const char* module, const char* name,
+                                      wasmtime_func_callback_t cb,
+                                      int np, wasm_valkind_t ptypes[],
+                                      int nr, wasm_valkind_t rtypes[]) {
     wasm_functype_t* ft = wapi_functype(np, ptypes, nr, rtypes);
     wasmtime_error_t* err = wasmtime_linker_define_func(
         linker, module, strlen(module), name, strlen(name),
@@ -638,36 +595,77 @@ static inline void wapi_linker_define(wasmtime_linker_t* linker,
     }
 }
 
-/* Convenience wrappers for common signatures */
-#define WAPI_DEFINE_0_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 0, NULL, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_1_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 1, (wasm_valkind_t[]){WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_2_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 2, (wasm_valkind_t[]){WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_3_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 3, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_4_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_5_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 5, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_6_1(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 6, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
-
-#define WAPI_DEFINE_1_0(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 1, (wasm_valkind_t[]){WASM_I32}, 0, NULL)
-
-#define WAPI_DEFINE_2_0(linker, mod, name, cb) \
-    wapi_linker_define(linker, mod, name, cb, 2, (wasm_valkind_t[]){WASM_I32,WASM_I32}, 0, NULL)
-
 #define WAPI_DEFINE_0_0(linker, mod, name, cb) \
     wapi_linker_define(linker, mod, name, cb, 0, NULL, 0, NULL)
+#define WAPI_DEFINE_0_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 0, NULL, 1, (wasm_valkind_t[]){WASM_I32})
+#define WAPI_DEFINE_1_0(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 1, (wasm_valkind_t[]){WASM_I32}, 0, NULL)
+#define WAPI_DEFINE_1_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 1, (wasm_valkind_t[]){WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
+#define WAPI_DEFINE_2_0(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 2, (wasm_valkind_t[]){WASM_I32,WASM_I32}, 0, NULL)
+#define WAPI_DEFINE_2_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 2, (wasm_valkind_t[]){WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
+#define WAPI_DEFINE_3_0(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 3, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32}, 0, NULL)
+#define WAPI_DEFINE_3_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 3, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
+#define WAPI_DEFINE_3_I64(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 3, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I64})
+#define WAPI_DEFINE_4_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
+#define WAPI_DEFINE_5_0(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 5, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 0, NULL)
+#define WAPI_DEFINE_5_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 5, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
+#define WAPI_DEFINE_6_0(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 6, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 0, NULL)
+#define WAPI_DEFINE_6_1(linker, mod, name, cb) \
+    wapi_linker_define(linker, mod, name, cb, 6, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32}, 1, (wasm_valkind_t[]){WASM_I32})
+/* 6 i32 params, void return — alias for clarity when reading sprite-path code */
+#define WAPI_DEFINE_6_1_0(linker, mod, name, cb) WAPI_DEFINE_6_0(linker, mod, name, cb)
+
+/* ============================================================
+ * Host Registration Forward Declarations
+ * ============================================================ */
+
+void wapi_host_register_core(wasmtime_linker_t* linker);
+void wapi_host_register_env(wasmtime_linker_t* linker);
+void wapi_host_register_random(wasmtime_linker_t* linker);
+void wapi_host_register_clock(wasmtime_linker_t* linker);
+void wapi_host_register_surface(wasmtime_linker_t* linker);
+void wapi_host_register_window(wasmtime_linker_t* linker);
+void wapi_host_register_input(wasmtime_linker_t* linker);
+void wapi_host_register_audio(wasmtime_linker_t* linker);
+void wapi_host_register_wgpu(wasmtime_linker_t* linker);
+void wapi_host_register_fs(wasmtime_linker_t* linker);
+void wapi_host_register_memory(wasmtime_linker_t* linker);
+void wapi_host_register_io(wasmtime_linker_t* linker);
+void wapi_host_register_net(wasmtime_linker_t* linker);
+void wapi_host_register_transfer(wasmtime_linker_t* linker);
+void wapi_host_register_seat(wasmtime_linker_t* linker);
+void wapi_host_register_kv(wasmtime_linker_t* linker);
+void wapi_host_register_crypto(wasmtime_linker_t* linker);
+void wapi_host_register_text(wasmtime_linker_t* linker);
+void wapi_host_register_font(wasmtime_linker_t* linker);
+void wapi_host_register_video(wasmtime_linker_t* linker);
+void wapi_host_register_module(wasmtime_linker_t* linker);
+void wapi_host_register_notifications(wasmtime_linker_t* linker);
+void wapi_host_register_permissions(wasmtime_linker_t* linker);
+
+/* CLI-seeded hash→path cache (wapi_host_module.c). `spec` is
+ * "<64-char lowercase sha256 hex>=<filesystem path>". Returns true on
+ * success. */
+bool wapi_host_module_cache_add(const char* spec);
+
+/* Translate one platform event into WAPI event format and push
+ * onto the host event queue. Defined in wapi_host_input.c. */
+void wapi_host_translate_event(const wapi_plat_event_t* pe);
+
+/* Drain all pending platform events, translating each onto the
+ * host event queue. Called from io.poll / io.wait. */
+void wapi_host_pump_platform_events(void);
 
 #ifdef __cplusplus
 }

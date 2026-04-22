@@ -160,7 +160,8 @@ void wapi_host_register_video(wasmtime_linker_t* linker) {
     WAPI_DEFINE_2_1(linker, "wapi_video", "get_state",         cb_video_get_state);
     WAPI_DEFINE_2_1(linker, "wapi_video", "get_position",      cb_video_get_position);
     WAPI_DEFINE_2_1(linker, "wapi_video", "get_frame_texture", cb_video_get_frame_texture);
-    WAPI_DEFINE_6_1(linker, "wapi_video", "render_to_texture", cb_video_render_to_texture);
+    /* Header declares this as `blit`, not `render_to_texture` */
+    WAPI_DEFINE_6_1(linker, "wapi_video", "blit",              cb_video_render_to_texture);
     WAPI_DEFINE_2_1(linker, "wapi_video", "bind_audio",        cb_video_bind_audio);
 
     /* set_volume: (i32, f32) -> i32 */

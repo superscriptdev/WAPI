@@ -15,8 +15,8 @@
 
 /* ============================================================
  * Shaping: shape
- * (i32 font_ptr, i32 text_ptr, i32 text_len, i32 script, i32 dir) -> i32
- * ============================================================ */
+ * (i32 font_ptr, i32 text_sv_ptr, i32 script, i32 dir) -> i32
+ * (stringview is 16B, passed by pointer per the wasm32 ABI) */
 static wasm_trap_t* cb_shape(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
@@ -216,7 +216,7 @@ static wasm_trap_t* cb_layout_destroy(
 
 void wapi_host_register_text(wasmtime_linker_t* linker) {
     /* Shaping */
-    WAPI_DEFINE_5_1(linker, "wapi_text", "shape",                 cb_shape);
+    WAPI_DEFINE_4_1(linker, "wapi_text", "shape",                 cb_shape);
     WAPI_DEFINE_1_1(linker, "wapi_text", "shape_glyph_count",     cb_shape_glyph_count);
     WAPI_DEFINE_3_1(linker, "wapi_text", "shape_get_glyphs",      cb_shape_get_glyphs);
     WAPI_DEFINE_2_1(linker, "wapi_text", "shape_get_font_metrics", cb_shape_get_font_metrics);

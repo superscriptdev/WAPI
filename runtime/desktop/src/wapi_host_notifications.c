@@ -31,7 +31,10 @@ static wasm_trap_t* cb_notify_close(void* env, wasmtime_caller_t* caller,
  * Registration
  * ============================================================ */
 
+/* Per wapi_notifications.h: only `close` is a direct sync import.
+ * `show` is async via WAPI_IO_OP_NOTIFY_SHOW, dispatched through
+ * wapi_host_io.c. */
 void wapi_host_register_notifications(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_2_1(linker, "wapi_notify", "show",  cb_notify_show);
     WAPI_DEFINE_1_1(linker, "wapi_notify", "close", cb_notify_close);
+    (void)cb_notify_show; /* scaffolding for WAPI_IO_OP_NOTIFY_SHOW handler */
 }

@@ -1,31 +1,69 @@
 /**
  * WAPI Desktop Runtime - Environment and Process
  *
- * Implements: wapi_env.args_count, wapi_env.args_get,
- *             wapi_env.environ_count, wapi_env.environ_get,
- *             wapi_env.getenv, wapi_env.random_get,
- *             wapi_env.exit, wapi_env.get_locale,
- *             wapi_env.get_timezone, wapi_env.get_error
+ * Module: "wapi_env" (per wapi_env.h).
+ *   args_count, args_get, environ_count, environ_get, getenv,
+ *   exit, open_url, get_locale, get_timezone, get_error.
+ *
+ * Random lives in its own module "wapi_random" (wapi_host_random.c)
+ * because not every runtime can supply entropy.
+ *
+ * Every `wapi_size_t` param is wasm i64; every `wapi_size_t*` out
+ * pointer targets a u64; every `wapi_stringview_t` arrives as a
+ * pointer to the 16-byte {u64 data, u64 length} struct in wasm
+ * memory (not expanded into ptr+len i32s).
  */
 
 #include "wapi_host.h"
 #include <time.h>
 
 #ifdef _WIN32
-#include <bcrypt.h>
-#pragma comment(lib, "bcrypt.lib")
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
-#endif
-
-/* For environ on POSIX */
-#ifdef _WIN32
-/* On Windows we use GetEnvironmentStrings */
-#include <windows.h>
-#else
 extern char** environ;
 #endif
+
+#define MOD "wapi_env"
+
+/* Read a wapi_stringview_t at sv_ptr into NUL-terminated buf.
+ * Returns written length (excluding NUL), or -1 on invalid. */
+static int32_t read_stringview(uint32_t sv_ptr, char* out, size_t out_cap) {
+    if (out_cap == 0) return -1;
+    void* sv = wapi_wasm_ptr(sv_ptr, 16);
+    if (!sv) return -1;
+    uint64_t data, length;
+    memcpy(&data,   (uint8_t*)sv + 0, 8);
+    memcpy(&length, (uint8_t*)sv + 8, 8);
+    if (data == 0) { out[0] = '\0'; return 0; }
+
+    size_t copy;
+    if (length == UINT64_MAX) {
+        const char* s = (const char*)wapi_wasm_ptr((uint32_t)data, 1);
+        if (!s) return -1;
+        copy = strnlen(s, out_cap - 1);
+        memcpy(out, s, copy);
+    } else {
+        copy = (size_t)length < out_cap - 1 ? (size_t)length : out_cap - 1;
+        const char* s = (const char*)wapi_wasm_ptr((uint32_t)data, (uint32_t)copy);
+        if (!s && copy > 0) return -1;
+        if (s) memcpy(out, s, copy);
+    }
+    out[copy] = '\0';
+    return (int32_t)copy;
+}
+
+/* Write a UTF-8 value to a guest buffer.  `len_ptr` (u64) always
+ * receives the FULL length of the value so callers can detect
+ * truncation and re-query with a bigger buffer. */
+static void write_bounded(uint32_t buf_ptr, uint64_t buf_len,
+                          uint32_t len_ptr, const char* val, uint64_t val_len)
+{
+    wapi_wasm_write_u64(len_ptr, val_len);
+    uint64_t copy = val_len < buf_len ? val_len : buf_len;
+    if (copy > 0) wapi_wasm_write_bytes(buf_ptr, val, (uint32_t)copy);
+}
 
 /* ============================================================
  * Command-Line Arguments
@@ -37,38 +75,26 @@ static wasm_trap_t* host_args_count(
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller; (void)args;
+    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
     WAPI_RET_I32(g_rt.app_argc);
     return NULL;
 }
 
-/* args_get: (i32 index, i32 buf, i32 buf_len, i32 arg_len_out) -> i32 */
+/* args_get: (i32 index, i32 buf, i64 buf_len, i32 arg_len_out) -> i32 */
 static wasm_trap_t* host_args_get(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
-    int32_t index = WAPI_ARG_I32(0);
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  index   = WAPI_ARG_I32(0);
     uint32_t buf_ptr = WAPI_ARG_U32(1);
-    uint32_t buf_len = WAPI_ARG_U32(2);
-    uint32_t arg_len_ptr = WAPI_ARG_U32(3);
+    uint64_t buf_len = WAPI_ARG_U64(2);
+    uint32_t len_ptr = WAPI_ARG_U32(3);
 
-    if (index < 0 || index >= g_rt.app_argc) {
-        WAPI_RET_I32(WAPI_ERR_RANGE);
-        return NULL;
-    }
-
+    if (index < 0 || index >= g_rt.app_argc) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
     const char* arg = g_rt.app_argv[index];
-    uint32_t len = (uint32_t)strlen(arg);
-
-    wapi_wasm_write_u32(arg_len_ptr, len);
-
-    uint32_t copy_len = len < buf_len ? len : buf_len;
-    if (copy_len > 0) {
-        wapi_wasm_write_bytes(buf_ptr, arg, copy_len);
-    }
-
+    write_bounded(buf_ptr, buf_len, len_ptr, arg, (uint64_t)strlen(arg));
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
@@ -78,21 +104,16 @@ static wasm_trap_t* host_args_get(
  * ============================================================ */
 
 #ifdef _WIN32
-/* Count environment variables on Windows */
 static int count_environ(void) {
     LPCH env_block = GetEnvironmentStringsA();
     if (!env_block) return 0;
     int count = 0;
     const char* p = env_block;
-    while (*p) {
-        count++;
-        p += strlen(p) + 1;
-    }
+    while (*p) { count++; p += strlen(p) + 1; }
     FreeEnvironmentStringsA(env_block);
     return count;
 }
 
-/* Get environment variable by index on Windows */
 static const char* get_environ_by_index(int index) {
     static char env_buf[4096];
     LPCH env_block = GetEnvironmentStringsA();
@@ -117,19 +138,13 @@ static const char* get_environ_by_index(int index) {
 #else
 static int count_environ(void) {
     int count = 0;
-    if (environ) {
-        while (environ[count]) count++;
-    }
+    if (environ) while (environ[count]) count++;
     return count;
 }
-
 static const char* get_environ_by_index(int index) {
     if (!environ) return NULL;
-    int count = 0;
-    while (environ[count]) {
-        if (count == index) return environ[count];
-        count++;
-    }
+    int i = 0;
+    while (environ[i]) { if (i == index) return environ[i]; i++; }
     return NULL;
 }
 #endif
@@ -140,141 +155,51 @@ static wasm_trap_t* host_environ_count(
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller; (void)args;
+    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
     WAPI_RET_I32(count_environ());
     return NULL;
 }
 
-/* environ_get: (i32 index, i32 buf, i32 buf_len, i32 var_len_out) -> i32 */
+/* environ_get: (i32 index, i32 buf, i64 buf_len, i32 var_len_out) -> i32 */
 static wasm_trap_t* host_environ_get(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
-    int32_t index = WAPI_ARG_I32(0);
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  index   = WAPI_ARG_I32(0);
     uint32_t buf_ptr = WAPI_ARG_U32(1);
-    uint32_t buf_len = WAPI_ARG_U32(2);
-    uint32_t var_len_ptr = WAPI_ARG_U32(3);
+    uint64_t buf_len = WAPI_ARG_U64(2);
+    uint32_t len_ptr = WAPI_ARG_U32(3);
 
     const char* var = get_environ_by_index(index);
-    if (!var) {
-        WAPI_RET_I32(WAPI_ERR_RANGE);
-        return NULL;
-    }
-
-    uint32_t len = (uint32_t)strlen(var);
-    wapi_wasm_write_u32(var_len_ptr, len);
-
-    uint32_t copy_len = len < buf_len ? len : buf_len;
-    if (copy_len > 0) {
-        wapi_wasm_write_bytes(buf_ptr, var, copy_len);
-    }
-
+    if (!var) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
+    write_bounded(buf_ptr, buf_len, len_ptr, var, (uint64_t)strlen(var));
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* getenv: (i32 name, i32 name_len, i32 buf, i32 buf_len, i32 val_len_out) -> i32 */
+/* getenv: (i32 name_sv, i32 buf, i64 buf_len, i32 val_len_out) -> i32 */
 static wasm_trap_t* host_getenv(
     void* env_p, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env_p; (void)caller;
-    uint32_t name_ptr = WAPI_ARG_U32(0);
-    uint32_t name_len = WAPI_ARG_U32(1);
-    uint32_t buf_ptr = WAPI_ARG_U32(2);
-    uint32_t buf_len = WAPI_ARG_U32(3);
-    uint32_t val_len_ptr = WAPI_ARG_U32(4);
+    (void)env_p; (void)caller; (void)nargs; (void)nresults;
+    uint32_t name_sv = WAPI_ARG_U32(0);
+    uint32_t buf_ptr = WAPI_ARG_U32(1);
+    uint64_t buf_len = WAPI_ARG_U64(2);
+    uint32_t len_ptr = WAPI_ARG_U32(3);
 
-    const char* name = wapi_wasm_read_string(name_ptr, name_len);
-    if (!name) {
-        WAPI_RET_I32(WAPI_ERR_INVAL);
-        return NULL;
-    }
-
-    /* Make null-terminated copy */
-    char name_buf[256];
-    uint32_t copy_len = name_len < 255 ? name_len : 255;
-    memcpy(name_buf, name, copy_len);
-    name_buf[copy_len] = '\0';
-
-    const char* val = getenv(name_buf);
-    if (!val) {
-        WAPI_RET_I32(WAPI_ERR_NOENT);
-        return NULL;
-    }
-
-    uint32_t val_slen = (uint32_t)strlen(val);
-    wapi_wasm_write_u32(val_len_ptr, val_slen);
-
-    uint32_t write_len = val_slen < buf_len ? val_slen : buf_len;
-    if (write_len > 0) {
-        wapi_wasm_write_bytes(buf_ptr, val, write_len);
-    }
-
+    char name[256];
+    if (read_stringview(name_sv, name, sizeof(name)) < 0) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    const char* val = getenv(name);
+    if (!val) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
+    write_bounded(buf_ptr, buf_len, len_ptr, val, (uint64_t)strlen(val));
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* ============================================================
- * Cryptographic Random
- * ============================================================ */
-
-/* random_get: (i32 buf, i32 len) -> i32 */
-static wasm_trap_t* host_random_get(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller;
-    uint32_t buf_ptr = WAPI_ARG_U32(0);
-    uint32_t len = WAPI_ARG_U32(1);
-
-    void* host_buf = wapi_wasm_ptr(buf_ptr, len);
-    if (!host_buf && len > 0) {
-        WAPI_RET_I32(WAPI_ERR_INVAL);
-        return NULL;
-    }
-
-    if (len == 0) {
-        WAPI_RET_I32(WAPI_OK);
-        return NULL;
-    }
-
-#ifdef _WIN32
-    NTSTATUS status = BCryptGenRandom(NULL, (PUCHAR)host_buf, len,
-                                       BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-    if (!BCRYPT_SUCCESS(status)) {
-        WAPI_RET_I32(WAPI_ERR_IO);
-        return NULL;
-    }
-#else
-    /* Use /dev/urandom on Unix-like systems */
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) {
-        WAPI_RET_I32(WAPI_ERR_IO);
-        return NULL;
-    }
-    size_t remaining = len;
-    uint8_t* p = (uint8_t*)host_buf;
-    while (remaining > 0) {
-        ssize_t n = read(fd, p, remaining);
-        if (n <= 0) {
-            close(fd);
-            WAPI_RET_I32(WAPI_ERR_IO);
-            return NULL;
-        }
-        p += n;
-        remaining -= (size_t)n;
-    }
-    close(fd);
-#endif
-
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
 
 /* ============================================================
  * Process Control
@@ -286,14 +211,36 @@ static wasm_trap_t* host_exit(
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)results; (void)nresults;
     int32_t code = WAPI_ARG_I32(0);
-
-    /* Create a trap to terminate Wasm execution */
     char msg[64];
     snprintf(msg, sizeof(msg), "wapi_env_exit(%d)", code);
     g_rt.running = false;
     return wasmtime_trap_new(msg, strlen(msg));
+}
+
+/* open_url: (i32 url_sv) -> i32 */
+static wasm_trap_t* host_open_url(
+    void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    uint32_t url_sv = WAPI_ARG_U32(0);
+    char url[2048];
+    if (read_stringview(url_sv, url, sizeof(url)) < 0) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+
+#ifdef _WIN32
+    wchar_t wurl[2048];
+    if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 2048) <= 0) {
+        WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
+    }
+    HINSTANCE r = ShellExecuteW(NULL, L"open", wurl, NULL, NULL, SW_SHOWNORMAL);
+    WAPI_RET_I32(((INT_PTR)r > 32) ? WAPI_OK : WAPI_ERR_IO);
+#else
+    WAPI_RET_I32(WAPI_ERR_NOTSUP);
+#endif
+    return NULL;
 }
 
 /* ============================================================
@@ -303,115 +250,94 @@ static wasm_trap_t* host_exit(
 static void detect_locale(char* out, size_t out_size) {
 #ifdef _WIN32
     wchar_t wbuf[LOCALE_NAME_MAX_LENGTH];
-    int wn = GetUserDefaultLocaleName(wbuf, LOCALE_NAME_MAX_LENGTH);
-    if (wn > 0) {
-        int n = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, out, (int)out_size, NULL, NULL);
-        if (n > 0) return;
+    if (GetUserDefaultLocaleName(wbuf, LOCALE_NAME_MAX_LENGTH) > 0) {
+        if (WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, out, (int)out_size, NULL, NULL) > 0) return;
     }
 #else
-    const char* env = getenv("LC_ALL");
-    if (!env || !*env) env = getenv("LC_MESSAGES");
-    if (!env || !*env) env = getenv("LANG");
-    if (env && *env) {
-        /* Strip ".UTF-8" and "@modifier" suffixes, convert '_' to '-' */
+    const char* e = getenv("LC_ALL");
+    if (!e || !*e) e = getenv("LC_MESSAGES");
+    if (!e || !*e) e = getenv("LANG");
+    if (e && *e) {
         size_t i = 0;
-        for (; i + 1 < out_size && env[i] && env[i] != '.' && env[i] != '@'; i++) {
-            out[i] = (env[i] == '_') ? '-' : env[i];
+        for (; i + 1 < out_size && e[i] && e[i] != '.' && e[i] != '@'; i++) {
+            out[i] = (e[i] == '_') ? '-' : e[i];
         }
         out[i] = '\0';
         if (i > 0) return;
     }
 #endif
-    const char* fallback = "en-US";
-    size_t flen = strlen(fallback);
-    if (flen >= out_size) flen = out_size - 1;
-    memcpy(out, fallback, flen);
-    out[flen] = '\0';
+    const char* fb = "en-US";
+    size_t fl = strlen(fb);
+    if (fl >= out_size) fl = out_size - 1;
+    memcpy(out, fb, fl);
+    out[fl] = '\0';
 }
 
 static void detect_timezone(char* out, size_t out_size) {
 #ifdef _WIN32
     DYNAMIC_TIME_ZONE_INFORMATION tzi;
     if (GetDynamicTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID) {
-        int n = WideCharToMultiByte(CP_UTF8, 0, tzi.TimeZoneKeyName, -1,
-                                    out, (int)out_size, NULL, NULL);
-        if (n > 0) return;
+        if (WideCharToMultiByte(CP_UTF8, 0, tzi.TimeZoneKeyName, -1,
+                                out, (int)out_size, NULL, NULL) > 0) return;
     }
 #else
-    const char* env = getenv("TZ");
-    if (env && *env) {
-        if (env[0] == ':') env++;
-        size_t len = strlen(env);
+    const char* e = getenv("TZ");
+    if (e && *e) {
+        if (e[0] == ':') e++;
+        size_t len = strlen(e);
         if (len >= out_size) len = out_size - 1;
-        memcpy(out, env, len);
+        memcpy(out, e, len);
         out[len] = '\0';
         return;
     }
-    /* Try /etc/timezone or readlink /etc/localtime */
     FILE* f = fopen("/etc/timezone", "r");
     if (f) {
         if (fgets(out, (int)out_size, f)) {
             size_t len = strlen(out);
-            while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r')) {
-                out[--len] = '\0';
-            }
+            while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r')) out[--len] = '\0';
             fclose(f);
             if (len > 0) return;
         }
         fclose(f);
     }
 #endif
-    const char* fallback = "UTC";
-    size_t flen = strlen(fallback);
-    if (flen >= out_size) flen = out_size - 1;
-    memcpy(out, fallback, flen);
-    out[flen] = '\0';
+    const char* fb = "UTC";
+    size_t fl = strlen(fb);
+    if (fl >= out_size) fl = out_size - 1;
+    memcpy(out, fb, fl);
+    out[fl] = '\0';
 }
 
-/* get_locale: (i32 buf, i32 buf_len, i32 len_ptr) -> i32 */
+/* get_locale: (i32 buf, i64 buf_len, i32 len_ptr) -> i32 */
 static wasm_trap_t* host_get_locale(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)nresults;
     uint32_t buf_ptr = WAPI_ARG_U32(0);
-    uint32_t buf_len = WAPI_ARG_U32(1);
+    uint64_t buf_len = WAPI_ARG_U64(1);
     uint32_t len_ptr = WAPI_ARG_U32(2);
-
     char locale[96];
     detect_locale(locale, sizeof(locale));
-
-    uint32_t len = (uint32_t)strlen(locale);
-    wapi_wasm_write_u32(len_ptr, len);
-
-    uint32_t copy_len = len < buf_len ? len : buf_len;
-    if (copy_len > 0) wapi_wasm_write_bytes(buf_ptr, locale, copy_len);
-
+    write_bounded(buf_ptr, buf_len, len_ptr, locale, (uint64_t)strlen(locale));
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-/* get_timezone: (i32 buf, i32 buf_len, i32 len_ptr) -> i32 */
+/* get_timezone: (i32 buf, i64 buf_len, i32 len_ptr) -> i32 */
 static wasm_trap_t* host_get_timezone(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)nresults;
     uint32_t buf_ptr = WAPI_ARG_U32(0);
-    uint32_t buf_len = WAPI_ARG_U32(1);
+    uint64_t buf_len = WAPI_ARG_U64(1);
     uint32_t len_ptr = WAPI_ARG_U32(2);
-
     char tz[128];
     detect_timezone(tz, sizeof(tz));
-
-    uint32_t len = (uint32_t)strlen(tz);
-    wapi_wasm_write_u32(len_ptr, len);
-
-    uint32_t copy_len = len < buf_len ? len : buf_len;
-    if (copy_len > 0) wapi_wasm_write_bytes(buf_ptr, tz, copy_len);
-
+    write_bounded(buf_ptr, buf_len, len_ptr, tz, (uint64_t)strlen(tz));
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
@@ -420,25 +346,18 @@ static wasm_trap_t* host_get_timezone(
  * Error Messages
  * ============================================================ */
 
-/* get_error: (i32 buf, i32 buf_len, i32 msg_len_out) -> i32 */
+/* get_error: (i32 buf, i64 buf_len, i32 msg_len_out) -> i32 */
 static wasm_trap_t* host_get_error(
     void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller;
+    (void)env; (void)caller; (void)nargs; (void)nresults;
     uint32_t buf_ptr = WAPI_ARG_U32(0);
-    uint32_t buf_len = WAPI_ARG_U32(1);
-    uint32_t msg_len_ptr = WAPI_ARG_U32(2);
-
-    uint32_t len = (uint32_t)strlen(g_rt.last_error);
-    wapi_wasm_write_u32(msg_len_ptr, len);
-
-    uint32_t copy_len = len < buf_len ? len : buf_len;
-    if (copy_len > 0) {
-        wapi_wasm_write_bytes(buf_ptr, g_rt.last_error, copy_len);
-    }
-
+    uint64_t buf_len = WAPI_ARG_U64(1);
+    uint32_t len_ptr = WAPI_ARG_U32(2);
+    write_bounded(buf_ptr, buf_len, len_ptr, g_rt.last_error,
+                  (uint64_t)strlen(g_rt.last_error));
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
@@ -448,17 +367,32 @@ static wasm_trap_t* host_get_error(
  * ============================================================ */
 
 void wapi_host_register_env(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_0_1(linker, "wapi_env", "args_count",    host_args_count);
-    WAPI_DEFINE_4_1(linker, "wapi_env", "args_get",      host_args_get);
-    WAPI_DEFINE_0_1(linker, "wapi_env", "environ_count", host_environ_count);
-    WAPI_DEFINE_4_1(linker, "wapi_env", "environ_get",   host_environ_get);
-    WAPI_DEFINE_5_1(linker, "wapi_env", "getenv",        host_getenv);
-    WAPI_DEFINE_2_1(linker, "wapi_env", "random_get",    host_random_get);
+    WAPI_DEFINE_0_1(linker, MOD, "args_count",    host_args_count);
 
-    /* exit: (i32) -> void (but we trap, so define with no returns) */
-    WAPI_DEFINE_1_0(linker, "wapi_env", "exit", host_exit);
+    wapi_linker_define(linker, MOD, "args_get", host_args_get,
+        4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
 
-    WAPI_DEFINE_3_1(linker, "wapi_env", "get_locale",   host_get_locale);
-    WAPI_DEFINE_3_1(linker, "wapi_env", "get_timezone", host_get_timezone);
-    WAPI_DEFINE_3_1(linker, "wapi_env", "get_error",    host_get_error);
+    WAPI_DEFINE_0_1(linker, MOD, "environ_count", host_environ_count);
+
+    wapi_linker_define(linker, MOD, "environ_get", host_environ_get,
+        4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+
+    wapi_linker_define(linker, MOD, "getenv", host_getenv,
+        4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+
+    WAPI_DEFINE_1_0(linker, MOD, "exit",     host_exit);
+    WAPI_DEFINE_1_1(linker, MOD, "open_url", host_open_url);
+
+    wapi_linker_define(linker, MOD, "get_locale", host_get_locale,
+        3, (wasm_valkind_t[]){WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+    wapi_linker_define(linker, MOD, "get_timezone", host_get_timezone,
+        3, (wasm_valkind_t[]){WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+    wapi_linker_define(linker, MOD, "get_error", host_get_error,
+        3, (wasm_valkind_t[]){WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
 }

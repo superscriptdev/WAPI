@@ -1146,54 +1146,18 @@ static wasm_trap_t* cb_derive_key(
  * Registration
  * ============================================================ */
 
+/* Per wapi_crypto.h: only `key_release` is a direct sync import.
+ * Everything else (hash / hash_create / hash_update / hash_finish /
+ * encrypt / decrypt / sign / verify / key_import_raw / key_generate /
+ * key_generate_pair / derive_key) is submitted via wapi_io_t using
+ * the WAPI_IO_OP_CRYPTO_* opcodes and dispatched in wapi_host_io.c.
+ * The cb_* callbacks below are kept as scaffolding for the op_ctx_t
+ * handlers the IO dispatch will eventually call — see NEXT_STEPS.md.
+ */
 void wapi_host_register_crypto(wasmtime_linker_t* linker) {
-    const char* mod = "wapi_crypto";
-
-    /* hash: 5 args -> 1 result */
-    WAPI_DEFINE_5_1(linker, mod, "hash", cb_hash);
-
-    /* hash_create: 2 args -> 1 result */
-    WAPI_DEFINE_2_1(linker, mod, "hash_create", cb_hash_create);
-
-    /* hash_update: 3 args -> 1 result */
-    WAPI_DEFINE_3_1(linker, mod, "hash_update", cb_hash_update);
-
-    /* hash_finish: 3 args -> 1 result */
-    WAPI_DEFINE_3_1(linker, mod, "hash_finish", cb_hash_finish);
-
-    /* key_import_raw: 4 args -> 1 result */
-    WAPI_DEFINE_4_1(linker, mod, "key_import_raw", cb_key_import_raw);
-
-    /* key_generate: 3 args -> 1 result */
-    WAPI_DEFINE_3_1(linker, mod, "key_generate", cb_key_generate);
-
-    /* key_generate_pair: 4 args -> 1 result */
-    WAPI_DEFINE_4_1(linker, mod, "key_generate_pair", cb_key_generate_pair);
-
-    /* key_release: 1 arg -> 1 result */
-    WAPI_DEFINE_1_1(linker, mod, "key_release", cb_key_release);
-
-    /* encrypt: 8 args -> 1 result (no WAPI_DEFINE_8_1 macro, use wapi_linker_define) */
-    wapi_linker_define(linker, mod, "encrypt", cb_encrypt,
-        8, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,
-                              WASM_I32,WASM_I32,WASM_I32,WASM_I32},
-        1, (wasm_valkind_t[]){WASM_I32});
-
-    /* decrypt: 8 args -> 1 result */
-    wapi_linker_define(linker, mod, "decrypt", cb_decrypt,
-        8, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,
-                              WASM_I32,WASM_I32,WASM_I32,WASM_I32},
-        1, (wasm_valkind_t[]){WASM_I32});
-
-    /* sign: 6 args -> 1 result */
-    WAPI_DEFINE_6_1(linker, mod, "sign", cb_sign);
-
-    /* verify: 6 args -> 1 result */
-    WAPI_DEFINE_6_1(linker, mod, "verify", cb_verify);
-
-    /* derive_key: 10 args -> 1 result */
-    wapi_linker_define(linker, mod, "derive_key", cb_derive_key,
-        10, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32,
-                               WASM_I32,WASM_I32,WASM_I32,WASM_I32,WASM_I32},
-        1, (wasm_valkind_t[]){WASM_I32});
+    WAPI_DEFINE_1_1(linker, "wapi_crypto", "key_release", cb_key_release);
+    (void)cb_hash; (void)cb_hash_create; (void)cb_hash_update; (void)cb_hash_finish;
+    (void)cb_key_import_raw; (void)cb_key_generate; (void)cb_key_generate_pair;
+    (void)cb_encrypt; (void)cb_decrypt; (void)cb_sign; (void)cb_verify;
+    (void)cb_derive_key;
 }

@@ -2,13 +2,10 @@
  * WAPI - Haptics
  * Version 1.0.0
  *
- * Device vibration patterns and advanced haptic effects.
- * Gamepad rumble is in wapi_input.h (Gamepad section).
- *
- * Maps to: Vibration API (Web),
- *          UIImpactFeedbackGenerator / CoreHaptics (iOS),
- *          Vibrator / VibratorManager (Android),
- *          SDL_Haptic (Desktop)
+ * Haptic endpoints are acquired through the role system
+ * (WAPI_ROLE_HAPTIC). Gamepad rumble is addressed via a HAPTIC role
+ * on the gamepad's UID. Built-in phone/browser vibration is a HAPTIC
+ * role with FOLLOW_DEFAULT and no target_uid.
  *
  * Import module: "wapi_haptic"
  */
@@ -23,7 +20,7 @@ extern "C" {
 #endif
 
 /* ============================================================
- * Haptic Effect Types
+ * Effect Types
  * ============================================================ */
 
 typedef enum wapi_haptic_effect_t {
@@ -38,7 +35,7 @@ typedef enum wapi_haptic_effect_t {
 } wapi_haptic_effect_t;
 
 /* ============================================================
- * Haptic Feature Flags (returned by haptic_get_features)
+ * Feature Flags
  * ============================================================ */
 
 #define WAPI_HAPTIC_FEAT_CONSTANT  0x0001
@@ -48,133 +45,73 @@ typedef enum wapi_haptic_effect_t {
 #define WAPI_HAPTIC_FEAT_RAMP      0x0010
 #define WAPI_HAPTIC_FEAT_RUMBLE    0x0020
 #define WAPI_HAPTIC_FEAT_CUSTOM    0x0040
+#define WAPI_HAPTIC_FEAT_PATTERN   0x0080 /* accepts duration patterns */
 
 /* ============================================================
- * Simple Vibration (phone / browser)
+ * Endpoint Metadata
  * ============================================================ */
 
 /**
- * Vibrate with a pattern.
+ * Metadata about a resolved haptic endpoint.
  *
- * The pattern is an array of uint32_t durations in milliseconds,
- * alternating between vibrate and pause intervals (starting with
- * vibrate). For a single vibration, pass a one-element array.
- *
- * @param pattern_ptr  Pointer to array of uint32_t durations (ms).
- * @param pattern_len  Number of elements in the pattern array.
- * @return WAPI_OK on success, WAPI_ERR_NOTSUP if not supported.
- *
- * Wasm signature: (i32, i32) -> i32
+ * Layout (24 bytes, align 8):
+ *   Offset  0: uint32_t features   bitmask of WAPI_HAPTIC_FEAT_*
+ *   Offset  4: uint32_t _pad
+ *   Offset  8: uint8_t  uid[16]
  */
-WAPI_IMPORT(wapi_haptic, vibrate)
-wapi_result_t wapi_haptic_vibrate(const uint32_t* pattern_ptr,
-                                  wapi_size_t pattern_len);
+typedef struct wapi_haptic_endpoint_info_t {
+    uint32_t features;
+    uint32_t _pad;
+    uint8_t  uid[16];
+} wapi_haptic_endpoint_info_t;
 
-/**
- * Cancel any ongoing vibration.
- *
- * @return WAPI_OK on success.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi_haptic, vibrate_cancel)
-wapi_result_t wapi_haptic_vibrate_cancel(void);
+_Static_assert(sizeof(wapi_haptic_endpoint_info_t) == 24, "wapi_haptic_endpoint_info_t must be 24 bytes");
+_Static_assert(_Alignof(wapi_haptic_endpoint_info_t) == 4, "wapi_haptic_endpoint_info_t must be 4-byte aligned");
 
-/* ============================================================
- * Device-Level Haptics (SDL_Haptic backed)
- * ============================================================ */
+WAPI_IMPORT(wapi_haptic, endpoint_info)
+wapi_result_t wapi_haptic_endpoint_info(wapi_handle_t handle,
+                                        wapi_haptic_endpoint_info_t* out,
+                                        char* name_buf, wapi_size_t name_buf_len,
+                                        wapi_size_t* name_len);
 
-/**
- * Open a haptic device by index.
- *
- * @param device_index  Device index (0-based).
- * @param out_handle    [out] Haptic device handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_open)
-wapi_result_t wapi_haptic_open(uint32_t device_index,
-                               wapi_handle_t* out_handle);
-
-/**
- * Close a haptic device.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_close)
+/** Close a granted haptic endpoint. */
+WAPI_IMPORT(wapi_haptic, close)
 wapi_result_t wapi_haptic_close(wapi_handle_t handle);
 
-/**
- * Simple rumble effect on a haptic device.
- *
- * @param handle       Haptic device handle.
- * @param strength     Strength [0.0, 1.0] (pointer to float).
- * @param duration_ms  Duration in milliseconds.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_rumble)
+/* ============================================================
+ * Playback
+ * ============================================================ */
+
+/** Vibrate with a pattern (ms durations alternating vibrate/pause). */
+WAPI_IMPORT(wapi_haptic, vibrate)
+wapi_result_t wapi_haptic_vibrate(wapi_handle_t handle,
+                                  const uint32_t* pattern_ptr,
+                                  wapi_size_t pattern_len);
+
+/** Cancel any ongoing playback on this endpoint. */
+WAPI_IMPORT(wapi_haptic, cancel)
+wapi_result_t wapi_haptic_cancel(wapi_handle_t handle);
+
+/** Simple rumble. */
+WAPI_IMPORT(wapi_haptic, rumble)
 wapi_result_t wapi_haptic_rumble(wapi_handle_t handle,
                                  const float* strength,
                                  uint32_t duration_ms);
 
-/**
- * Query supported haptic features for a device.
- *
- * @param handle  Haptic device handle.
- * @return Bitmask of WAPI_HAPTIC_FEAT_* flags, or 0 on error.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_get_features)
-uint32_t wapi_haptic_get_features(wapi_handle_t handle);
-
-/**
- * Create an advanced haptic effect (constant, periodic, ramp).
- *
- * @param handle       Haptic device handle.
- * @param desc_ptr     Pointer to effect descriptor.
- * @param desc_len     Size of descriptor in bytes.
- * @param out_effect   [out] Effect handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_effect_create)
+/** Create a parametric effect (constant, periodic, ramp). */
+WAPI_IMPORT(wapi_haptic, effect_create)
 wapi_result_t wapi_haptic_effect_create(wapi_handle_t handle,
                                         const void* desc_ptr,
                                         wapi_size_t desc_len,
                                         wapi_handle_t* out_effect);
 
-/**
- * Play a previously created haptic effect.
- *
- * @param effect     Effect handle.
- * @param iterations Number of iterations (0 = infinite).
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_effect_play)
-wapi_result_t wapi_haptic_effect_play(wapi_handle_t effect,
-                                      uint32_t iterations);
+WAPI_IMPORT(wapi_haptic, effect_play)
+wapi_result_t wapi_haptic_effect_play(wapi_handle_t effect, uint32_t iterations);
 
-/**
- * Stop a running haptic effect.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_effect_stop)
+WAPI_IMPORT(wapi_haptic, effect_stop)
 wapi_result_t wapi_haptic_effect_stop(wapi_handle_t effect);
 
-/**
- * Destroy a haptic effect.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_haptic, haptic_effect_destroy)
+WAPI_IMPORT(wapi_haptic, effect_destroy)
 wapi_result_t wapi_haptic_effect_destroy(wapi_handle_t effect);
 
 #ifdef __cplusplus

@@ -36,6 +36,21 @@ echo [hello_game] Linking hello_game_ai.wasm
 rem Compute SHA-256 of the AI wasm and emit ai_hash.h via a .ps1 file
 powershell -NoProfile -ExecutionPolicy Bypass -File emit_ai_hash.ps1 || exit /b 1
 
+echo [hello_game] Compiling tracker.c
+"%CLANG%" --target=wasm32-unknown-unknown -nostdlib -ffreestanding ^
+  -isystem "%SYSROOT%" ^
+  -O2 -I "%ROOT%\include" -I . ^
+  -c tracker.c -o tracker.o || exit /b 1
+
+echo [hello_game] Linking hello_game_tracker.wasm
+"%LD%" tracker.o wapi_reactor.o ^
+  --no-entry --export=tracker_render ^
+  --export-memory --export-table --growable-table ^
+  --allow-undefined ^
+  -o hello_game_tracker.wasm || exit /b 1
+
+powershell -NoProfile -ExecutionPolicy Bypass -File emit_tracker_hash.ps1 || exit /b 1
+
 echo [hello_game] Compiling game.c
 "%CLANG%" --target=wasm32-unknown-unknown -nostdlib -ffreestanding ^
   -isystem "%SYSROOT%" ^
@@ -51,8 +66,9 @@ echo [hello_game] Linking hello_game.wasm
 
 echo.
 echo === Built ===
-dir /b hello_game.wasm hello_game_ai.wasm
+dir /b hello_game.wasm hello_game_ai.wasm hello_game_tracker.wasm
 echo.
 echo Run with:
-echo   ..\..\runtime\desktop\build\wapi_runtime.exe hello_game.wasm --module ^<hash^>=hello_game_ai.wasm
-echo   (hash baked into ai_hash.h, copy from that file or read via a helper)
+echo   powershell -NoProfile -ExecutionPolicy Bypass -File run.ps1
+echo   (run.ps1 computes the hashes and passes both --module flags for
+echo    hello_game_ai.wasm and hello_game_tracker.wasm)

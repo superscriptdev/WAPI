@@ -128,20 +128,24 @@ async function cacheFetch({ hash }) {
 }
 
 // Cache insert. Called when the shim fetched bytes from the network
-// (or decoded them from a supplied ArrayBuffer). Writes bytes and
-// upserts the metadata record with a bumped miss counter. A store
-// always counts as a miss — if the caller already had a hit it would
-// never have hit cacheStore.
+// (or decoded them from a supplied ArrayBuffer). Stores fresh bytes
+// on first sight and counts a miss. If the hash is already cached,
+// treats this as a hit — the caller didn't consult cacheFetch first
+// (e.g. the page pre-fetched the wasm because it didn't know the
+// hash upfront), so crediting it as a hit avoids the misleading
+// "miss counter goes up on every reload" effect.
 async function cacheStore({ hash, url, bytesB64 }) {
     if (!hash) throw new Error('hash required');
     if (!bytesB64) throw new Error('bytesB64 required');
     const bytes = b64ToBytes(bytesB64);
     const db = await openDB();
-    await pwrap(bytesStore(db, 'readwrite').put({ hash, bytes }));
     const mtx = metaStore(db, 'readwrite');
     const now = Date.now();
     let meta = await pwrap(mtx.get(hash));
-    if (!meta) {
+    const alreadyCached = !!meta;
+
+    if (!alreadyCached) {
+        await pwrap(bytesStore(db, 'readwrite').put({ hash, bytes }));
         meta = {
             hash,
             url: url || '',
@@ -152,7 +156,7 @@ async function cacheStore({ hash, url, bytesB64 }) {
             misses: 1,
         };
     } else {
-        meta.misses = (meta.misses || 0) + 1;
+        meta.hits = (meta.hits || 0) + 1;
         meta.lastUsedAt = now;
         if (url && !meta.url) meta.url = url;
         meta.size = bytes.length;
@@ -193,6 +197,53 @@ async function statsAll() {
 const services = new Map();
 const serviceHandles = new Map();
 let nextServiceHandle = 1;
+
+// Display-only registry of services that are hosted inside a page (the
+// MAIN-world shim instantiates runtime-linked modules there for speed and
+// full WAPI-import coverage). The SW never instantiates these — it just
+// tracks announcements so the popup can show what's currently live.
+// Key: "<hashHex>:<name>". Value: {hashHex, name, url, origin, announcedAt,
+// lastHeartbeat, refcount}. Entries age out when not heartbeated.
+const announcedServices = new Map();
+const ANNOUNCE_STALE_MS = 15000;
+
+function reapAnnounced() {
+    const now = Date.now();
+    for (const [key, svc] of announcedServices) {
+        if (now - svc.lastHeartbeat > ANNOUNCE_STALE_MS) {
+            announcedServices.delete(key);
+        }
+    }
+}
+
+function servicesAnnounce({ hashHex, name, url, origin, refcount }) {
+    if (!hashHex) return { ok: false };
+    const key = serviceKey(hashHex, name);
+    const now = Date.now();
+    const existing = announcedServices.get(key);
+    if (existing) {
+        existing.lastHeartbeat = now;
+        if (url)    existing.url = url;
+        if (origin) existing.origin = origin;
+        if (typeof refcount === 'number') existing.refcount = refcount;
+    } else {
+        announcedServices.set(key, {
+            hashHex,
+            name: name || '',
+            url: url || '',
+            origin: origin || '',
+            announcedAt: now,
+            lastHeartbeat: now,
+            refcount: typeof refcount === 'number' ? refcount : 1,
+        });
+    }
+    return { ok: true };
+}
+
+function servicesWithdraw({ hashHex, name }) {
+    announcedServices.delete(serviceKey(hashHex, name));
+    return { ok: true };
+}
 
 // Tracks (hash, name) keys currently mid-instantiation, so cycles during
 // nested joins fail fast with WAPI_ERR_LOOP equivalence. Wired but unused
@@ -335,8 +386,9 @@ function removeService(key) {
 }
 
 function servicesList() {
+    reapAnnounced();
     const now = Date.now();
-    return Array.from(services.values()).map((svc) => ({
+    const rows = Array.from(services.values()).map((svc) => ({
         hashHex: svc.hashHex,
         name: svc.name,
         url: svc.url,
@@ -344,17 +396,36 @@ function servicesList() {
         pending: svc.host.pendingCount(),
         startedAt: svc.startedAt,
         uptimeMs: now - svc.startedAt,
+        hostedIn: 'sw',
     }));
+    for (const svc of announcedServices.values()) {
+        rows.push({
+            hashHex: svc.hashHex,
+            name: svc.name,
+            url: svc.url,
+            origin: svc.origin,
+            users: svc.refcount,
+            pending: 0,
+            startedAt: svc.announcedAt,
+            uptimeMs: now - svc.announcedAt,
+            hostedIn: 'page',
+        });
+    }
+    return rows;
 }
 
 function servicesStats() {
+    reapAnnounced();
     let totalUsers = 0, totalPending = 0;
     for (const svc of services.values()) {
         totalUsers += svc.refcount;
         totalPending += svc.host.pendingCount();
     }
+    for (const svc of announcedServices.values()) {
+        totalUsers += svc.refcount;
+    }
     return {
-        count: services.size,
+        count: services.size + announcedServices.size,
         totalUsers,
         totalPending,
     };
@@ -368,10 +439,17 @@ const handlers = {
     'modules.store': (m) => cacheStore(m),
     'modules.clear': ()  => clearAll(),
 
-    'services.join':    (m) => servicesJoin(m),
-    'services.release': (m) => servicesRelease(m),
-    'services.list':    ()  => servicesList(),
-    'services.stats':   ()  => servicesStats(),
+    'services.join':     (m) => servicesJoin(m),
+    'services.release':  (m) => servicesRelease(m),
+    'services.list':     ()  => servicesList(),
+    'services.stats':    ()  => servicesStats(),
+    /* Page-hosted service observability. The SW doesn't instantiate
+     * these — the application's memory 1 lives in the page by spec
+     * (§10 memory model), so the instance must live there too. The
+     * page announces (with heartbeat) and withdraws so the popup can
+     * show cross-tab activity. */
+    'services.announce': (m) => servicesAnnounce(m),
+    'services.withdraw': (m) => servicesWithdraw(m),
 };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

@@ -37,13 +37,9 @@
  * yields stable tracked handles with real UIDs.
  */
 
-#define WAPI_DEVICE_MOUSE       0
-#define WAPI_DEVICE_KEYBOARD    1
-#define WAPI_DEVICE_TOUCH       2
-#define WAPI_DEVICE_PEN         3
-#define WAPI_DEVICE_GAMEPAD     4
-#define WAPI_DEVICE_HID         5
-#define WAPI_DEVICE_POINTER     6
+/* Role kinds come from wapi.h (wapi_role_kind_t); this module no longer
+ * mints a parallel enum. The numeric values below are the ones the role
+ * system wire format uses — see wapi.h. */
 
 /* Handles for pre-minted aggregate devices, resolved at init. */
 static int32_t s_dev_mouse    = 0;
@@ -52,8 +48,9 @@ static int32_t s_dev_pointer  = 0;
 static int32_t s_dev_touch    = 0;
 static int32_t s_dev_pen      = 0;
 
-/* Per-XInput-slot gamepad handles. 0 = slot currently unbound. */
-#define WAPI_GAMEPAD_SLOTS 4
+/* Per-slot gamepad handles. 0 = slot currently unbound.
+ * Slots 0..3 are XInput; 4..15 are HID. See wapi_plat.h. */
+#define WAPI_GAMEPAD_SLOTS WAPI_PLAT_GAMEPAD_SLOTS
 static int32_t s_dev_gamepad[WAPI_GAMEPAD_SLOTS];
 
 static inline wapi_input_device_t* dev_get(int32_t h) {
@@ -66,12 +63,12 @@ static inline int dev_is_kind(int32_t h, uint32_t kind) {
     return d && d->kind == kind;
 }
 
-static inline int dev_is_mouse(int32_t h)    { return dev_is_kind(h, WAPI_DEVICE_MOUSE); }
-static inline int dev_is_keyboard(int32_t h) { return dev_is_kind(h, WAPI_DEVICE_KEYBOARD); }
-static inline int dev_is_pointer(int32_t h)  { return dev_is_kind(h, WAPI_DEVICE_POINTER); }
-static inline int dev_is_touch(int32_t h)    { return dev_is_kind(h, WAPI_DEVICE_TOUCH); }
-static inline int dev_is_pen(int32_t h)      { return dev_is_kind(h, WAPI_DEVICE_PEN); }
-static inline int dev_is_gamepad(int32_t h)  { return dev_is_kind(h, WAPI_DEVICE_GAMEPAD); }
+static inline int dev_is_mouse(int32_t h)    { return dev_is_kind(h, WAPI_ROLE_MOUSE); }
+static inline int dev_is_keyboard(int32_t h) { return dev_is_kind(h, WAPI_ROLE_KEYBOARD); }
+static inline int dev_is_pointer(int32_t h)  { return dev_is_kind(h, WAPI_ROLE_POINTER); }
+static inline int dev_is_touch(int32_t h)    { return dev_is_kind(h, WAPI_ROLE_TOUCH); }
+static inline int dev_is_pen(int32_t h)      { return dev_is_kind(h, WAPI_ROLE_PEN); }
+static inline int dev_is_gamepad(int32_t h)  { return dev_is_kind(h, WAPI_ROLE_GAMEPAD); }
 
 static int32_t dev_alloc_fixed(uint32_t kind, const char* name, uint32_t backend_slot) {
     int32_t h = wapi_handle_alloc(WAPI_HTYPE_INPUT_DEVICE);
@@ -96,14 +93,18 @@ static int32_t dev_alloc_fixed(uint32_t kind, const char* name, uint32_t backend
 static int32_t dev_gamepad_for_slot(uint32_t slot) {
     if (slot >= WAPI_GAMEPAD_SLOTS) return 0;
     if (s_dev_gamepad[slot]) return s_dev_gamepad[slot];
-    int32_t h = dev_alloc_fixed(WAPI_DEVICE_GAMEPAD, "Gamepad", slot);
+    int32_t h = dev_alloc_fixed(WAPI_ROLE_GAMEPAD, "Gamepad", slot);
     if (h <= 0) return 0;
     wapi_input_device_t* d = &g_rt.handles[h].data.input_device;
     /* Bump generation on each alloc so reconnecting a slot yields a
      * distinguishable uid from the prior session. */
     static uint8_t s_gen[WAPI_GAMEPAD_SLOTS];
     d->uid[2] = ++s_gen[slot];
-    snprintf(d->name, sizeof(d->name), "XInput Gamepad %u", (unsigned)slot);
+    if (slot < 4) {
+        snprintf(d->name, sizeof(d->name), "XInput Gamepad %u", (unsigned)slot);
+    } else {
+        snprintf(d->name, sizeof(d->name), "HID Gamepad %u", (unsigned)(slot - 4));
+    }
     s_dev_gamepad[slot] = h;
     return h;
 }
@@ -118,13 +119,13 @@ static void dev_gamepad_free_slot(uint32_t slot) {
 }
 
 void wapi_host_input_init(void) {
-    if (!s_dev_mouse)    s_dev_mouse    = dev_alloc_fixed(WAPI_DEVICE_MOUSE,    "Mouse",    0);
-    if (!s_dev_keyboard) s_dev_keyboard = dev_alloc_fixed(WAPI_DEVICE_KEYBOARD, "Keyboard", 0);
-    if (!s_dev_pointer)  s_dev_pointer  = dev_alloc_fixed(WAPI_DEVICE_POINTER,  "Pointer",  0);
+    if (!s_dev_mouse)    s_dev_mouse    = dev_alloc_fixed(WAPI_ROLE_MOUSE,    "Mouse",    0);
+    if (!s_dev_keyboard) s_dev_keyboard = dev_alloc_fixed(WAPI_ROLE_KEYBOARD, "Keyboard", 0);
+    if (!s_dev_pointer)  s_dev_pointer  = dev_alloc_fixed(WAPI_ROLE_POINTER,  "Pointer",  0);
     if (!s_dev_touch && wapi_plat_touch_available())
-        s_dev_touch = dev_alloc_fixed(WAPI_DEVICE_TOUCH, "Touch", 0);
+        s_dev_touch = dev_alloc_fixed(WAPI_ROLE_TOUCH, "Touch", 0);
     if (!s_dev_pen && wapi_plat_pen_available())
-        s_dev_pen = dev_alloc_fixed(WAPI_DEVICE_PEN, "Pen", 0);
+        s_dev_pen = dev_alloc_fixed(WAPI_ROLE_PEN, "Pen", 0);
 }
 
 /* ============================================================
@@ -603,11 +604,11 @@ void wapi_host_translate_event(const wapi_plat_event_t* pe) {
 
     case WAPI_PLAT_EV_GPAD_ADDED: {
         /* wapi_device_event_t:
-         *  +16 u32 device_type, +20 i32 device_handle, +24 u8[16] uid */
+         *  +16 u32 role_kind, +20 i32 device_handle, +24 u8[16] uid */
         uint32_t slot = pe->u.gpad.gamepad_id;
         int32_t  dh   = dev_gamepad_for_slot(slot);
         ev_header(&ev, EVT_DEVICE_ADDED, 0, ts);
-        uint32_t dtype = WAPI_DEVICE_GAMEPAD;
+        uint32_t dtype = WAPI_ROLE_GAMEPAD;
         memcpy(ev.data + 16, &dtype, 4);
         memcpy(ev.data + 20, &dh,    4);
         wapi_input_device_t* d = dev_get(dh);
@@ -619,7 +620,7 @@ void wapi_host_translate_event(const wapi_plat_event_t* pe) {
         uint32_t slot = pe->u.gpad.gamepad_id;
         int32_t  dh   = s_dev_gamepad[slot < WAPI_GAMEPAD_SLOTS ? slot : 0];
         ev_header(&ev, EVT_DEVICE_REMOVED, 0, ts);
-        uint32_t dtype = WAPI_DEVICE_GAMEPAD;
+        uint32_t dtype = WAPI_ROLE_GAMEPAD;
         memcpy(ev.data + 16, &dtype, 4);
         memcpy(ev.data + 20, &dh,    4);
         wapi_input_device_t* d = dev_get(dh);
@@ -746,73 +747,53 @@ static wasm_trap_t* h_nosys(void* env, wasmtime_caller_t* caller,
 
 /* ---- Device lifecycle ---- */
 
-static wasm_trap_t* h_device_count(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)nargs; (void)nresults;
-    int32_t type = WAPI_ARG_I32(0);
-    int32_t n;
-    switch (type) {
-    case WAPI_DEVICE_MOUSE:
-    case WAPI_DEVICE_KEYBOARD:
-    case WAPI_DEVICE_POINTER: n = 1; break;
-    case WAPI_DEVICE_TOUCH:   n = wapi_plat_touch_available() ? 1 : 0; break;
-    case WAPI_DEVICE_PEN:     n = wapi_plat_pen_available()   ? 1 : 0; break;
-    case WAPI_DEVICE_GAMEPAD: {
-        n = 0;
-        for (uint32_t slot = 0; slot < WAPI_GAMEPAD_SLOTS; slot++) {
-            if (wapi_plat_gamepad_connected(slot)) n++;
-        }
-        break;
-    }
-    default: n = 0; break;
-    }
-    WAPI_RET_I32(n);
-    return NULL;
-}
-
-static wasm_trap_t* h_device_open(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)nargs; (void)nresults;
-    int32_t  type  = WAPI_ARG_I32(0);
-    int32_t  index = WAPI_ARG_I32(1);
-    uint32_t out   = WAPI_ARG_U32(2);
-    int32_t h = 0;
-    switch (type) {
-    case WAPI_DEVICE_MOUSE:    if (index != 0) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; } h = s_dev_mouse;    break;
-    case WAPI_DEVICE_KEYBOARD: if (index != 0) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; } h = s_dev_keyboard; break;
-    case WAPI_DEVICE_POINTER:  if (index != 0) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; } h = s_dev_pointer;  break;
-    case WAPI_DEVICE_TOUCH:
-        if (index != 0) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
-        if (!wapi_plat_touch_available() || !s_dev_touch) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
-        h = s_dev_touch; break;
-    case WAPI_DEVICE_PEN:
-        if (index != 0) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
-        if (!wapi_plat_pen_available() || !s_dev_pen) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
-        h = s_dev_pen; break;
-    case WAPI_DEVICE_GAMEPAD: {
-        /* Map index -> Nth currently-connected slot. */
+/* Role-dispatcher helpers: called from wapi_host_io.c when fulfilling a
+ * ROLE_REQUEST for an input kind. Returns the pre-minted aggregate
+ * handle for mouse/keyboard/pointer/touch/pen, or the Nth connected
+ * gamepad. WAPI_ROLE_HID is handled via the separate HID request path. */
+int32_t wapi_host_input_resolve_role(uint32_t kind, int32_t index) {
+    switch (kind) {
+    case WAPI_ROLE_MOUSE:    return (index == 0) ? s_dev_mouse    : 0;
+    case WAPI_ROLE_KEYBOARD: return (index == 0) ? s_dev_keyboard : 0;
+    case WAPI_ROLE_POINTER:  return (index == 0) ? s_dev_pointer  : 0;
+    case WAPI_ROLE_TOUCH:
+        if (index != 0 || !wapi_plat_touch_available()) return 0;
+        return s_dev_touch;
+    case WAPI_ROLE_PEN:
+        if (index != 0 || !wapi_plat_pen_available()) return 0;
+        return s_dev_pen;
+    case WAPI_ROLE_GAMEPAD: {
         int seen = 0;
         for (uint32_t slot = 0; slot < WAPI_GAMEPAD_SLOTS; slot++) {
             if (!wapi_plat_gamepad_connected(slot)) continue;
-            if (seen == index) { h = dev_gamepad_for_slot(slot); break; }
+            if (seen == index) return dev_gamepad_for_slot(slot);
             seen++;
         }
-        if (!h) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
-        break;
+        return 0;
     }
-    default: WAPI_RET_I32(WAPI_ERR_RANGE); return NULL;
+    default: return 0;
     }
-    if (h <= 0) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
-    wapi_wasm_write_i32(out, h);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
 }
 
-static wasm_trap_t* h_device_close(void* env, wasmtime_caller_t* caller,
+int32_t wapi_host_input_count_role(uint32_t kind) {
+    switch (kind) {
+    case WAPI_ROLE_MOUSE:
+    case WAPI_ROLE_KEYBOARD:
+    case WAPI_ROLE_POINTER: return 1;
+    case WAPI_ROLE_TOUCH:   return wapi_plat_touch_available() ? 1 : 0;
+    case WAPI_ROLE_PEN:     return wapi_plat_pen_available()   ? 1 : 0;
+    case WAPI_ROLE_GAMEPAD: {
+        int n = 0;
+        for (uint32_t slot = 0; slot < WAPI_GAMEPAD_SLOTS; slot++) {
+            if (wapi_plat_gamepad_connected(slot)) n++;
+        }
+        return n;
+    }
+    default: return 0;
+    }
+}
+
+static wasm_trap_t* h_input_close(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
@@ -823,7 +804,7 @@ static wasm_trap_t* h_device_close(void* env, wasmtime_caller_t* caller,
     /* Aggregate devices (mouse/keyboard/pointer/touch/pen) live until
      * shutdown; closing one is a no-op. Gamepads are freed on REMOVED.
      * Only HID devices own platform resources the guest can release. */
-    if (d->kind == WAPI_DEVICE_HID) {
+    if (d->kind == WAPI_ROLE_HID) {
         if (d->hid_dev) { wapi_plat_hid_close(d->hid_dev); d->hid_dev = NULL; }
         wapi_handle_free(h);
     }
@@ -831,7 +812,7 @@ static wasm_trap_t* h_device_close(void* env, wasmtime_caller_t* caller,
     return NULL;
 }
 
-static wasm_trap_t* h_device_get_type(void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* h_input_role_kind(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
@@ -843,7 +824,7 @@ static wasm_trap_t* h_device_get_type(void* env, wasmtime_caller_t* caller,
     return NULL;
 }
 
-static wasm_trap_t* h_device_get_uid(void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* h_input_uid(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
@@ -859,7 +840,7 @@ static wasm_trap_t* h_device_get_uid(void* env, wasmtime_caller_t* caller,
     return NULL;
 }
 
-static wasm_trap_t* h_device_get_name(void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* h_input_name(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
@@ -884,7 +865,7 @@ static wasm_trap_t* h_device_get_name(void* env, wasmtime_caller_t* caller,
     return NULL;
 }
 
-static wasm_trap_t* h_device_seat(void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* h_input_seat(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
@@ -1203,43 +1184,35 @@ static wasm_trap_t* h_pen_get_position(void* env, wasmtime_caller_t* caller,
 
 /* ---- Raw HID ---- */
 
-static wasm_trap_t* h_hid_request_device(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)nargs; (void)nresults;
-    uint32_t vendor      = WAPI_ARG_U32(0);
-    uint32_t product     = WAPI_ARG_U32(1);
-    uint32_t usage_page  = WAPI_ARG_U32(2);
-    uint32_t out_handle  = WAPI_ARG_U32(3);
-
-    /* Enumerate matching devices; open the first one the backend
-     * accepts. A proper permission broker (Phase C) will swap the
-     * auto-open for a modal prompt. */
-    int count = wapi_plat_hid_enumerate((uint16_t)vendor, (uint16_t)product,
-                                        (uint16_t)usage_page, NULL, 0);
-    if (count <= 0) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
+/* Role dispatcher entry: fulfill a ROLE_REQUEST(WAPI_ROLE_HID, prefs).
+ * `prefs` is wapi_hid_prefs_t (8B): vendor, product, usage_page, usage.
+ * Returns a newly-allocated WAPI_HTYPE_INPUT_DEVICE handle bound to the
+ * first matching HID device the backend accepts, or 0 on failure. */
+int32_t wapi_host_input_hid_request_role(uint16_t vendor, uint16_t product,
+                                         uint16_t usage_page, uint16_t usage) {
+    int count = wapi_plat_hid_enumerate(vendor, product, usage_page, NULL, 0);
+    if (count <= 0) return 0;
 
     wapi_plat_hid_info_t* infos = (wapi_plat_hid_info_t*)
         calloc((size_t)count, sizeof(*infos));
-    if (!infos) { WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
-    int actual = wapi_plat_hid_enumerate((uint16_t)vendor, (uint16_t)product,
-                                         (uint16_t)usage_page, infos, count);
-    if (actual <= 0) { free(infos); WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
+    if (!infos) return 0;
+    int actual = wapi_plat_hid_enumerate(vendor, product, usage_page, infos, count);
+    if (actual <= 0) { free(infos); return 0; }
 
     wapi_plat_hid_device_t* pdev = NULL;
     wapi_plat_hid_info_t info = {0};
     for (int i = 0; i < actual; i++) {
+        if (usage != 0 && infos[i].usage != usage) continue;
         pdev = wapi_plat_hid_open(infos[i].uid);
         if (pdev) { info = infos[i]; break; }
     }
     free(infos);
-    if (!pdev) { WAPI_RET_I32(WAPI_ERR_ACCES); return NULL; }
+    if (!pdev) return 0;
 
     int32_t h = wapi_handle_alloc(WAPI_HTYPE_INPUT_DEVICE);
-    if (h <= 0) { wapi_plat_hid_close(pdev); WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
+    if (h <= 0) { wapi_plat_hid_close(pdev); return 0; }
     wapi_input_device_t* d = &g_rt.handles[h].data.input_device;
-    d->kind = WAPI_DEVICE_HID;
+    d->kind = WAPI_ROLE_HID;
     d->backend_slot = 0;
     memcpy(d->uid, info.uid, 16);
     size_t nl = strlen(info.name);
@@ -1251,30 +1224,84 @@ static wasm_trap_t* h_hid_request_device(void* env, wasmtime_caller_t* caller,
     d->hid_product    = info.product_id;
     d->hid_usage_page = info.usage_page;
     d->hid_usage      = info.usage;
-    wapi_wasm_write_i32(out_handle, h);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
+    return h;
 }
 
-static wasm_trap_t* h_hid_get_info(void* env, wasmtime_caller_t* caller,
+/* hid_endpoint_info: (i32 h, i32 info_out, i32 name_buf, i64 name_cap, i32 name_len_out) -> i32
+ * Writes wapi_hid_endpoint_info_t (32B): vendor/product/usage_page/usage,
+ * transport (u32), report_descriptor_len (u32), uid[16]. */
+static wasm_trap_t* h_hid_endpoint_info(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs,
     wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller; (void)nargs; (void)nresults;
-    int32_t  h        = WAPI_ARG_I32(0);
-    uint32_t info_ptr = WAPI_ARG_U32(1);
+    int32_t  h           = WAPI_ARG_I32(0);
+    uint32_t info_out    = WAPI_ARG_U32(1);
+    uint32_t name_buf    = WAPI_ARG_U32(2);
+    uint64_t name_cap    = WAPI_ARG_U64(3);
+    uint32_t name_len_out = WAPI_ARG_U32(4);
     wapi_input_device_t* d = dev_get(h);
-    if (!d || d->kind != WAPI_DEVICE_HID) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
-    /* wapi_hid_info_t (16B, align 2):
-     *   u16 vendor_id, u16 product_id, u16 usage_page, u16 usage, u8[8] _reserved */
-    uint8_t buf[16]; memset(buf, 0, sizeof(buf));
-    memcpy(buf + 0, &d->hid_vendor,     2);
-    memcpy(buf + 2, &d->hid_product,    2);
-    memcpy(buf + 4, &d->hid_usage_page, 2);
-    memcpy(buf + 6, &d->hid_usage,      2);
-    if (!wapi_wasm_write_bytes(info_ptr, buf, sizeof(buf))) {
-        WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
+    if (!d || d->kind != WAPI_ROLE_HID) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+
+    uint8_t info[32]; memset(info, 0, sizeof(info));
+    memcpy(info +  0, &d->hid_vendor,     2);
+    memcpy(info +  2, &d->hid_product,    2);
+    memcpy(info +  4, &d->hid_usage_page, 2);
+    memcpy(info +  6, &d->hid_usage,      2);
+    uint32_t transport  = 1; /* USB until transport-detection lands */
+    uint32_t desc_len   = wapi_plat_hid_report_descriptor_size(d->hid_dev);
+    memcpy(info +  8, &transport, 4);
+    memcpy(info + 12, &desc_len,  4);
+    memcpy(info + 16, d->uid,    16);
+    wapi_wasm_write_bytes(info_out, info, 32);
+
+    size_t nlen = strlen(d->name);
+    if (name_buf && name_cap > 0 && nlen > 0) {
+        uint32_t copy = (uint32_t)(nlen < name_cap ? nlen : name_cap);
+        wapi_wasm_write_bytes(name_buf, d->name, copy);
     }
+    if (name_len_out) wapi_wasm_write_u64(name_len_out, (uint64_t)nlen);
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
+}
+
+/* hid_serial: returns NOENT until the backend surfaces per-device
+ * serial (SetupDi path lookup). */
+static wasm_trap_t* h_hid_serial(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
+    WAPI_RET_I32(WAPI_ERR_NOENT);
+    return NULL;
+}
+
+/* hid_report_descriptor: (i32 h, i32 buf, i64 buf_len, i32 out_len) -> i32
+ * Copies the cached report descriptor bytes into the caller's buffer. */
+static wasm_trap_t* h_hid_report_descriptor(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  h       = WAPI_ARG_I32(0);
+    uint32_t buf_ptr = WAPI_ARG_U32(1);
+    uint64_t buf_len = WAPI_ARG_U64(2);
+    uint32_t out_ptr = WAPI_ARG_U32(3);
+    wapi_input_device_t* d = dev_get(h);
+    if (!d || d->kind != WAPI_ROLE_HID || !d->hid_dev) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
+
+    const uint8_t* src = NULL;
+    uint32_t src_len = 0;
+    if (!wapi_plat_hid_report_descriptor(d->hid_dev, &src, &src_len)) {
+        WAPI_RET_I32(WAPI_ERR_NOSYS); return NULL;
+    }
+    uint64_t copy = src_len < buf_len ? src_len : buf_len;
+    if (copy > 0 && buf_ptr) {
+        void* dst = wapi_wasm_ptr(buf_ptr, (uint32_t)copy);
+        if (!dst) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+        memcpy(dst, src, (size_t)copy);
+    }
+    if (out_ptr) wapi_wasm_write_u64(out_ptr, (uint64_t)src_len);
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
@@ -1300,7 +1327,7 @@ static wasm_trap_t* h_hid_send_report(void* env, wasmtime_caller_t* caller,
     uint32_t data_ptr  = WAPI_ARG_U32(2);
     uint64_t data_len  = WAPI_ARG_U64(3);
     wapi_input_device_t* d = dev_get(h);
-    if (!d || d->kind != WAPI_DEVICE_HID || !d->hid_dev) {
+    if (!d || d->kind != WAPI_ROLE_HID || !d->hid_dev) {
         WAPI_RET_I32(WAPI_ERR_BADF); return NULL;
     }
     if (data_len > 65535) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
@@ -1328,7 +1355,7 @@ static wasm_trap_t* h_hid_send_feature(void* env, wasmtime_caller_t* caller,
     uint32_t data_ptr  = WAPI_ARG_U32(2);
     uint64_t data_len  = WAPI_ARG_U64(3);
     wapi_input_device_t* d = dev_get(h);
-    if (!d || d->kind != WAPI_DEVICE_HID || !d->hid_dev) {
+    if (!d || d->kind != WAPI_ROLE_HID || !d->hid_dev) {
         WAPI_RET_I32(WAPI_ERR_BADF); return NULL;
     }
     if (data_len > 65535) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
@@ -1356,7 +1383,7 @@ static wasm_trap_t* h_hid_receive_report(void* env, wasmtime_caller_t* caller,
     uint64_t buf_len = WAPI_ARG_U64(2);
     uint32_t out_ptr = WAPI_ARG_U32(3);
     wapi_input_device_t* d = dev_get(h);
-    if (!d || d->kind != WAPI_DEVICE_HID || !d->hid_dev) {
+    if (!d || d->kind != WAPI_ROLE_HID || !d->hid_dev) {
         WAPI_RET_I32(WAPI_ERR_BADF); return NULL;
     }
     if (buf_len > 65535) { WAPI_RET_I32(WAPI_ERR_RANGE); return NULL; }
@@ -1382,18 +1409,18 @@ static wasm_trap_t* h_hotkey_register(void* env, wasmtime_caller_t* caller,
     uint32_t binding_ptr = WAPI_ARG_U32(0);
     uint32_t out_id_ptr  = WAPI_ARG_U32(1);
 
-    /* wapi_hotkey_binding_t (16B): u32 device_type, u32 device_id, u32 modifiers, u32 code */
+    /* wapi_hotkey_binding_t (16B): u32 role_kind, u32 device_id, u32 modifiers, u32 code */
     void* src = wapi_wasm_ptr(binding_ptr, 16);
     if (!src) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
     uint32_t fields[4];
     memcpy(fields, src, 16);
-    uint32_t device_type = fields[0];
-    uint32_t modifiers   = fields[2];
-    uint32_t code        = fields[3];
+    uint32_t role_kind = fields[0];
+    uint32_t modifiers = fields[2];
+    uint32_t code      = fields[3];
 
     /* Only keyboard bindings are supported on Win32. Gamepad/HID
      * hotkeys need the HID backend (not yet online on this host). */
-    if (device_type != WAPI_DEVICE_KEYBOARD) {
+    if (role_kind != WAPI_ROLE_KEYBOARD) {
         WAPI_RET_I32(WAPI_ERR_NOTSUP); return NULL;
     }
 
@@ -1592,7 +1619,7 @@ static wasm_trap_t* h_ime_read_segment(void* env, wasmtime_caller_t* caller,
 /* Resolve a gamepad handle to its XInput slot; returns -1 on bad handle. */
 static int gamepad_slot_from_handle(int32_t gh) {
     wapi_input_device_t* d = dev_get(gh);
-    if (!d || d->kind != WAPI_DEVICE_GAMEPAD) return -1;
+    if (!d || d->kind != WAPI_ROLE_GAMEPAD) return -1;
     if (d->backend_slot >= WAPI_GAMEPAD_SLOTS) return -1;
     return (int)d->backend_slot;
 }
@@ -1605,41 +1632,23 @@ static wasm_trap_t* h_gamepad_get_info(void* env, wasmtime_caller_t* caller,
     int32_t  gh       = WAPI_ARG_I32(0);
     uint32_t info_ptr = WAPI_ARG_U32(1);
     int slot = gamepad_slot_from_handle(gh);
-    if (slot < 0 || !wapi_plat_gamepad_connected((uint32_t)slot) || !info_ptr) {
+    wapi_plat_gamepad_info_t pi;
+    if (slot < 0 || !info_ptr || !wapi_plat_gamepad_get_info((uint32_t)slot, &pi)) {
         WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
     }
-    /* wapi_gamepad_info_t (48B, align 4):
-     *   +0  u32 type              (WAPI_GAMEPAD_TYPE_XBOX360/ONE for XInput)
-     *   +4  u16 vendor_id
-     *   +6  u16 product_id
-     *   +8  u8  has_rumble
-     *   +9  u8  has_trigger_rumble
-     *  +10  u8  has_led
-     *  +11  u8  has_sensors
-     *  +12  u8  has_touchpad
-     *  +13  u8  battery_percent
-     *  +14  u8  battery (wapi_gamepad_battery_t)
-     *  +15  u8  _pad
-     *  +16  u8[32] _reserved
-     */
-    uint8_t bp = wapi_plat_gamepad_battery_percent((uint32_t)slot);
-    uint8_t batt = 0; /* UNKNOWN */
-    if (bp == 255) { batt = 0; bp = 0; }
-    else if (bp == 100) batt = 4; /* WIRED */
-    else batt = 1; /* DISCHARGING */
-
+    /* wapi_gamepad_info_t (48B, align 4). See wapi_input.h §Gamepad Info. */
     uint8_t buf[48];
     memset(buf, 0, sizeof(buf));
-    uint32_t type = WAPI_GAMEPAD_TYPE_XBOXONE;
-    memcpy(buf + 0, &type, 4);
-    /* vendor/product unknown through XInput */
-    buf[8]  = 1;  /* has_rumble */
-    buf[9]  = 1;  /* has_trigger_rumble (XInputOneAPI supports it on triggers for Series pads; we map nominal) */
-    buf[10] = 0;  /* has_led */
-    buf[11] = 0;  /* has_sensors */
-    buf[12] = 0;  /* has_touchpad */
-    buf[13] = bp;
-    buf[14] = batt;
+    memcpy(buf + 0, &pi.type,       4);
+    memcpy(buf + 4, &pi.vendor_id,  2);
+    memcpy(buf + 6, &pi.product_id, 2);
+    buf[ 8] = pi.has_rumble;
+    buf[ 9] = pi.has_trigger_rumble;
+    buf[10] = pi.has_led;
+    buf[11] = pi.has_sensors;
+    buf[12] = pi.has_touchpad;
+    buf[13] = (pi.battery_percent == 255) ? 0 : pi.battery_percent;
+    buf[14] = pi.battery_state;
     if (!wapi_wasm_write_bytes(info_ptr, buf, sizeof(buf))) {
         WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
     }
@@ -1708,6 +1717,106 @@ static wasm_trap_t* h_gamepad_get_battery(void* env, wasmtime_caller_t* caller,
     return NULL;
 }
 
+static wasm_trap_t* h_gamepad_rumble_triggers(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  gh    = WAPI_ARG_I32(0);
+    uint32_t left  = WAPI_ARG_U32(1);
+    uint32_t right = WAPI_ARG_U32(2);
+    uint32_t dur   = WAPI_ARG_U32(3);
+    int slot = gamepad_slot_from_handle(gh);
+    if (slot < 0) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    WAPI_RET_I32(wapi_plat_gamepad_rumble_triggers((uint32_t)slot,
+                                                   (uint16_t)left, (uint16_t)right, dur)
+                 ? WAPI_OK : WAPI_ERR_NOTSUP);
+    return NULL;
+}
+
+static wasm_trap_t* h_gamepad_set_led(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  gh = WAPI_ARG_I32(0);
+    uint32_t r  = WAPI_ARG_U32(1);
+    uint32_t g  = WAPI_ARG_U32(2);
+    uint32_t b  = WAPI_ARG_U32(3);
+    int slot = gamepad_slot_from_handle(gh);
+    if (slot < 0) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    WAPI_RET_I32(wapi_plat_gamepad_set_led((uint32_t)slot,
+                                           (uint8_t)r, (uint8_t)g, (uint8_t)b)
+                 ? WAPI_OK : WAPI_ERR_NOTSUP);
+    return NULL;
+}
+
+static wasm_trap_t* h_gamepad_enable_sensor(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  gh     = WAPI_ARG_I32(0);
+    uint32_t sensor = WAPI_ARG_U32(1);
+    int32_t  en     = WAPI_ARG_I32(2);
+    int slot = gamepad_slot_from_handle(gh);
+    if (slot < 0) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    WAPI_RET_I32(wapi_plat_gamepad_enable_sensor((uint32_t)slot, sensor, en != 0)
+                 ? WAPI_OK : WAPI_ERR_NOTSUP);
+    return NULL;
+}
+
+static wasm_trap_t* h_gamepad_get_sensor_data(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  gh       = WAPI_ARG_I32(0);
+    uint32_t sensor   = WAPI_ARG_U32(1);
+    uint32_t data_ptr = WAPI_ARG_U32(2);
+    int slot = gamepad_slot_from_handle(gh);
+    if (slot < 0 || !data_ptr) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    float xyz[3] = {0,0,0};
+    if (!wapi_plat_gamepad_get_sensor((uint32_t)slot, sensor, xyz)) {
+        WAPI_RET_I32(WAPI_ERR_NOTSUP); return NULL;
+    }
+    if (!wapi_wasm_write_bytes(data_ptr, xyz, sizeof(xyz))) {
+        WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
+    }
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
+}
+
+static wasm_trap_t* h_gamepad_get_touchpad_finger(void* env, wasmtime_caller_t* caller,
+    const wasmtime_val_t* args, size_t nargs,
+    wasmtime_val_t* results, size_t nresults)
+{
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    int32_t  gh        = WAPI_ARG_I32(0);
+    uint32_t touchpad  = WAPI_ARG_U32(1);
+    uint32_t finger    = WAPI_ARG_U32(2);
+    uint32_t state_ptr = WAPI_ARG_U32(3);
+    int slot = gamepad_slot_from_handle(gh);
+    if (slot < 0 || !state_ptr) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    bool  down = false; float x = 0, y = 0, pressure = 0;
+    if (!wapi_plat_gamepad_get_touchpad_finger((uint32_t)slot, touchpad, finger,
+                                               &down, &x, &y, &pressure)) {
+        WAPI_RET_I32(WAPI_ERR_NOTSUP); return NULL;
+    }
+    /* wapi_touchpad_finger_t (16B): +0 u8 down, +1 u8[3] pad,
+     *                                +4 f32 x, +8 f32 y, +12 f32 pressure */
+    uint8_t buf[16]; memset(buf, 0, sizeof(buf));
+    buf[0] = down ? 1 : 0;
+    memcpy(buf +  4, &x,        4);
+    memcpy(buf +  8, &y,        4);
+    memcpy(buf + 12, &pressure, 4);
+    if (!wapi_wasm_write_bytes(state_ptr, buf, sizeof(buf))) {
+        WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
+    }
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
+}
+
 /* ============================================================
  * Registration
  * ============================================================ */
@@ -1715,18 +1824,16 @@ static wasm_trap_t* h_gamepad_get_battery(void* env, wasmtime_caller_t* caller,
 #define MOD "wapi_input"
 
 void wapi_host_register_input(wasmtime_linker_t* linker) {
-    /* Device lifecycle (wapi_seat.h defines seat_t, used only as
-     * return value of device_seat — treated as i32 here). */
-    WAPI_DEFINE_1_1(linker, MOD, "device_count",    h_device_count);
-    WAPI_DEFINE_3_1(linker, MOD, "device_open",     h_device_open);
-    WAPI_DEFINE_1_1(linker, MOD, "device_close",    h_device_close);
-    WAPI_DEFINE_1_1(linker, MOD, "device_get_type", h_device_get_type);
-    WAPI_DEFINE_2_1(linker, MOD, "device_get_uid",  h_device_get_uid);
-    /* device_get_name takes (i32 handle, i32 buf, i64 buf_len, i32 out_len) */
-    wapi_linker_define(linker, MOD, "device_get_name", h_device_get_name,
+    /* Input endpoint lifecycle — handles come from the role system;
+     * this module owns only the post-grant metadata + use surface. */
+    WAPI_DEFINE_1_1(linker, MOD, "close",     h_input_close);
+    WAPI_DEFINE_1_1(linker, MOD, "role_kind", h_input_role_kind);
+    WAPI_DEFINE_2_1(linker, MOD, "uid",       h_input_uid);
+    /* name takes (i32 handle, i32 buf, i64 buf_len, i32 out_len) */
+    wapi_linker_define(linker, MOD, "name", h_input_name,
         4, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I64, WASM_I32},
         1, (wasm_valkind_t[]){WASM_I32});
-    WAPI_DEFINE_1_1(linker, MOD, "device_seat",     h_device_seat);
+    WAPI_DEFINE_1_1(linker, MOD, "seat", h_input_seat);
 
     /* Mouse */
     WAPI_DEFINE_2_1(linker, MOD, "mouse_get_info",           h_mouse_get_info);
@@ -1755,18 +1862,16 @@ void wapi_host_register_input(wasmtime_linker_t* linker) {
     WAPI_DEFINE_3_1(linker, MOD, "pen_get_axis",       h_pen_get_axis);
     WAPI_DEFINE_3_1(linker, MOD, "pen_get_position",   h_pen_get_position);
 
-    /* Gamepad queries — XInput state, slot index is the handle */
+    /* Gamepad — XInput (slots 0-3) + HID (slots 4+) via platform backend */
     WAPI_DEFINE_2_1(linker, MOD, "gamepad_get_info",            h_gamepad_get_info);
     WAPI_DEFINE_2_1(linker, MOD, "gamepad_get_button",          h_gamepad_get_button);
     WAPI_DEFINE_3_1(linker, MOD, "gamepad_get_axis",            h_gamepad_get_axis);
     WAPI_DEFINE_4_1(linker, MOD, "gamepad_rumble",              h_gamepad_rumble);
-    /* trigger rumble / led / sensors / touchpad: no XInput surface on
-     * stock Windows API. Real sources land with the HID backend later. */
-    WAPI_DEFINE_4_1(linker, MOD, "gamepad_rumble_triggers",     h_nosys);
-    WAPI_DEFINE_4_1(linker, MOD, "gamepad_set_led",             h_nosys);
-    WAPI_DEFINE_3_1(linker, MOD, "gamepad_enable_sensor",       h_nosys);
-    WAPI_DEFINE_3_1(linker, MOD, "gamepad_get_sensor_data",     h_nosys);
-    WAPI_DEFINE_4_1(linker, MOD, "gamepad_get_touchpad_finger", h_nosys);
+    WAPI_DEFINE_4_1(linker, MOD, "gamepad_rumble_triggers",     h_gamepad_rumble_triggers);
+    WAPI_DEFINE_4_1(linker, MOD, "gamepad_set_led",             h_gamepad_set_led);
+    WAPI_DEFINE_3_1(linker, MOD, "gamepad_enable_sensor",       h_gamepad_enable_sensor);
+    WAPI_DEFINE_3_1(linker, MOD, "gamepad_get_sensor_data",     h_gamepad_get_sensor_data);
+    WAPI_DEFINE_4_1(linker, MOD, "gamepad_get_touchpad_finger", h_gamepad_get_touchpad_finger);
     WAPI_DEFINE_2_1(linker, MOD, "gamepad_get_battery",         h_gamepad_get_battery);
 
     /* Pointer (unified) */
@@ -1774,11 +1879,19 @@ void wapi_host_register_input(wasmtime_linker_t* linker) {
     WAPI_DEFINE_4_1(linker, MOD, "pointer_get_position", h_pointer_get_position);
     WAPI_DEFINE_1_1(linker, MOD, "pointer_get_buttons",  h_pointer_get_buttons);
 
-    /* HID — permission-gated (auto-grant on Win32 pending broker UI).
+    /* HID — endpoints come from ROLE_REQUEST(WAPI_ROLE_HID, prefs);
+     * this module exposes only post-grant metadata + report I/O.
      * hid_send_report / hid_send_feature_report / hid_receive_report
      * take (i32 handle, i32 report_id, i32 data_ptr, i64 data_len). */
-    WAPI_DEFINE_4_1(linker, MOD, "hid_request_device", h_hid_request_device);
-    WAPI_DEFINE_2_1(linker, MOD, "hid_get_info",       h_hid_get_info);
+    wapi_linker_define(linker, MOD, "hid_endpoint_info", h_hid_endpoint_info,
+        5, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I32, WASM_I64, WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+    wapi_linker_define(linker, MOD, "hid_serial", h_hid_serial,
+        4, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I64, WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+    wapi_linker_define(linker, MOD, "hid_report_descriptor", h_hid_report_descriptor,
+        4, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I64, WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
     wapi_linker_define(linker, MOD, "hid_send_report", h_hid_send_report,
         4, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I32, WASM_I64},
         1, (wasm_valkind_t[]){WASM_I32});

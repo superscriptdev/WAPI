@@ -61,6 +61,7 @@ if(WIN32)
         src/platform/win32/wapi_plat_win32.c
         src/platform/win32/wapi_plat_win32_audio.c
         src/platform/win32/wapi_plat_win32_gamepad.c
+        src/platform/win32/wapi_plat_win32_gamepad_hid.c
         src/platform/win32/wapi_plat_win32_hid.c
         src/platform/win32/wapi_plat_win32_menu.c
         src/platform/win32/wapi_plat_win32_shell.c

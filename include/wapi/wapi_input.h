@@ -2,23 +2,14 @@
  * WAPI - Input Devices
  * Version 1.0.0
  *
- * Unified input device enumeration, lifecycle, and state queries
- * for all device types: mouse, keyboard, touch, pen, gamepad, and HID.
+ * State queries and per-kind surfaces for mouse, keyboard, touch,
+ * pen, gamepad, and HID. Endpoints are acquired through the role
+ * system (WAPI_ROLE_MOUSE / KEYBOARD / TOUCH / PEN / GAMEPAD / HID /
+ * POINTER); this header owns the HID prefs, endpoint_info, and the
+ * use surfaces.
  *
- * All devices share a common lifecycle:
- *   1. Enumerate: wapi_device_count(type)
- *   2. Open:      wapi_device_open(type, index, &handle)
- *   3. Query:     wapi_device_get_uid / get_name / get_type
- *   4. Use:       Device-specific state/action functions (below)
- *   5. Close:     wapi_device_close(handle)
- *
- * HID devices additionally support permission-gated acquisition
- * via wapi_hid_request_device(). Once granted, they appear in
- * wapi_device_count(WAPI_DEVICE_HID) and can be re-opened on
- * reconnect without re-prompting.
- *
- * Device connect/disconnect is reported via WAPI_EVENT_DEVICE_ADDED
- * and WAPI_EVENT_DEVICE_REMOVED (see wapi_event.h).
+ * Device connect/disconnect arrives as WAPI_EVENT_DEVICE_ADDED /
+ * WAPI_EVENT_DEVICE_REMOVED.
  *
  * Import module: "wapi_input"
  */
@@ -34,21 +25,6 @@ extern "C" {
 #endif
 
 /* ============================================================
- * Device Types
- * ============================================================ */
-
-typedef enum wapi_device_type_t {
-    WAPI_DEVICE_MOUSE    = 0,
-    WAPI_DEVICE_KEYBOARD = 1,
-    WAPI_DEVICE_TOUCH    = 2,
-    WAPI_DEVICE_PEN      = 3,
-    WAPI_DEVICE_GAMEPAD  = 4,
-    WAPI_DEVICE_HID      = 5,
-    WAPI_DEVICE_POINTER  = 6,
-    WAPI_DEVICE_FORCE32  = 0x7FFFFFFF
-} wapi_device_type_t;
-
-/* ============================================================
  * Pointer Source Types
  * ============================================================
  * Identifies which class of input device originated a pointer event.
@@ -62,104 +38,36 @@ typedef enum wapi_pointer_type_t {
 } wapi_pointer_type_t;
 
 /* ============================================================
- * Unified Device Lifecycle
+ * Input Device Lifecycle
  * ============================================================
- * These functions work on any device type. Handles from different
- * device types are interchangeable for these common operations.
+ * Endpoints come from the role system. These functions query and
+ * close granted handles; they work on any input-kind handle.
  *
- * Mouse index 0 is always the system aggregate mouse (combined
- * state of all mice). It is always present and never generates
- * DEVICE_REMOVED events.
- *
- * Pointer index 0 is always the system aggregate pointer (combined
- * state of all pointing devices: mouse, touch, pen). It is always
- * present and never generates DEVICE_REMOVED events.
+ * MOUSE and POINTER roles each have a system-aggregate endpoint
+ * that is always present; request with the role kind and no
+ * target_uid to receive it.
  */
 
-/**
- * Get the number of connected devices of a given type.
- *
- * @param type  Device type to count.
- * @return Number of connected devices (>= 0).
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_count)
-int32_t wapi_device_count(wapi_device_type_t type);
+/** Close any input endpoint handle (mouse/keyboard/touch/pen/gamepad/hid/pointer). */
+WAPI_IMPORT(wapi_input, close)
+wapi_result_t wapi_input_close(wapi_handle_t handle);
 
-/**
- * Open a device by type and index.
- *
- * @param type        Device type.
- * @param index       Device index (0-based).
- * @param out_handle  [out] Device handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_open)
-wapi_result_t wapi_device_open(wapi_device_type_t type, int32_t index,
-                               wapi_handle_t* out_handle);
+/** Role kind of an open endpoint. Returns -1 on invalid handle. */
+WAPI_IMPORT(wapi_input, role_kind)
+int32_t wapi_input_role_kind(wapi_handle_t handle);
 
-/**
- * Close a device handle. Works on any device type.
- *
- * @param handle  Device handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_close)
-wapi_result_t wapi_device_close(wapi_handle_t handle);
+/** 16-byte UID of an open endpoint. Stable across reconnects. */
+WAPI_IMPORT(wapi_input, uid)
+wapi_result_t wapi_input_uid(wapi_handle_t handle, uint8_t uid[16]);
 
-/**
- * Get the type of an open device.
- *
- * @param handle  Device handle.
- * @return Device type, or -1 on invalid handle.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_get_type)
-wapi_device_type_t wapi_device_get_type(wapi_handle_t handle);
+/** UTF-8 display name of an open endpoint. May be redacted. */
+WAPI_IMPORT(wapi_input, name)
+wapi_result_t wapi_input_name(wapi_handle_t handle, char* buf,
+                              wapi_size_t buf_len, wapi_size_t* name_len);
 
-/**
- * Get the stable UID of an open device. The UID persists across
- * sessions for the same physical device, enabling reconnect tracking.
- *
- * @param handle  Device handle.
- * @param uid     [out] 16-byte UID buffer.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_get_uid)
-wapi_result_t wapi_device_get_uid(wapi_handle_t handle, uint8_t uid[16]);
-
-/**
- * Get the human-readable name of an open device.
- *
- * @param handle       Device handle.
- * @param buf          Buffer to write name into (UTF-8).
- * @param buf_len      Size of buffer in bytes.
- * @param name_len_ptr [out] Actual name length.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_get_name)
-wapi_result_t wapi_device_get_name(wapi_handle_t handle, char* buf,
-                                   wapi_size_t buf_len,
-                                   wapi_size_t* name_len_ptr);
-
-/* Map a device handle to its owning seat. Returns WAPI_SEAT_DEFAULT
- * for single-seat systems. Use to attribute pointer/key/pen events
- * to a specific user on multi-seat configurations.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_input, device_seat)
-wapi_seat_t wapi_device_seat(wapi_handle_t handle);
+/** Owning seat for multi-seat systems. Returns WAPI_SEAT_DEFAULT otherwise. */
+WAPI_IMPORT(wapi_input, seat)
+wapi_seat_t wapi_input_seat(wapi_handle_t handle);
 
 /* ============================================================
  *  ███╗   ███╗ ██████╗ ██╗   ██╗███████╗███████╗
@@ -910,68 +818,82 @@ uint32_t wapi_pointer_get_buttons(wapi_handle_t handle);
  *  ██║  ██║██║██████╔╝
  *  ╚═╝  ╚═╝╚═╝╚═════╝
  * ============================================================
- * Raw HID device access for custom peripherals. HID devices
- * additionally support permission-gated acquisition via
- * wapi_hid_request_device(). Once granted, they appear in
- * wapi_device_count(WAPI_DEVICE_HID) for reconnect.
+ * Raw HID access for custom peripherals. HID endpoints are
+ * acquired via ROLE_REQUEST(WAPI_ROLE_HID, prefs=wapi_hid_prefs_t)
+ * — the prefs filter (vendor/product/usage) drives the runtime's
+ * picker. Once granted, report I/O happens through this module.
  */
 
-/* ---- HID Info ----
+/**
+ * HID role-request prefs (matches WebHID requestDevice filters).
+ * 0 on any field means "any".
  *
- * Layout (16 bytes, align 4):
+ * Layout (8 bytes, align 2):
+ *   Offset 0: uint16_t vendor_id
+ *   Offset 2: uint16_t product_id
+ *   Offset 4: uint16_t usage_page
+ *   Offset 6: uint16_t usage
+ */
+typedef struct wapi_hid_prefs_t {
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t usage_page;
+    uint16_t usage;
+} wapi_hid_prefs_t;
+
+_Static_assert(sizeof(wapi_hid_prefs_t) == 8, "wapi_hid_prefs_t must be 8 bytes");
+
+typedef enum wapi_hid_transport_t {
+    WAPI_HID_TRANSPORT_UNKNOWN = 0,
+    WAPI_HID_TRANSPORT_USB     = 1,
+    WAPI_HID_TRANSPORT_BT      = 2,
+    WAPI_HID_TRANSPORT_BLE     = 3,
+    WAPI_HID_TRANSPORT_I2C     = 4,
+    WAPI_HID_TRANSPORT_FORCE32 = 0x7FFFFFFF
+} wapi_hid_transport_t;
+
+/**
+ * Metadata about a resolved HID endpoint.
+ *
+ * Layout (32 bytes, align 8):
  *   Offset  0: uint16_t vendor_id
  *   Offset  2: uint16_t product_id
  *   Offset  4: uint16_t usage_page
  *   Offset  6: uint16_t usage
- *   Offset  8: uint8_t  _reserved[8]
+ *   Offset  8: uint32_t transport              wapi_hid_transport_t
+ *   Offset 12: uint32_t report_descriptor_len
+ *   Offset 16: uint8_t  uid[16]
  */
+typedef struct wapi_hid_endpoint_info_t {
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t usage_page;
+    uint16_t usage;
+    uint32_t transport;
+    uint32_t report_descriptor_len;
+    uint8_t  uid[16];
+} wapi_hid_endpoint_info_t;
 
-typedef struct wapi_hid_info_t {
-    uint16_t    vendor_id;
-    uint16_t    product_id;
-    uint16_t    usage_page;
-    uint16_t    usage;
-    uint8_t     _reserved[8];
-} wapi_hid_info_t;
+_Static_assert(sizeof(wapi_hid_endpoint_info_t) == 32, "wapi_hid_endpoint_info_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_hid_endpoint_info_t) == 4, "wapi_hid_endpoint_info_t must be 4-byte aligned");
 
-_Static_assert(sizeof(wapi_hid_info_t) == 16,
-               "wapi_hid_info_t must be 16 bytes");
-_Static_assert(_Alignof(wapi_hid_info_t) == 2,
-               "wapi_hid_info_t must be 2-byte aligned");
+/** Query metadata for a granted HID endpoint. */
+WAPI_IMPORT(wapi_input, hid_endpoint_info)
+wapi_result_t wapi_hid_endpoint_info(wapi_handle_t handle,
+                                     wapi_hid_endpoint_info_t* out,
+                                     char* name_buf, wapi_size_t name_buf_len,
+                                     wapi_size_t* name_len);
 
-/* ---- HID Functions ---- */
+/** Fetch the device serial as UTF-8, privacy-gated.
+ *  Returns WAPI_ERR_NOENT if the host withholds the serial. */
+WAPI_IMPORT(wapi_input, hid_serial)
+wapi_result_t wapi_hid_serial(wapi_handle_t handle, char* buf,
+                              wapi_size_t buf_len, wapi_size_t* serial_len);
 
-/**
- * Request access to a HID device (shows permission prompt).
- * On success, the device can subsequently be found via
- * wapi_device_count(WAPI_DEVICE_HID) and opened normally.
- *
- * @param vendor_id   USB vendor ID filter (0 = any).
- * @param product_id  USB product ID filter (0 = any).
- * @param usage_page  HID usage page filter (0 = any).
- * @param out_handle  [out] HID device handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_input, hid_request_device)
-wapi_result_t wapi_hid_request_device(uint16_t vendor_id,
-                                      uint16_t product_id,
-                                      uint16_t usage_page,
-                                      wapi_handle_t* out_handle);
-
-/**
- * Get HID-specific info.
- *
- * @param handle    HID device handle.
- * @param info_ptr  [out] Pointer to wapi_hid_info_t.
- * @return WAPI_OK on success, WAPI_ERR_INVAL if not a HID device.
- *
- * Wasm signature: (i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_input, hid_get_info)
-wapi_result_t wapi_hid_get_info(wapi_handle_t handle,
-                                wapi_hid_info_t* info_ptr);
+/** Fetch the raw HID report descriptor. Size in wapi_hid_endpoint_info_t. */
+WAPI_IMPORT(wapi_input, hid_report_descriptor)
+wapi_result_t wapi_hid_report_descriptor(wapi_handle_t handle, uint8_t* buf,
+                                         wapi_size_t buf_len, wapi_size_t* desc_len);
 
 /**
  * Send an output report to a HID device.
@@ -1211,28 +1133,27 @@ _Static_assert(_Alignof(wapi_ime_segment_t) == 4, "wapi_ime_segment_t must be 4-
  * Hotkey Binding Descriptor (16 bytes, align 4)
  * ============================================================
  * Wire-format, no embedded pointers. Fields are source-tagged:
- * only the ones relevant to `device_type` are read by the host.
+ * only the ones relevant to `role_kind` are read by the host.
  *
  * Layout:
- *   0:  device_type u32   wapi_device_type_t. Only KEYBOARD,
+ *   0:  role_kind   u32   wapi_role_kind_t. Only KEYBOARD,
  *                         GAMEPAD, and HID are valid for hotkeys;
  *                         other values return WAPI_ERR_NOTSUP.
- *   4:  device_id   u32   Device handle from wapi_device_open; 0
- *                         = any device of this type. Keyboard
+ *   4:  device_id   u32   Endpoint handle from a granted role; 0
+ *                         = any device of this kind. Keyboard
  *                         bindings on most platforms collapse to
  *                         "any keyboard" regardless of this field
  *                         because RegisterHotKey / XGrabKey do not
  *                         disambiguate attached keyboards.
  *   8:  modifiers   u32   Keyboard: WAPI_KMOD_* bitmask.
- *                         Other device types: 0.
- *  12:  code        u32   Device-specific trigger code:
+ *                         Other kinds: 0.
+ *  12:  code        u32   Kind-specific trigger code:
  *                           Keyboard: wapi_scancode_t
  *                           Gamepad:  wapi_gamepad_button_t
  *                           HID:      (usage_page << 16) | usage
- *                                     (both 16-bit per HID spec)
  */
 typedef struct wapi_hotkey_binding_t {
-    uint32_t    device_type;
+    uint32_t    role_kind;
     uint32_t    device_id;
     uint32_t    modifiers;
     uint32_t    code;
@@ -1278,7 +1199,7 @@ WAPI_IMPORT(wapi_input, hotkey_unregister)
 wapi_result_t wapi_input_hotkey_unregister(uint32_t id);
 
 /* --- wapi_hotkey_binding_t (16 bytes, align 4) --- */
-_Static_assert(offsetof(wapi_hotkey_binding_t, device_type) == 0,  "");
+_Static_assert(offsetof(wapi_hotkey_binding_t, role_kind)   == 0,  "");
 _Static_assert(offsetof(wapi_hotkey_binding_t, device_id)   == 4,  "");
 _Static_assert(offsetof(wapi_hotkey_binding_t, modifiers)   == 8,  "");
 _Static_assert(offsetof(wapi_hotkey_binding_t, code)        == 12, "");

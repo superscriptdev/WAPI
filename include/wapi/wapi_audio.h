@@ -2,12 +2,9 @@
  * WAPI - Audio
  * Version 1.0.0
  *
- * SDL3-shaped audio with a push/pull stream model.
- * Supports both playback and recording (capture).
- *
- * The module creates an audio stream, optionally with format
- * conversion, and pushes/pulls samples. The host handles device
- * management, mixing, and low-level audio I/O.
+ * Endpoints are acquired through the role system (WAPI_ROLE_AUDIO_PLAYBACK
+ * / WAPI_ROLE_AUDIO_RECORDING). This header owns the audio format/spec
+ * types, the stream use surface, and endpoint metadata queries.
  *
  * Import module: "wapi_audio"
  */
@@ -36,231 +33,125 @@ typedef enum wapi_audio_format_t {
 /* ============================================================
  * Audio Spec
  * ============================================================
- * Describes an audio format: sample format, channel count, and
- * sample rate.
+ * Used both as role-request prefs and as stream source/dest format.
  *
  * Layout (12 bytes, align 4):
  *   Offset 0: uint32_t format    (wapi_audio_format_t)
- *   Offset 4: int32_t  channels  (1=mono, 2=stereo, etc.)
+ *   Offset 4: int32_t  channels  (1=mono, 2=stereo, ...)
  *   Offset 8: int32_t  freq      (sample rate in Hz)
  */
-
 typedef struct wapi_audio_spec_t {
-    uint32_t    format;     /* wapi_audio_format_t */
+    uint32_t    format;
     int32_t     channels;
-    int32_t     freq;       /* Sample rate (e.g., 44100, 48000) */
+    int32_t     freq;
 } wapi_audio_spec_t;
 
 _Static_assert(sizeof(wapi_audio_spec_t) == 12, "wapi_audio_spec_t must be 12 bytes");
 _Static_assert(_Alignof(wapi_audio_spec_t) == 4, "wapi_audio_spec_t must be 4-byte aligned");
 
 /* ============================================================
- * Default Device IDs
+ * Endpoint Metadata
  * ============================================================ */
 
-#define WAPI_AUDIO_DEFAULT_PLAYBACK  ((wapi_handle_t)-1)
-#define WAPI_AUDIO_DEFAULT_RECORDING ((wapi_handle_t)-2)
+typedef enum wapi_audio_form_t {
+    WAPI_AUDIO_FORM_UNKNOWN    = 0,
+    WAPI_AUDIO_FORM_SPEAKERS   = 1,  /* room, shared */
+    WAPI_AUDIO_FORM_HEADPHONES = 2,  /* personal, 2ch */
+    WAPI_AUDIO_FORM_HEADSET    = 3,  /* personal + paired recording */
+    WAPI_AUDIO_FORM_LINEOUT    = 4,
+    WAPI_AUDIO_FORM_BUILTIN    = 5,
+    WAPI_AUDIO_FORM_FORCE32    = 0x7FFFFFFF
+} wapi_audio_form_t;
+
+/**
+ * Metadata about a resolved audio endpoint.
+ *
+ * Layout (32 bytes, align 4):
+ *   Offset  0: wapi_audio_spec_t native_spec (12 bytes)
+ *   Offset 12: uint32_t          form         (wapi_audio_form_t)
+ *   Offset 16: uint8_t           uid[16]      (stable per physical device)
+ */
+typedef struct wapi_audio_endpoint_info_t {
+    wapi_audio_spec_t native_spec;
+    uint32_t          form;
+    uint8_t           uid[16];
+} wapi_audio_endpoint_info_t;
+
+_Static_assert(sizeof(wapi_audio_endpoint_info_t) == 32, "wapi_audio_endpoint_info_t must be 32 bytes");
+_Static_assert(_Alignof(wapi_audio_endpoint_info_t) == 4, "wapi_audio_endpoint_info_t must be 4-byte aligned");
+
+/**
+ * Query metadata for a granted audio endpoint.
+ * name_buf receives a UTF-8 display label; may be a generic redaction
+ * if the host has not released the real label.
+ *
+ * Wasm signature: (i32, i32, i32, i32, i32) -> i32
+ */
+WAPI_IMPORT(wapi_audio, endpoint_info)
+wapi_result_t wapi_audio_endpoint_info(wapi_handle_t endpoint,
+                                       wapi_audio_endpoint_info_t* out,
+                                       char* name_buf, wapi_size_t name_buf_len,
+                                       wapi_size_t* name_len);
 
 /* ============================================================
- * Audio Device Functions
+ * Endpoint Control
  * ============================================================ */
 
-/**
- * Open an audio device for playback or recording.
- *
- * @param device_id  Device to open (WAPI_AUDIO_DEFAULT_PLAYBACK,
- *                   WAPI_AUDIO_DEFAULT_RECORDING, or a specific device).
- * @param spec       Desired audio format (NULL for device default).
- * @param device     [out] Opened device handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_audio, open_device)
-wapi_result_t wapi_audio_open_device(wapi_handle_t device_id,
-                                  const wapi_audio_spec_t* spec,
-                                  wapi_handle_t* device);
+/** Close a granted endpoint. Wasm: (i32) -> i32 */
+WAPI_IMPORT(wapi_audio, close)
+wapi_result_t wapi_audio_close(wapi_handle_t endpoint);
 
-/**
- * Close an audio device.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_audio, close_device)
-wapi_result_t wapi_audio_close_device(wapi_handle_t device);
+/** Unpause. Endpoints start paused after grant. Wasm: (i32) -> i32 */
+WAPI_IMPORT(wapi_audio, resume)
+wapi_result_t wapi_audio_resume(wapi_handle_t endpoint);
 
-/**
- * Resume (unpause) an audio device. Devices start paused.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_audio, resume_device)
-wapi_result_t wapi_audio_resume_device(wapi_handle_t device);
-
-/**
- * Pause an audio device.
- *
- * Wasm signature: (i32) -> i32
- */
-WAPI_IMPORT(wapi_audio, pause_device)
-wapi_result_t wapi_audio_pause_device(wapi_handle_t device);
+/** Pause. Wasm: (i32) -> i32 */
+WAPI_IMPORT(wapi_audio, pause)
+wapi_result_t wapi_audio_pause(wapi_handle_t endpoint);
 
 /* ============================================================
- * Audio Stream Functions
+ * Audio Stream
  * ============================================================
- * An audio stream handles format conversion between the module's
- * preferred format and the device's format. The module pushes
- * samples in its format; the stream converts and feeds the device.
+ * Converts between the module's format and the endpoint's format.
+ * Playback: module pushes into the stream; host pulls for the endpoint.
+ * Recording: host pushes from the endpoint; module pulls from the stream.
  */
 
-/**
- * Create an audio stream with optional format conversion.
- *
- * @param src_spec  Source format (what the module provides).
- * @param dst_spec  Destination format (what the device needs).
- *                  NULL = use device's native format.
- * @param stream    [out] Stream handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
+/** Wasm: (i32, i32, i32) -> i32 */
 WAPI_IMPORT(wapi_audio, create_stream)
 wapi_result_t wapi_audio_create_stream(const wapi_audio_spec_t* src_spec,
-                                    const wapi_audio_spec_t* dst_spec,
-                                    wapi_handle_t* stream);
+                                       const wapi_audio_spec_t* dst_spec,
+                                       wapi_handle_t* stream);
 
-/**
- * Destroy an audio stream.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Wasm: (i32) -> i32 */
 WAPI_IMPORT(wapi_audio, destroy_stream)
 wapi_result_t wapi_audio_destroy_stream(wapi_handle_t stream);
 
-/**
- * Bind an audio stream to a device.
- * Playback: stream data flows to the device.
- * Recording: device data flows into the stream.
- *
- * @param device  Device handle.
- * @param stream  Stream handle.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32) -> i32
- */
+/** Wasm: (i32, i32) -> i32 */
 WAPI_IMPORT(wapi_audio, bind_stream)
-wapi_result_t wapi_audio_bind_stream(wapi_handle_t device, wapi_handle_t stream);
+wapi_result_t wapi_audio_bind_stream(wapi_handle_t endpoint, wapi_handle_t stream);
 
-/**
- * Unbind an audio stream from its device.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Wasm: (i32) -> i32 */
 WAPI_IMPORT(wapi_audio, unbind_stream)
 wapi_result_t wapi_audio_unbind_stream(wapi_handle_t stream);
 
-/**
- * Push audio data into a stream (for playback).
- * The data is in the stream's source format.
- *
- * @param stream  Stream handle.
- * @param buf     Audio sample data.
- * @param len     Data length in bytes.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32) -> i32
- */
+/** Wasm: (i32, i32, i32) -> i32 */
 WAPI_IMPORT(wapi_audio, put_stream_data)
 wapi_result_t wapi_audio_put_stream_data(wapi_handle_t stream, const void* buf,
-                                      wapi_size_t len);
+                                         wapi_size_t len);
 
-/**
- * Pull audio data from a stream (for recording).
- *
- * @param stream     Stream handle.
- * @param buf        Buffer to receive audio data.
- * @param len        Buffer capacity in bytes.
- * @param bytes_read [out] Actual bytes read.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
+/** Wasm: (i32, i32, i32, i32) -> i32 */
 WAPI_IMPORT(wapi_audio, get_stream_data)
 wapi_result_t wapi_audio_get_stream_data(wapi_handle_t stream, void* buf,
-                                      wapi_size_t len, wapi_size_t* bytes_read);
+                                         wapi_size_t len, wapi_size_t* bytes_read);
 
-/**
- * Query how many bytes of audio data are available in the stream.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Bytes currently available to read from the stream. Wasm: (i32) -> i32 */
 WAPI_IMPORT(wapi_audio, stream_available)
 int32_t wapi_audio_stream_available(wapi_handle_t stream);
 
-/**
- * Query how many bytes the stream can still accept before it's full.
- *
- * Wasm signature: (i32) -> i32
- */
+/** Bytes currently queued in the stream's write buffer. Wasm: (i32) -> i32 */
 WAPI_IMPORT(wapi_audio, stream_queued)
 int32_t wapi_audio_stream_queued(wapi_handle_t stream);
-
-/* ============================================================
- * Convenience: Open Device + Create Stream + Bind
- * ============================================================ */
-
-/**
- * Open a device and create a bound stream in one call.
- * Equivalent to open_device + create_stream + bind_stream.
- *
- * @param device_id  Device to open.
- * @param spec       Audio format the module will use.
- * @param device     [out] Device handle.
- * @param stream     [out] Stream handle (already bound to device).
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_audio, open_device_stream)
-wapi_result_t wapi_audio_open_device_stream(wapi_handle_t device_id,
-                                         const wapi_audio_spec_t* spec,
-                                         wapi_handle_t* device,
-                                         wapi_handle_t* stream);
-
-/* ============================================================
- * Device Enumeration
- * ============================================================ */
-
-/**
- * Get the number of available playback devices.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi_audio, playback_device_count)
-int32_t wapi_audio_playback_device_count(void);
-
-/**
- * Get the number of available recording devices.
- *
- * Wasm signature: () -> i32
- */
-WAPI_IMPORT(wapi_audio, recording_device_count)
-int32_t wapi_audio_recording_device_count(void);
-
-/**
- * Get the name of an audio device.
- *
- * @param device_id  Device index or handle.
- * @param buf        Buffer for device name (UTF-8).
- * @param buf_len    Buffer capacity.
- * @param name_len   [out] Actual name length.
- * @return WAPI_OK on success.
- *
- * Wasm signature: (i32, i32, i32, i32) -> i32
- */
-WAPI_IMPORT(wapi_audio, device_name)
-wapi_result_t wapi_audio_device_name(wapi_handle_t device_id, char* buf,
-                                  wapi_size_t buf_len, wapi_size_t* name_len);
 
 #ifdef __cplusplus
 }

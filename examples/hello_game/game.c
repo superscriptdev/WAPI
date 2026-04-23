@@ -45,6 +45,8 @@ void* memset(void* dst, int v, size_t n) {
 
 #include "assets.h"
 #include "ai_hash.h"
+#include "tracker_types.h"
+#include "tracker_hash.h"
 
 /* ---- game tunables ---- */
 #define PLAY_W            800
@@ -54,6 +56,13 @@ void* memset(void* dst, int v, size_t n) {
 #define PLAYER_SPEED      5.0f
 #define AUDIO_RATE        22050
 #define BEEP_SAMPLES      4096  /* ~186ms per beep — one stream of S16 mono */
+
+/* Soundtrack: 8-second loop at AUDIO_RATE, rendered once by the tracker
+ * child module then streamed in small chunks each frame. */
+#define MUSIC_LOOP_SECONDS   8
+#define MUSIC_LOOP_SAMPLES   (AUDIO_RATE * MUSIC_LOOP_SECONDS)
+#define MUSIC_CHUNK_SAMPLES  2048   /* ~93ms at 22050Hz */
+#define MUSIC_QUEUE_TARGET   (MUSIC_CHUNK_SAMPLES * 4 * 2) /* keep ~370ms queued */
 
 /* ---- shared AI state (layout mirrored in ai.c) ---- */
 typedef struct enemy_t {
@@ -96,6 +105,22 @@ static WGPUSampler      g_atlas_sampler;
 
 /* Audio */
 static wapi_handle_t    g_audio_dev, g_audio_stream;
+static wapi_handle_t    g_music_stream;
+
+/* Tracker child module + baked loop buffer. */
+typedef enum {
+    TRK_IDLE = 0,
+    TRK_JOINING,    /* join() returning WAPI_ERR_AGAIN while async fetch runs */
+    TRK_READY,      /* loop rendered, music pumping */
+    TRK_FAILED,     /* gave up; game runs silent (sfx still works) */
+} tracker_state_t;
+static tracker_state_t  g_tracker_state;
+static int              g_tracker_tries;
+static wapi_handle_t    g_tracker_mod;
+static wapi_handle_t    g_tracker_render_fn;
+static int16_t          g_music_loop[MUSIC_LOOP_SAMPLES];
+static int              g_music_ready;
+static uint32_t         g_music_cursor;
 
 /* Input device handles (opened at startup). */
 static wapi_handle_t    g_kb_handle;
@@ -110,6 +135,12 @@ static uint64_t         g_enemy_shared_off;  /* offset into wapi_module shared m
 static uint32_t g_rng_state;
 static float    g_player_x, g_player_y;
 static int      g_lives;
+static int      g_game_over;  /* 1 = player dead, waiting for input to restart */
+static uint64_t g_sim_accum_ns;
+
+static void reset_round(void);
+static void update_viewport(void);
+static void reconfigure_surface(void);
 static int      g_score;
 static int      g_coin_active;
 static float    g_coin_x, g_coin_y;
@@ -134,7 +165,7 @@ static int          g_idx_count;
  * ============================================================ */
 
 static const char g_wgsl[] =
-"struct U { surface_size: vec2f, atlas_size: vec2f };\n"
+"struct U { atlas_size: vec2f, scale: vec2f, bias: vec2f, _pad: vec2f };\n"
 "@group(0) @binding(0) var<uniform> u: U;\n"
 "@group(0) @binding(1) var atlas: texture_2d<f32>;\n"
 "@group(0) @binding(2) var samp : sampler;\n"
@@ -150,8 +181,8 @@ static const char g_wgsl[] =
 "};\n"
 "@vertex fn vs(v: VIn) -> VOut {\n"
 "  var o: VOut;\n"
-"  let ndc = vec2f(v.pos.x / u.surface_size.x * 2.0 - 1.0,\n"
-"                  1.0 - v.pos.y / u.surface_size.y * 2.0);\n"
+"  let ndc = vec2f(u.bias.x + v.pos.x * u.scale.x,\n"
+"                  u.bias.y - v.pos.y * u.scale.y);\n"
 "  o.clip = vec4f(ndc, 0.0, 1.0);\n"
 "  o.uv   = v.uv / u.atlas_size;\n"
 "  o.rgba = v.rgba;\n"
@@ -321,9 +352,22 @@ static wapi_result_t init_gpu(void) {
     g_wgpu_surface = wgpuInstanceCreateSurface(g_instance, &surf_desc);
     if (!g_wgpu_surface) return WAPI_ERR_UNKNOWN;
 
+    /* Prefer a non-sRGB swapchain format so the shader's output reaches
+     * the screen unchanged. caps.formats[0] is host-dependent (wgpu-native
+     * on Windows lists *-Srgb first, browser WebGPU lists non-sRGB first),
+     * which makes identical shader output display with different gamma
+     * across runtimes. Walk caps and pick the first non-sRGB; fall back
+     * to BGRA8Unorm if none qualify. */
     WGPUSurfaceCapabilities caps = {0};
     wgpuSurfaceGetCapabilities(g_wgpu_surface, g_adapter, &caps);
-    g_surface_fmt = (caps.formatCount > 0) ? caps.formats[0] : WGPUTextureFormat_BGRA8Unorm;
+    g_surface_fmt = WGPUTextureFormat_BGRA8Unorm;
+    for (size_t i = 0; i < caps.formatCount; i++) {
+        WGPUTextureFormat f = caps.formats[i];
+        if (f == WGPUTextureFormat_BGRA8Unorm || f == WGPUTextureFormat_RGBA8Unorm) {
+            g_surface_fmt = f;
+            break;
+        }
+    }
 
     WGPUSurfaceConfiguration sc = {0};
     sc.device = g_device;
@@ -376,7 +420,7 @@ static wapi_result_t init_gpu(void) {
     bgle[0].binding = 0;
     bgle[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     bgle[0].buffer.type = WGPUBufferBindingType_Uniform;
-    bgle[0].buffer.minBindingSize = 16;
+    bgle[0].buffer.minBindingSize = 32;
     bgle[1].binding = 1;
     bgle[1].visibility = WGPUShaderStage_Fragment;
     bgle[1].texture.sampleType = WGPUTextureSampleType_Float;
@@ -397,16 +441,16 @@ static wapi_result_t init_gpu(void) {
     pld.bindGroupLayouts = &g_bgl;
     g_plyt = wgpuDeviceCreatePipelineLayout(g_device, &pld);
 
-    /* ---- Uniform buffer (16B = vec2 surface + vec2 atlas) ---- */
+    /* ---- Uniform buffer (32B: atlas_size, scale, bias, pad) ---- */
     WGPUBufferDescriptor ub = {0};
     ub.label.data = "ubuf"; ub.label.length = 4;
     ub.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-    ub.size = 16;
+    ub.size = 32;
     g_ubuf = wgpuDeviceCreateBuffer(g_device, &ub);
 
     /* ---- Bind group ---- */
     WGPUBindGroupEntry bge[3] = {0};
-    bge[0].binding = 0; bge[0].buffer = g_ubuf; bge[0].offset = 0; bge[0].size = 16;
+    bge[0].binding = 0; bge[0].buffer = g_ubuf; bge[0].offset = 0; bge[0].size = 32;
     bge[1].binding = 1; bge[1].textureView = g_atlas_view;
     bge[2].binding = 2; bge[2].sampler = g_atlas_sampler;
     WGPUBindGroupDescriptor bgd = {0};
@@ -484,27 +528,285 @@ static wapi_result_t init_gpu(void) {
     g_pipeline = wgpuDeviceCreateRenderPipeline(g_device, &pd);
     if (!g_pipeline) return WAPI_ERR_UNKNOWN;
 
-    /* Upload uniform (static for now — resize re-uploads). */
-    float ub_bytes[4] = { (float)g_width, (float)g_height,
-                          (float)ATLAS_WIDTH, (float)ATLAS_HEIGHT };
-    wgpuQueueWriteBuffer(g_queue, g_ubuf, 0, ub_bytes, sizeof(ub_bytes));
+    update_viewport();
     return WAPI_OK;
+}
+
+/* Compute letterbox scale/bias for the current surface size and push the
+ * uniform. Preserves the PLAY_W x PLAY_H aspect ratio; the unused margin
+ * is left as the clear color. */
+static void update_viewport(void) {
+    float w = (float)g_width;
+    float h = (float)g_height;
+    if (w <= 0) w = PLAY_W;
+    if (h <= 0) h = PLAY_H;
+
+    float sx = w / (float)PLAY_W;
+    float sy = h / (float)PLAY_H;
+    float s  = sx < sy ? sx : sy;          /* px per play unit */
+    float ox = (w - PLAY_W * s) * 0.5f;    /* letterbox left margin, px */
+    float oy = (h - PLAY_H * s) * 0.5f;    /* letterbox top margin, px */
+
+    /* ndc.x = bias.x + pos.x * scale.x  where pos is in play-space px */
+    /* ndc.y = bias.y - pos.y * scale.y  (y flipped, origin top-left) */
+    float scale_x = 2.0f * s / w;
+    float scale_y = 2.0f * s / h;
+    float bias_x  = 2.0f * ox / w - 1.0f;
+    float bias_y  = 1.0f - 2.0f * oy / h;
+
+    float ub_bytes[8] = {
+        (float)ATLAS_WIDTH, (float)ATLAS_HEIGHT,
+        scale_x, scale_y,
+        bias_x, bias_y,
+        0.0f, 0.0f,
+    };
+    wgpuQueueWriteBuffer(g_queue, g_ubuf, 0, ub_bytes, sizeof(ub_bytes));
+}
+
+static void reconfigure_surface(void) {
+    WGPUSurfaceConfiguration sc = {0};
+    sc.device = g_device;
+    sc.format = g_surface_fmt;
+    sc.usage = WGPUTextureUsage_RenderAttachment;
+    sc.width = (uint32_t)g_width;
+    sc.height = (uint32_t)g_height;
+    sc.presentMode = WGPUPresentMode_Fifo;
+    sc.alphaMode = WGPUCompositeAlphaMode_Auto;
+    wgpuSurfaceConfigure(g_wgpu_surface, &sc);
+    update_viewport();
 }
 
 /* ============================================================
  * Audio setup
  * ============================================================ */
 
+/* Submit one role request and pump the event queue until the matching
+ * completion arrives. Returns the per-role wapi_result_t. */
+static wapi_result_t request_role_blocking(
+    uint32_t kind, uint32_t flags,
+    const void* prefs, uint32_t prefs_len,
+    wapi_handle_t* out_handle,
+    uint64_t tag)
+{
+    wapi_result_t role_result = WAPI_ERR_AGAIN;
+    wapi_role_request_t req = {0};
+    req.kind       = kind;
+    req.flags      = flags;
+    req.prefs_addr = (uint64_t)(uintptr_t)prefs;
+    req.prefs_len  = prefs_len;
+    req.out_handle = (uint64_t)(uintptr_t)out_handle;
+    req.out_result = (uint64_t)(uintptr_t)&role_result;
+
+    wapi_result_t sub = wapi_role_request(g_io, &req, 1, tag);
+    if (WAPI_FAILED(sub)) return sub;
+
+    wapi_event_t ev;
+    for (int tries = 0; tries < 1024; tries++) {
+        if (g_io->poll(g_io->impl, &ev)
+            && ev.type == WAPI_EVENT_IO_COMPLETION
+            && ev.io.user_data == tag) {
+            return role_result;
+        }
+    }
+    return WAPI_ERR_TIMEDOUT;
+}
+
 static wapi_result_t init_audio(void) {
     wapi_audio_spec_t spec = {0};
     spec.format   = WAPI_AUDIO_S16;
     spec.channels = 1;
     spec.freq     = AUDIO_RATE;
-    wapi_result_t r = wapi_audio_open_device_stream(WAPI_AUDIO_DEFAULT_PLAYBACK,
-                                                    &spec, &g_audio_dev, &g_audio_stream);
+    wapi_result_t r = request_role_blocking(
+        WAPI_ROLE_AUDIO_PLAYBACK, WAPI_ROLE_FOLLOW_DEFAULT,
+        &spec, sizeof(spec), &g_audio_dev, 0xA0D10ULL);
     if (WAPI_FAILED(r)) return r;
-    wapi_audio_resume_device(g_audio_dev);
+
+    r = wapi_audio_create_stream(&spec, NULL, &g_audio_stream);
+    if (WAPI_FAILED(r)) { wapi_audio_close(g_audio_dev); return r; }
+    r = wapi_audio_bind_stream(g_audio_dev, g_audio_stream);
+    if (WAPI_FAILED(r)) {
+        wapi_audio_destroy_stream(g_audio_stream);
+        wapi_audio_close(g_audio_dev);
+        return r;
+    }
+
+    /* A second stream carries the tracker-generated music so sfx beeps
+     * don't stall behind queued music samples. Both share the endpoint;
+     * the host mixes them. */
+    r = wapi_audio_create_stream(&spec, NULL, &g_music_stream);
+    if (!WAPI_FAILED(r)) {
+        if (WAPI_FAILED(wapi_audio_bind_stream(g_audio_dev, g_music_stream))) {
+            wapi_audio_destroy_stream(g_music_stream);
+            g_music_stream = 0;
+        }
+    } else {
+        g_music_stream = 0;
+    }
+
+    wapi_audio_resume(g_audio_dev);
     return WAPI_OK;
+}
+
+/* ============================================================
+ * Tracker child module — soundtrack generation
+ * ============================================================ */
+
+/* Build the soundtrack loop: stage data in shared memory, call the
+ * tracker, pull the PCM back into private memory. Called after the join
+ * and get_func succeed. */
+static wapi_result_t render_soundtrack(void) {
+    /* Instruments. */
+    tracker_instrument_t instruments[3] = {
+        /* 0: bass — saw, medium punch */
+        { TRACKER_WAVE_SAW,      0.005f, 0.25f, 0.25f, 0.30f, 0.35f },
+        /* 1: lead — square, bright */
+        { TRACKER_WAVE_SQUARE,   0.010f, 0.15f, 0.55f, 0.18f, 0.22f },
+        /* 2: pad  — sine, slow swell */
+        { TRACKER_WAVE_SINE,     0.20f,  0.30f, 0.70f, 0.40f, 0.30f },
+    };
+
+    /* 120 BPM: 60/120 = 0.5s per beat = AUDIO_RATE/2 samples/beat. */
+    const uint32_t beat_samples = AUDIO_RATE / 2;
+    const uint32_t bar_samples  = beat_samples * 4;
+
+    /* Chord roots (bass octave 2), held for one bar each. */
+    static const uint16_t bass_notes[4]   = { 45, 41, 48, 43 }; /* A2 F2 C3 G2 */
+    /* Arpeggio (octave 4/5), four notes per bar. */
+    static const uint16_t melody_notes[4][4] = {
+        { 69, 72, 76, 72 }, /* A minor:   A4 C5 E5 C5 */
+        { 65, 69, 72, 69 }, /* F major:   F4 A4 C5 A4 */
+        { 72, 76, 79, 76 }, /* C major:   C5 E5 G5 E5 */
+        { 67, 71, 74, 71 }, /* G major:   G4 B4 D5 B4 */
+    };
+    /* Pad sustains the chord root one octave up, one note per bar. */
+    static const uint16_t pad_notes[4]    = { 57, 53, 60, 55 };
+
+    tracker_note_t notes[4 + 4*4 + 4];
+    uint32_t nc = 0;
+    for (uint32_t bar = 0; bar < 4; bar++) {
+        uint32_t bar_start = bar * bar_samples;
+        /* Bass: hold for ~3.8 beats of the bar. */
+        notes[nc++] = (tracker_note_t){
+            bar_start, beat_samples * 38 / 10, 0, bass_notes[bar], 100
+        };
+        /* Melody: 4 quarter notes. */
+        for (uint32_t b = 0; b < 4; b++) {
+            notes[nc++] = (tracker_note_t){
+                bar_start + b * beat_samples,
+                beat_samples * 9 / 10,
+                1, melody_notes[bar][b], 90
+            };
+        }
+        /* Pad: one long note per bar. */
+        notes[nc++] = (tracker_note_t){
+            bar_start, bar_samples, 2, pad_notes[bar], 70
+        };
+    }
+
+    /* Stage everything into shared memory and invoke the tracker. */
+    wapi_size_t inst_off  = wapi_module_shared_alloc(sizeof(instruments), 4);
+    wapi_size_t notes_off = wapi_module_shared_alloc(sizeof(tracker_note_t) * nc, 4);
+    wapi_size_t out_off   = wapi_module_shared_alloc(sizeof(int16_t) * MUSIC_LOOP_SAMPLES, 2);
+    wapi_size_t req_off   = wapi_module_shared_alloc(sizeof(tracker_request_t), 8);
+    if (!inst_off || !notes_off || !out_off || !req_off) return WAPI_OK;
+
+    wapi_module_shared_write(inst_off, instruments, sizeof(instruments));
+    wapi_module_shared_write(notes_off, notes, sizeof(tracker_note_t) * nc);
+
+    tracker_request_t req = {0};
+    req.sample_rate     = AUDIO_RATE;
+    req.num_instruments = 3;
+    req.num_notes       = nc;
+    req.out_samples     = MUSIC_LOOP_SAMPLES;
+    req.instruments_off = inst_off;
+    req.notes_off       = notes_off;
+    req.out_off         = out_off;
+    wapi_module_shared_write(req_off, &req, sizeof(req));
+
+    wapi_val_t args[1] = {
+        { .kind = WAPI_VAL_I64, .of.i64 = (int64_t)req_off },
+    };
+    wapi_val_t result;
+    wapi_result_t r = wapi_module_call(g_tracker_mod, g_tracker_render_fn,
+                                       args, 1, &result, 1);
+    wapi_module_shared_free(req_off);
+    if (WAPI_FAILED(r)) {
+        wapi_module_shared_free(out_off);
+        wapi_module_shared_free(notes_off);
+        wapi_module_shared_free(inst_off);
+        return r;
+    }
+
+    /* Pull the rendered PCM back into private memory so we can feed it
+     * to the audio stream without touching shared memory every frame. */
+    wapi_module_shared_read(out_off, g_music_loop, sizeof(g_music_loop));
+
+    wapi_module_shared_free(out_off);
+    wapi_module_shared_free(notes_off);
+    wapi_module_shared_free(inst_off);
+
+    g_music_ready  = 1;
+    g_music_cursor = 0;
+    return WAPI_OK;
+}
+
+/* Drive the join → get_func → render pipeline. Browsers need async
+ * fetching, so this is called each frame until the state leaves
+ * TRK_IDLE/TRK_JOINING. */
+static void tracker_tick(void) {
+    if (g_tracker_state == TRK_READY || g_tracker_state == TRK_FAILED) return;
+    if (!wapi_cap_supported(g_io, WAPI_STR(WAPI_CAP_MODULE))) {
+        g_tracker_state = TRK_FAILED;
+        return;
+    }
+
+    wapi_module_hash_t hash;
+    memcpy(hash.bytes, g_tracker_hash, 32);
+
+    wapi_result_t r = wapi_module_join(&hash,
+                                       WAPI_STR("hello_game_tracker.wasm"),
+                                       WAPI_STR("tracker"),
+                                       &g_tracker_mod);
+    if (r == WAPI_ERR_AGAIN) {
+        g_tracker_state = TRK_JOINING;
+        if (++g_tracker_tries > 600) {   /* ~10s at 60 Hz */
+            g_tracker_state = TRK_FAILED;
+        }
+        return;
+    }
+    if (WAPI_FAILED(r)) { g_tracker_state = TRK_FAILED; return; }
+
+    r = wapi_module_get_func(g_tracker_mod, WAPI_STR("tracker_render"),
+                             &g_tracker_render_fn);
+    if (WAPI_FAILED(r)) {
+        wapi_module_release(g_tracker_mod);
+        g_tracker_mod = 0;
+        g_tracker_state = TRK_FAILED;
+        return;
+    }
+
+    if (WAPI_FAILED(render_soundtrack())) {
+        g_tracker_state = TRK_FAILED;
+        return;
+    }
+    g_tracker_state = TRK_READY;
+}
+
+/* Called every frame. Keeps the music stream topped up so playback
+ * loops seamlessly. Skipped if tracker setup failed. */
+static void pump_music(void) {
+    if (!g_music_ready || !g_music_stream) return;
+    while (wapi_audio_stream_queued(g_music_stream) < MUSIC_QUEUE_TARGET) {
+        uint32_t n = MUSIC_CHUNK_SAMPLES;
+        if (g_music_cursor + n > MUSIC_LOOP_SAMPLES) {
+            n = MUSIC_LOOP_SAMPLES - g_music_cursor;
+        }
+        wapi_audio_put_stream_data(g_music_stream,
+                                   &g_music_loop[g_music_cursor],
+                                   (wapi_size_t)n * sizeof(int16_t));
+        g_music_cursor += n;
+        if (g_music_cursor >= MUSIC_LOOP_SAMPLES) g_music_cursor = 0;
+    }
 }
 
 /* ============================================================
@@ -545,26 +847,35 @@ static wapi_result_t init_ai_module(void) {
 static enemy_t g_enemies[MAX_ENEMIES];
 
 static wapi_result_t init_game(void) {
-    /* Open keyboard / gamepad handles. Keyboard is an aggregate
-     * device so index 0 always succeeds on desktop. Gamepad slot 0
-     * is the first XInput pad; open is a no-op on Win32 and returns
-     * the slot-as-handle (0). */
-    wapi_device_open(WAPI_DEVICE_KEYBOARD, 0, &g_kb_handle);
-    wapi_device_open(WAPI_DEVICE_GAMEPAD,  0, &g_gpad_handle);
+    /* Acquire keyboard + gamepad endpoints through the role system.
+     * Keyboard is ambient-granted; gamepad is ambient under gaming
+     * policy. Both resolve synchronously on desktop. */
+    request_role_blocking(WAPI_ROLE_KEYBOARD, 0, NULL, 0,
+                          &g_kb_handle,   0xA0D11ULL);
+    request_role_blocking(WAPI_ROLE_GAMEPAD, WAPI_ROLE_OPTIONAL, NULL, 0,
+                          &g_gpad_handle, 0xA0D12ULL);
 
     uint32_t seed = 0xDEADBEEFu;
     wapi_random_get(&seed, sizeof(seed));
     g_rng_state = seed ? seed : 1;
 
+    reset_round();
+    g_running = 1;
+    return WAPI_OK;
+}
+
+/* Clear entity state and respawn the player at the start position.
+ * Called from init_game and from the game-over restart path. */
+static void reset_round(void) {
     g_player_x = PLAY_W * 0.5f - 4;
     g_player_y = PLAY_H - 40;
     g_lives = 3;
     g_score = 0;
     g_coin_active = 0;
     g_frame = 0;
-    g_running = 1;
+    g_game_over = 0;
+    g_sim_accum_ns = 0;
     for (int i = 0; i < MAX_ENEMIES; i++) g_enemies[i].alive = 0;
-    return WAPI_OK;
 }
 
 static void spawn_enemy(void) {
@@ -631,6 +942,7 @@ static void read_input(float* out_dx, float* out_dy) {
  * ============================================================ */
 
 static void sim_step(void) {
+    if (g_game_over) return;
     g_frame++;
 
     /* Player. */
@@ -678,7 +990,7 @@ static void sim_step(void) {
             g_lives--;
             g_hit_audio_until = g_frame + 6;
             play_beep(200, 0.4f);
-            if (g_lives <= 0) g_running = 0;
+            if (g_lives <= 0) g_game_over = 1;
         }
     }
     if (g_coin_active) {
@@ -704,11 +1016,23 @@ static void process_events(void) {
             case WAPI_EVENT_WINDOW_CLOSE:
                 g_running = 0;
                 break;
+            case WAPI_EVENT_SURFACE_RESIZED:
+                g_width  = ev.surface.data1;
+                g_height = ev.surface.data2;
+                reconfigure_surface();
+                break;
             case WAPI_EVENT_KEY_DOWN:
                 if (ev.key.scancode == WAPI_SCANCODE_ESCAPE) g_running = 0;
+                else if (g_game_over) reset_round();
+                break;
+            case WAPI_EVENT_MOUSE_BUTTON_DOWN:
+            case WAPI_EVENT_POINTER_DOWN:
+            case WAPI_EVENT_TOUCH_DOWN:
+                if (g_game_over) reset_round();
                 break;
             case WAPI_EVENT_GAMEPAD_BUTTON_DOWN:
                 if (ev.gbutton.button == WAPI_GAMEPAD_BUTTON_START) g_running = 0;
+                else if (g_game_over) reset_round();
                 break;
             default: break;
         }
@@ -813,12 +1137,44 @@ static wapi_result_t render_frame(void) {
  * Entry points
  * ============================================================ */
 
+/* Fixed-timestep accumulator: simulation advances at a constant 60 Hz
+ * regardless of how fast the host calls wapi_frame. 60 Hz browser: one
+ * sim step per frame. 144 Hz monitor: one sim step every ~2.4 frames
+ * on average (the accumulator only fires when it crosses SIM_STEP_NS).
+ * Bounds max catch-up at 4 steps / frame so a long pause (tab
+ * backgrounded, breakpoint) doesn't spiral after resuming. */
+#define SIM_HZ        60
+#define SIM_STEP_NS   (1000000000ULL / SIM_HZ)
+#define SIM_MAX_STEPS 4
+static uint64_t g_sim_last_ts = 0;
+static uint64_t g_sim_accum_ns = 0;
+
 WAPI_EXPORT(wapi_frame)
 wapi_result_t wapi_frame(wapi_timestamp_t ts) {
-    (void)ts;
     process_events();
     if (!g_running) return WAPI_ERR_CANCELED;
-    sim_step();
+
+    if (g_sim_last_ts == 0) {
+        g_sim_last_ts = ts;
+    } else if (ts > g_sim_last_ts) {
+        g_sim_accum_ns += ts - g_sim_last_ts;
+        g_sim_last_ts = ts;
+    } else {
+        g_sim_last_ts = ts;
+    }
+    int steps = 0;
+    while (g_sim_accum_ns >= SIM_STEP_NS && steps < SIM_MAX_STEPS) {
+        sim_step();
+        g_sim_accum_ns -= SIM_STEP_NS;
+        steps++;
+    }
+    if (g_sim_accum_ns > SIM_STEP_NS * SIM_MAX_STEPS) {
+        /* Big pause — drop remaining debt rather than catching up forever. */
+        g_sim_accum_ns = 0;
+    }
+
+    tracker_tick();
+    pump_music();
     render_frame();
     return WAPI_OK;
 }
@@ -841,5 +1197,7 @@ wapi_result_t wapi_main(void) {
     r = init_audio();        if (WAPI_FAILED(r)) { /* non-fatal — no sound */ }
     r = init_game();         if (WAPI_FAILED(r)) return r;
     r = init_ai_module();    if (WAPI_FAILED(r)) { /* non-fatal — local sim */ }
+    /* tracker_tick is driven from wapi_frame so the browser's async fetch
+     * has a chance to complete between calls. */
     return WAPI_OK;
 }

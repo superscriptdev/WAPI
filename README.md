@@ -26,6 +26,12 @@ This ABI doesn't start from scratch. It unifies proven, battle-tested APIs:
 | GPU compute & rendering | webgpu.h | Dawn (Chrome), wgpu-native (Firefox) |
 | Async I/O | io_uring | Linux kernel, WebGPU command submission |
 
+## Role System (Device Access)
+
+Every device — audio, camera, midi, keyboard, mouse, gamepad, haptic, sensor, display, HID, touch, pen, pointer — is acquired through **role requests**. Apps describe the role they need; the runtime resolves it to a specific endpoint (silently for ambient roles like keyboard / default speaker, via a batched permission prompt for sensitive ones like camera / microphone). Apps never enumerate devices before grant — the runtime is the only thing that sees the full device set, which makes privacy and picker UX a first-class concern instead of an afterthought.
+
+See [spec §9.10](spec/wapi-spec.md#910-role-system) for the request flow, kind registry, flags (`FOLLOW_DEFAULT`, `PIN_SPECIFIC`, `ALL`, `WAIT_FOR_DEVICE`), UID-based cross-kind correlation, and vendor-specific hardware app patterns (iCUE, Playdate Mirror).
+
 ## Capabilities
 
 All capabilities use the same query mechanism -- string-based names, Vulkan-style enumeration. No "core" vs "extension" distinction.

@@ -40,6 +40,8 @@
 
 #define OP_NOP                       0x00
 #define OP_CAP_REQUEST               0x01
+#define OP_ROLE_REQUEST              0x16
+#define OP_ROLE_REPICK               0x17
 #define OP_READ                      0x02
 #define OP_WRITE                     0x03
 #define OP_OPEN                      0x04
@@ -65,8 +67,7 @@
 #define OP_SERIAL_OPEN               0x081
 #define OP_SERIAL_READ               0x082
 #define OP_SERIAL_WRITE              0x083
-#define OP_MIDI_ACCESS_REQUEST       0x090
-#define OP_MIDI_PORT_OPEN            0x091
+/* MIDI port acquisition folded into OP_ROLE_REQUEST. */
 #define OP_MIDI_SEND                 0x092
 #define OP_MIDI_RECV                 0x093
 #define OP_BT_DEVICE_REQUEST         0x0A0
@@ -84,7 +85,7 @@
 #define OP_USB_CONTROL_TRANSFER      0x0B5
 #define OP_NFC_SCAN_START            0x0C0
 #define OP_NFC_WRITE                 0x0C1
-#define OP_CAMERA_OPEN               0x0D0
+/* Camera open folded into OP_ROLE_REQUEST. */
 #define OP_CAMERA_FRAME_READ         0x0D1
 #define OP_CODEC_DECODE              0x100
 #define OP_CODEC_ENCODE              0x101
@@ -140,7 +141,7 @@
 #define OP_POWER_INFO_GET            0x2E8
 #define OP_POWER_WAKE_ACQUIRE        0x2E9
 #define OP_POWER_IDLE_START          0x2EA
-#define OP_SENSOR_START              0x2F0
+/* Sensor start folded into OP_ROLE_REQUEST. */
 #define OP_NOTIFY_SHOW               0x2F8
 #define OP_FONT_FAMILY_INFO          0x2FC
 #define OP_TRANSFER_OFFER            0x310
@@ -225,7 +226,7 @@ extern void wapi_host_power_idle_start_op(op_ctx_t* c);
 extern void wapi_host_notify_show_op(op_ctx_t* c);             /* wapi_host_notifications.c (future) */
 extern void wapi_host_font_bytes_get_op(op_ctx_t* c);          /* wapi_host_font.c */
 extern void wapi_host_font_family_info_op(op_ctx_t* c);
-extern void wapi_host_sensor_start_op(op_ctx_t* c);            /* wapi_host_sensors.c (future) */
+/* Sensor start folded into the role dispatcher (op_role_request). */
 extern void wapi_host_dialog_file_open_op(op_ctx_t* c);        /* wapi_host_dialog.c (future) */
 extern void wapi_host_dialog_file_save_op(op_ctx_t* c);
 extern void wapi_host_dialog_folder_open_op(op_ctx_t* c);
@@ -243,8 +244,7 @@ extern void wapi_host_serial_port_request_op(op_ctx_t* c);     /* wapi_host_seri
 extern void wapi_host_serial_open_op(op_ctx_t* c);
 extern void wapi_host_serial_read_op(op_ctx_t* c);
 extern void wapi_host_serial_write_op(op_ctx_t* c);
-extern void wapi_host_midi_access_request_op(op_ctx_t* c);     /* wapi_host_midi.c */
-extern void wapi_host_midi_port_open_op(op_ctx_t* c);
+/* MIDI access + port-open folded into op_role_request. */
 extern void wapi_host_midi_send_op(op_ctx_t* c);
 extern void wapi_host_midi_recv_op(op_ctx_t* c);
 extern void wapi_host_bt_device_request_op(op_ctx_t* c);       /* wapi_host_bluetooth.c */
@@ -262,7 +262,7 @@ extern void wapi_host_usb_transfer_out_op(op_ctx_t* c);
 extern void wapi_host_usb_control_transfer_op(op_ctx_t* c);
 extern void wapi_host_nfc_scan_start_op(op_ctx_t* c);          /* wapi_host_nfc.c */
 extern void wapi_host_nfc_write_op(op_ctx_t* c);
-extern void wapi_host_camera_open_op(op_ctx_t* c);             /* wapi_host_camera.c */
+/* Camera open folded into op_role_request. */
 extern void wapi_host_camera_frame_read_op(op_ctx_t* c);
 extern void wapi_host_codec_decode_op(op_ctx_t* c);            /* wapi_host_codec.c */
 extern void wapi_host_codec_encode_op(op_ctx_t* c);
@@ -475,6 +475,137 @@ static void op_cap_request(op_ctx_t* c) {
 }
 
 /* ============================================================
+ * Role system dispatch
+ * ============================================================ */
+
+/* wapi_role_kind_t values — must match wapi.h. */
+#define ROLE_AUDIO_PLAYBACK  0x01
+#define ROLE_AUDIO_RECORDING 0x02
+#define ROLE_CAMERA          0x03
+#define ROLE_MIDI_INPUT      0x04
+#define ROLE_MIDI_OUTPUT     0x05
+#define ROLE_KEYBOARD        0x06
+#define ROLE_MOUSE           0x07
+#define ROLE_GAMEPAD         0x08
+#define ROLE_HAPTIC          0x09
+#define ROLE_SENSOR          0x0A
+#define ROLE_DISPLAY         0x0B
+#define ROLE_HID             0x0C
+#define ROLE_TOUCH           0x0D
+#define ROLE_PEN             0x0E
+#define ROLE_POINTER         0x0F
+
+/* Helpers provided by wapi_host_input.c — lets the dispatcher resolve
+ * input roles without duplicating the aggregate-handle wiring. */
+extern int32_t wapi_host_input_resolve_role(uint32_t kind, int32_t index);
+extern int32_t wapi_host_input_hid_request_role(uint16_t vendor, uint16_t product,
+                                                uint16_t usage_page, uint16_t usage);
+
+/* Fulfill one WAPI_ROLE_AUDIO_{PLAYBACK,RECORDING} request by opening
+ * the default device. Returns an allocated WAPI_HTYPE_AUDIO_DEVICE
+ * handle or 0. */
+static int32_t role_open_audio(uint32_t kind, uint32_t prefs_addr, uint32_t prefs_len) {
+    wapi_plat_audio_spec_t spec = {0};
+    wapi_plat_audio_spec_t* sp = NULL;
+    if (prefs_addr && prefs_len >= 12 && wapi_host_audio_read_spec(prefs_addr, &spec)) sp = &spec;
+
+    int device_id = (kind == ROLE_AUDIO_RECORDING)
+        ? WAPI_PLAT_AUDIO_DEFAULT_RECORDING
+        : WAPI_PLAT_AUDIO_DEFAULT_PLAYBACK;
+
+    wapi_plat_audio_device_t* d = wapi_plat_audio_open_device(device_id, sp);
+    if (!d) return 0;
+    int32_t h = wapi_handle_alloc(WAPI_HTYPE_AUDIO_DEVICE);
+    if (h == 0) { wapi_plat_audio_close_device(d); return 0; }
+    g_rt.handles[h].data.audio_device = d;
+    return h;
+}
+
+/* Parse a single 56-byte wapi_role_request_t entry from guest memory
+ * and fulfill it, writing out_handle + out_result. */
+static void role_dispatch_one(uint32_t entry_addr) {
+    const void* p = wapi_wasm_ptr(entry_addr, 56);
+    if (!p) return;
+    uint32_t kind, flags, prefs_len, _pad;
+    uint64_t prefs_addr, out_handle, out_result;
+    memcpy(&kind,        (const uint8_t*)p +  0, 4);
+    memcpy(&flags,       (const uint8_t*)p +  4, 4);
+    memcpy(&prefs_addr,  (const uint8_t*)p +  8, 8);
+    memcpy(&prefs_len,   (const uint8_t*)p + 16, 4);
+    memcpy(&_pad,        (const uint8_t*)p + 20, 4);
+    memcpy(&out_handle,  (const uint8_t*)p + 24, 8);
+    memcpy(&out_result,  (const uint8_t*)p + 32, 8);
+    /* target_uid[16] at offset 40 — not consulted yet; Win32 backend
+     * lacks UID->device mapping pending hot-plug tracking bring-up. */
+    (void)flags;
+
+    int32_t handle = 0;
+    int32_t result = WAPI_OK;
+
+    switch (kind) {
+    case ROLE_AUDIO_PLAYBACK:
+    case ROLE_AUDIO_RECORDING:
+        handle = role_open_audio(kind, (uint32_t)prefs_addr, prefs_len);
+        if (!handle) result = WAPI_ERR_NOENT;
+        break;
+    case ROLE_KEYBOARD:
+    case ROLE_MOUSE:
+    case ROLE_POINTER:
+    case ROLE_TOUCH:
+    case ROLE_PEN:
+    case ROLE_GAMEPAD:
+        handle = wapi_host_input_resolve_role(kind, 0);
+        if (!handle) result = WAPI_ERR_NOENT;
+        break;
+    case ROLE_HID: {
+        /* wapi_hid_prefs_t (8B): u16 vendor, product, usage_page, usage */
+        uint16_t vendor = 0, product = 0, usage_page = 0, usage = 0;
+        if (prefs_addr && prefs_len >= 8) {
+            const void* pp = wapi_wasm_ptr((uint32_t)prefs_addr, 8);
+            if (pp) {
+                memcpy(&vendor,     (const uint8_t*)pp + 0, 2);
+                memcpy(&product,    (const uint8_t*)pp + 2, 2);
+                memcpy(&usage_page, (const uint8_t*)pp + 4, 2);
+                memcpy(&usage,      (const uint8_t*)pp + 6, 2);
+            }
+        }
+        handle = wapi_host_input_hid_request_role(vendor, product, usage_page, usage);
+        if (!handle) result = WAPI_ERR_ACCES;
+        break;
+    }
+    case ROLE_CAMERA:
+    case ROLE_MIDI_INPUT:
+    case ROLE_MIDI_OUTPUT:
+    case ROLE_HAPTIC:
+    case ROLE_SENSOR:
+    case ROLE_DISPLAY:
+    default:
+        result = WAPI_ERR_NOSYS;
+        break;
+    }
+
+    if (out_handle) wapi_wasm_write_i32((uint32_t)out_handle, handle);
+    if (out_result) wapi_wasm_write_i32((uint32_t)out_result, result);
+}
+
+static void op_role_request(op_ctx_t* c) {
+    uint32_t arr_addr = (uint32_t)c->addr;
+    uint32_t count    = c->flags2;
+    if (count == 0) count = (uint32_t)(c->len / 56);
+    for (uint32_t i = 0; i < count; i++) {
+        role_dispatch_one(arr_addr + i * 56);
+    }
+    c->result = WAPI_OK;
+}
+
+static void op_role_repick(op_ctx_t* c) {
+    /* Re-picking requires platform-side picker UI. Until the
+     * permission broker is wired up, repick returns the same handle. */
+    if (c->result_ptr) wapi_wasm_write_i32((uint32_t)c->result_ptr, c->fd);
+    c->result = WAPI_OK;
+}
+
+/* ============================================================
  * Dispatch table
  * ============================================================ */
 
@@ -482,6 +613,8 @@ static void dispatch(op_ctx_t* c) {
     switch (c->opcode) {
     case OP_NOP:           op_nop(c); break;
     case OP_CAP_REQUEST:   op_cap_request(c); break;
+    case OP_ROLE_REQUEST:  op_role_request(c); break;
+    case OP_ROLE_REPICK:   op_role_repick(c); break;
     case OP_READ:          op_read(c); break;
     case OP_WRITE:         op_write(c); break;
     case OP_LOG:           op_log(c); break;
@@ -531,8 +664,6 @@ static void dispatch(op_ctx_t* c) {
     case OP_SERIAL_READ:             op_nosys(c); break;
     case OP_SERIAL_WRITE:            op_nosys(c); break;
 
-    case OP_MIDI_ACCESS_REQUEST:     op_nosys(c); break;
-    case OP_MIDI_PORT_OPEN:          op_nosys(c); break;
     case OP_MIDI_SEND:               op_nosys(c); break;
     case OP_MIDI_RECV:               op_nosys(c); break;
 
@@ -554,7 +685,6 @@ static void dispatch(op_ctx_t* c) {
     case OP_NFC_SCAN_START:          op_nosys(c); break;
     case OP_NFC_WRITE:               op_nosys(c); break;
 
-    case OP_CAMERA_OPEN:             op_nosys(c); break;
     case OP_CAMERA_FRAME_READ:       op_nosys(c); break;
 
     case OP_CODEC_DECODE:            op_nosys(c); break;
@@ -627,8 +757,6 @@ static void dispatch(op_ctx_t* c) {
     case OP_POWER_INFO_GET:          op_nosys(c); break;
     case OP_POWER_WAKE_ACQUIRE:      op_nosys(c); break;
     case OP_POWER_IDLE_START:        op_nosys(c); break;
-
-    case OP_SENSOR_START:            op_nosys(c); break;
 
     case OP_NOTIFY_SHOW:             wapi_host_notify_show_op(c); break;
 

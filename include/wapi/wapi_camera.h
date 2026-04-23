@@ -2,11 +2,9 @@
  * WAPI - Camera
  * Version 1.0.0
  *
- * Maps to: MediaDevices.getUserMedia (Web), AVCaptureSession (iOS),
- *          Camera2 API (Android)
- *
- * Provides access to camera video frames as GPU textures or
- * raw pixel data.
+ * Camera endpoints are acquired through the role system
+ * (WAPI_ROLE_CAMERA). This header owns the desc (role prefs),
+ * frame metadata, endpoint_info, and the frame-read surface.
  *
  * Import module: "wapi_camera"
  */
@@ -21,28 +19,29 @@ extern "C" {
 #endif
 
 typedef enum wapi_camera_facing_t {
-    WAPI_CAMERA_FACING_FRONT   = 0,
-    WAPI_CAMERA_FACING_BACK    = 1,
-    WAPI_CAMERA_FACING_ANY     = 2,
+    WAPI_CAMERA_FACING_ANY     = 0, /* prefs only */
+    WAPI_CAMERA_FACING_FRONT   = 1,
+    WAPI_CAMERA_FACING_BACK    = 2,
+    WAPI_CAMERA_FACING_EXTERNAL = 3,
     WAPI_CAMERA_FACING_FORCE32 = 0x7FFFFFFF
 } wapi_camera_facing_t;
 
 typedef enum wapi_pixel_format_t {
     WAPI_PIXEL_RGBA8   = 0,
     WAPI_PIXEL_BGRA8   = 1,
-    WAPI_PIXEL_NV12    = 2,  /* YUV 4:2:0, common camera format */
+    WAPI_PIXEL_NV12    = 2,  /* YUV 4:2:0 */
     WAPI_PIXEL_I420    = 3,  /* YUV planar */
     WAPI_PIXEL_FORCE32 = 0x7FFFFFFF
 } wapi_pixel_format_t;
 
 /**
- * Camera configuration.
+ * Camera role-request prefs.
  *
  * Layout (16 bytes, align 4):
- *   Offset  0: uint32_t facing
- *   Offset  4: int32_t  width     Requested width (0 = default)
- *   Offset  8: int32_t  height    Requested height (0 = default)
- *   Offset 12: int32_t  fps       Requested frame rate (0 = default)
+ *   Offset  0: uint32_t facing   wapi_camera_facing_t (ANY = don't care)
+ *   Offset  4: int32_t  width    0 = default
+ *   Offset  8: int32_t  height   0 = default
+ *   Offset 12: int32_t  fps      0 = default
  */
 typedef struct wapi_camera_desc_t {
     uint32_t facing;
@@ -51,15 +50,18 @@ typedef struct wapi_camera_desc_t {
     int32_t  fps;
 } wapi_camera_desc_t;
 
+_Static_assert(sizeof(wapi_camera_desc_t) == 16, "wapi_camera_desc_t must be 16 bytes");
+_Static_assert(_Alignof(wapi_camera_desc_t) == 4, "wapi_camera_desc_t must be 4-byte aligned");
+
 /**
- * Camera frame metadata.
+ * Per-frame metadata.
  *
  * Layout (24 bytes, align 8):
  *   Offset  0: int32_t  width
  *   Offset  4: int32_t  height
- *   Offset  8: uint32_t format      (wapi_pixel_format_t)
- *   Offset 12: int32_t  stride      (bytes per row)
- *   Offset 16: uint64_t timestamp   (nanoseconds)
+ *   Offset  8: uint32_t format      wapi_pixel_format_t
+ *   Offset 12: int32_t  stride      bytes per row
+ *   Offset 16: uint64_t timestamp   nanoseconds
  */
 typedef struct wapi_camera_frame_t {
     int32_t     width;
@@ -69,43 +71,52 @@ typedef struct wapi_camera_frame_t {
     uint64_t    timestamp;
 } wapi_camera_frame_t;
 
-/** Bounded-local: number of cameras the host has advertised. */
-WAPI_IMPORT(wapi_camera, count)
-int32_t wapi_camera_count(void);
+/**
+ * Metadata about a resolved camera endpoint.
+ *
+ * Layout (40 bytes, align 8):
+ *   Offset  0: int32_t  width
+ *   Offset  4: int32_t  height
+ *   Offset  8: int32_t  fps
+ *   Offset 12: uint32_t facing      wapi_camera_facing_t (never ANY)
+ *   Offset 16: uint32_t native_format wapi_pixel_format_t
+ *   Offset 20: uint32_t _pad
+ *   Offset 24: uint8_t  uid[16]
+ */
+typedef struct wapi_camera_endpoint_info_t {
+    int32_t     width;
+    int32_t     height;
+    int32_t     fps;
+    uint32_t    facing;
+    uint32_t    native_format;
+    uint32_t    _pad;
+    uint8_t     uid[16];
+} wapi_camera_endpoint_info_t;
 
-/** Bounded-local: close a previously opened camera handle. */
+_Static_assert(sizeof(wapi_camera_endpoint_info_t) == 40, "wapi_camera_endpoint_info_t must be 40 bytes");
+_Static_assert(_Alignof(wapi_camera_endpoint_info_t) == 4, "wapi_camera_endpoint_info_t must be 4-byte aligned");
+
+/** Query metadata for a granted camera endpoint. */
+WAPI_IMPORT(wapi_camera, endpoint_info)
+wapi_result_t wapi_camera_endpoint_info(wapi_handle_t camera,
+                                        wapi_camera_endpoint_info_t* out,
+                                        char* name_buf, wapi_size_t name_buf_len,
+                                        wapi_size_t* name_len);
+
+/** Close a granted camera endpoint. */
 WAPI_IMPORT(wapi_camera, close)
 wapi_result_t wapi_camera_close(wapi_handle_t camera);
 
-/** Bounded-local: read the latest cached frame. Returns WAPI_ERR_AGAIN
- *  if no frame has been delivered yet. */
+/** Read the latest cached frame. Returns WAPI_ERR_AGAIN if no frame yet. */
 WAPI_IMPORT(wapi_camera, read_frame)
 wapi_result_t wapi_camera_read_frame(wapi_handle_t camera, wapi_camera_frame_t* frame,
-                                  void* buf, wapi_size_t buf_len, wapi_size_t* size);
+                                     void* buf, wapi_size_t buf_len, wapi_size_t* size);
 
-/** Bounded-local: zero-copy GPU texture view of the latest frame. */
+/** Zero-copy GPU texture view of the latest frame. */
 WAPI_IMPORT(wapi_camera, read_frame_gpu)
 wapi_result_t wapi_camera_read_frame_gpu(wapi_handle_t camera,
-                                      wapi_camera_frame_t* frame,
-                                      wapi_handle_t* texture);
-
-/* ============================================================
- * Camera Operations (async, submitted via wapi_io_t)
- * ============================================================ */
-
-/** Submit a camera open. May prompt for permission. */
-static inline wapi_result_t wapi_camera_open(
-    const wapi_io_t* io, const wapi_camera_desc_t* desc,
-    wapi_handle_t* out_camera, uint64_t user_data)
-{
-    wapi_io_op_t op = {0};
-    op.opcode     = WAPI_IO_OP_CAMERA_OPEN;
-    op.addr       = (uint64_t)(uintptr_t)desc;
-    op.len        = sizeof(*desc);
-    op.result_ptr = (uint64_t)(uintptr_t)out_camera;
-    op.user_data  = user_data;
-    return io->submit(io->impl, &op, 1);
-}
+                                         wapi_camera_frame_t* frame,
+                                         wapi_handle_t* texture);
 
 #ifdef __cplusplus
 }

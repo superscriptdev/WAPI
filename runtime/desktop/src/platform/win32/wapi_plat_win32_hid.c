@@ -363,3 +363,20 @@ int wapi_plat_hid_get_feature(wapi_plat_hid_device_t* d, void* buf, int buf_len)
     if (!d || !ghid.HidD_GetFeature || buf_len <= 0) return -1;
     return ghid.HidD_GetFeature(d->h, buf, (ULONG)buf_len) ? buf_len : -1;
 }
+
+/* Windows does not expose the raw HID report descriptor directly —
+ * HidD_GetPreparsedData + HidP_GetReportDescriptor would reconstruct
+ * it; wiring deferred to the HID gamepad decoder pass. */
+uint32_t wapi_plat_hid_report_descriptor_size(wapi_plat_hid_device_t* d) {
+    (void)d;
+    return 0;
+}
+
+bool wapi_plat_hid_report_descriptor(wapi_plat_hid_device_t* d,
+                                     const uint8_t** out_bytes,
+                                     uint32_t* out_len) {
+    (void)d;
+    if (out_bytes) *out_bytes = NULL;
+    if (out_len)   *out_len   = 0;
+    return false;
+}

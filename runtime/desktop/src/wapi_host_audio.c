@@ -1,15 +1,16 @@
 /**
  * WAPI Desktop Runtime - Audio
  *
- * Thin wrapper over wapi_plat audio. Platform backend owns the
- * format conversion / device lifecycle / worker thread.
+ * Endpoints are acquired through the role system (see wapi_host_io.c
+ * role dispatcher). This file owns the audio stream lifecycle, the
+ * endpoint control surface (close/pause/resume) on granted handles,
+ * and the endpoint_info query.
  */
 
 #include "wapi_host.h"
 
-static bool read_audio_spec(uint32_t ptr, wapi_plat_audio_spec_t* out) {
-    /* wapi_audio_spec_t wasm32 layout:
-     *   +0 u32 format, +4 i32 channels, +8 i32 freq */
+bool wapi_host_audio_read_spec(uint32_t ptr, wapi_plat_audio_spec_t* out) {
+    /* wapi_audio_spec_t wasm32 layout: +0 u32 format, +4 i32 channels, +8 i32 freq */
     void* host = wapi_wasm_ptr(ptr, 12);
     if (!host) return false;
     uint32_t format; int32_t channels, freq;
@@ -23,40 +24,57 @@ static bool read_audio_spec(uint32_t ptr, wapi_plat_audio_spec_t* out) {
     return true;
 }
 
-static int normalize_device_id(int32_t id) {
-    if (id == -1) return WAPI_PLAT_AUDIO_DEFAULT_PLAYBACK;
-    if (id == -2) return WAPI_PLAT_AUDIO_DEFAULT_RECORDING;
-    return id;
-}
-
 /* ============================================================
- * Devices
+ * Endpoint metadata + control (operate on granted handle)
  * ============================================================ */
 
-static wasm_trap_t* host_audio_open_device(void* env, wasmtime_caller_t* caller,
+/* endpoint_info: (i32 handle, i32 info_out, i32 name_buf, i64 name_buf_len, i32 name_len_out) -> i32
+ *
+ * Writes wapi_audio_endpoint_info_t (32 bytes, layout: native_spec(12)
+ * + form(4) + uid[16]) into info_out. Copies up to name_buf_len bytes
+ * of the endpoint's UTF-8 display label into name_buf; writes the
+ * actual length into *name_len_out. */
+static wasm_trap_t* host_audio_endpoint_info(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller; (void)nargs; (void)nresults;
-    int32_t id       = WAPI_ARG_I32(0);
-    uint32_t spec_ptr = WAPI_ARG_U32(1);
-    uint32_t dev_out  = WAPI_ARG_U32(2);
+    int32_t  h         = WAPI_ARG_I32(0);
+    uint32_t info_out  = WAPI_ARG_U32(1);
+    uint32_t name_buf  = WAPI_ARG_U32(2);
+    uint64_t name_cap  = WAPI_ARG_U64(3);
+    uint32_t name_len_out = WAPI_ARG_U32(4);
 
-    wapi_plat_audio_spec_t spec = {0};
-    wapi_plat_audio_spec_t* sp = NULL;
-    if (spec_ptr != 0 && read_audio_spec(spec_ptr, &spec)) sp = &spec;
+    if (!wapi_handle_valid(h, WAPI_HTYPE_AUDIO_DEVICE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
 
-    wapi_plat_audio_device_t* d = wapi_plat_audio_open_device(normalize_device_id(id), sp);
-    if (!d) { wapi_set_error("audio open failed"); WAPI_RET_I32(WAPI_ERR_UNKNOWN); return NULL; }
+    wapi_plat_audio_device_t* d = g_rt.handles[h].data.audio_device;
+    wapi_plat_audio_spec_t native = {0};
+    uint32_t form = 0; /* WAPI_AUDIO_FORM_UNKNOWN */
+    uint8_t  uid[16] = {0};
+    char     name[128] = {0};
+    size_t   name_len = 0;
 
-    int32_t h = wapi_handle_alloc(WAPI_HTYPE_AUDIO_DEVICE);
-    if (h == 0) { wapi_plat_audio_close_device(d); WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
-    g_rt.handles[h].data.audio_device = d;
-    wapi_wasm_write_i32(dev_out, h);
+    wapi_plat_audio_device_describe(d, &native, &form, uid, name, sizeof(name), &name_len);
+
+    /* Write wapi_audio_endpoint_info_t (32 bytes). */
+    if (info_out) {
+        uint8_t info[32];
+        memcpy(info +  0, &native.format,   4);
+        memcpy(info +  4, &native.channels, 4);
+        memcpy(info +  8, &native.freq,     4);
+        memcpy(info + 12, &form,            4);
+        memcpy(info + 16, uid,             16);
+        wapi_wasm_write_bytes(info_out, info, 32);
+    }
+    if (name_buf && name_cap > 0 && name_len > 0) {
+        uint32_t copy = (uint32_t)(name_len < name_cap ? name_len : name_cap);
+        wapi_wasm_write_bytes(name_buf, name, copy);
+    }
+    if (name_len_out) wapi_wasm_write_u64(name_len_out, (uint64_t)name_len);
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }
 
-static wasm_trap_t* host_audio_close_device(void* env, wasmtime_caller_t* caller,
+static wasm_trap_t* host_audio_close(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
 {
     (void)env; (void)caller; (void)nargs; (void)nresults;
@@ -79,8 +97,8 @@ static wasm_trap_t* host_audio_close_device(void* env, wasmtime_caller_t* caller
         return NULL; \
     }
 
-HOST_AUDIO_DEV_CMD(resume_device, wapi_plat_audio_resume_device)
-HOST_AUDIO_DEV_CMD(pause_device,  wapi_plat_audio_pause_device)
+HOST_AUDIO_DEV_CMD(resume, wapi_plat_audio_resume_device)
+HOST_AUDIO_DEV_CMD(pause,  wapi_plat_audio_pause_device)
 
 /* ============================================================
  * Streams
@@ -97,8 +115,8 @@ static wasm_trap_t* host_audio_create_stream(void* env, wasmtime_caller_t* calle
     wapi_plat_audio_spec_t src, dst;
     wapi_plat_audio_spec_t* sp = NULL;
     wapi_plat_audio_spec_t* dp = NULL;
-    if (src_ptr != 0 && read_audio_spec(src_ptr, &src)) sp = &src;
-    if (dst_ptr != 0 && read_audio_spec(dst_ptr, &dst)) dp = &dst;
+    if (src_ptr != 0 && wapi_host_audio_read_spec(src_ptr, &src)) sp = &src;
+    if (dst_ptr != 0 && wapi_host_audio_read_spec(dst_ptr, &dst)) dp = &dst;
 
     wapi_plat_audio_stream_t* s = wapi_plat_audio_stream_create(sp, dp);
     if (!s) { WAPI_RET_I32(WAPI_ERR_UNKNOWN); return NULL; }
@@ -151,7 +169,6 @@ static wasm_trap_t* host_audio_unbind_stream(void* env, wasmtime_caller_t* calle
     return NULL;
 }
 
-/* put_stream_data: (i32 stream, i32 buf, i64 len) -> i32 */
 static wasm_trap_t* host_audio_put_stream_data(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
 {
@@ -169,7 +186,6 @@ static wasm_trap_t* host_audio_put_stream_data(void* env, wasmtime_caller_t* cal
     return NULL;
 }
 
-/* get_stream_data: (i32 stream, i32 buf, i64 len, i32 bytes_read_out) -> i32 */
 static wasm_trap_t* host_audio_get_stream_data(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
 {
@@ -207,114 +223,27 @@ static wasm_trap_t* host_audio_stream_queued(void* env, wasmtime_caller_t* calle
     return NULL;
 }
 
-static wasm_trap_t* host_audio_open_device_stream(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)nargs; (void)nresults;
-    int32_t id       = WAPI_ARG_I32(0);
-    uint32_t spec_ptr = WAPI_ARG_U32(1);
-    uint32_t dev_out  = WAPI_ARG_U32(2);
-    uint32_t str_out  = WAPI_ARG_U32(3);
-
-    wapi_plat_audio_spec_t spec = {0};
-    wapi_plat_audio_spec_t* sp = NULL;
-    if (spec_ptr != 0 && read_audio_spec(spec_ptr, &spec)) sp = &spec;
-
-    wapi_plat_audio_device_t* d = NULL;
-    wapi_plat_audio_stream_t* s = NULL;
-    if (!wapi_plat_audio_open_device_stream(normalize_device_id(id), sp, &d, &s)) {
-        WAPI_RET_I32(WAPI_ERR_UNKNOWN); return NULL;
-    }
-
-    int32_t dh = wapi_handle_alloc(WAPI_HTYPE_AUDIO_DEVICE);
-    int32_t sh = wapi_handle_alloc(WAPI_HTYPE_AUDIO_STREAM);
-    if (dh == 0 || sh == 0) {
-        wapi_plat_audio_stream_destroy(s);
-        wapi_plat_audio_close_device(d);
-        if (dh) wapi_handle_free(dh);
-        if (sh) wapi_handle_free(sh);
-        WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL;
-    }
-    g_rt.handles[dh].data.audio_device = d;
-    g_rt.handles[sh].data.audio_stream = s;
-    wapi_wasm_write_i32(dev_out, dh);
-    wapi_wasm_write_i32(str_out, sh);
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
-/* ============================================================
- * Enumeration
- * ============================================================ */
-
-static wasm_trap_t* host_audio_playback_device_count(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
-    WAPI_RET_I32(wapi_plat_audio_playback_device_count());
-    return NULL;
-}
-
-static wasm_trap_t* host_audio_recording_device_count(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
-    WAPI_RET_I32(wapi_plat_audio_recording_device_count());
-    return NULL;
-}
-
-static wasm_trap_t* host_audio_device_name(void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)nargs; (void)nresults;
-    /* device_name: (i32 id, i32 buf, i64 buf_len, i32 name_len_out) -> i32 */
-    int32_t  id      = WAPI_ARG_I32(0);
-    uint32_t buf_ptr = WAPI_ARG_U32(1);
-    uint64_t buf_len = WAPI_ARG_U64(2);
-    uint32_t len_ptr = WAPI_ARG_U32(3);
-
-    /* Guest passes enumeration index (>=0) or sentinel (-1 = default
-     * playback, -2 = default recording). normalize_device_id maps the
-     * guest-facing wapi_audio.h values onto the wapi_plat_audio
-     * sentinels; positive indices flow through unchanged. */
-    int resolved = normalize_device_id(id);
-
-    char tmp[256];
-    size_t nbytes = wapi_plat_audio_device_name(resolved, tmp, sizeof(tmp));
-    wapi_wasm_write_u64(len_ptr, (uint64_t)nbytes);
-    if (nbytes > 0 && buf_len > 0) {
-        uint32_t copy = (uint32_t)(nbytes < buf_len ? nbytes : buf_len);
-        wapi_wasm_write_bytes(buf_ptr, tmp, copy);
-    }
-    WAPI_RET_I32(WAPI_OK);
-    return NULL;
-}
-
 /* ============================================================
  * Registration
  * ============================================================ */
 
 void wapi_host_register_audio(wasmtime_linker_t* linker) {
-    WAPI_DEFINE_3_1(linker, "wapi_audio", "open_device",            host_audio_open_device);
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "close_device",           host_audio_close_device);
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "resume_device",          host_audio_resume_device);
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "pause_device",           host_audio_pause_device);
-    WAPI_DEFINE_3_1(linker, "wapi_audio", "create_stream",          host_audio_create_stream);
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "destroy_stream",         host_audio_destroy_stream);
-    WAPI_DEFINE_2_1(linker, "wapi_audio", "bind_stream",            host_audio_bind_stream);
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "unbind_stream",          host_audio_unbind_stream);
+    wapi_linker_define(linker, "wapi_audio", "endpoint_info", host_audio_endpoint_info,
+        5, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I32,WASM_I64,WASM_I32},
+        1, (wasm_valkind_t[]){WASM_I32});
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "close",           host_audio_close);
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "resume",          host_audio_resume);
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "pause",           host_audio_pause);
+    WAPI_DEFINE_3_1(linker, "wapi_audio", "create_stream",   host_audio_create_stream);
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "destroy_stream",  host_audio_destroy_stream);
+    WAPI_DEFINE_2_1(linker, "wapi_audio", "bind_stream",     host_audio_bind_stream);
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "unbind_stream",   host_audio_unbind_stream);
     wapi_linker_define(linker, "wapi_audio", "put_stream_data", host_audio_put_stream_data,
         3, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I64},
         1, (wasm_valkind_t[]){WASM_I32});
     wapi_linker_define(linker, "wapi_audio", "get_stream_data", host_audio_get_stream_data,
         4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I64,WASM_I32},
         1, (wasm_valkind_t[]){WASM_I32});
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "stream_available",       host_audio_stream_available);
-    WAPI_DEFINE_1_1(linker, "wapi_audio", "stream_queued",          host_audio_stream_queued);
-    WAPI_DEFINE_4_1(linker, "wapi_audio", "open_device_stream",     host_audio_open_device_stream);
-    WAPI_DEFINE_0_1(linker, "wapi_audio", "playback_device_count",  host_audio_playback_device_count);
-    WAPI_DEFINE_0_1(linker, "wapi_audio", "recording_device_count", host_audio_recording_device_count);
-    wapi_linker_define(linker, "wapi_audio", "device_name", host_audio_device_name,
-        4, (wasm_valkind_t[]){WASM_I32,WASM_I32,WASM_I64,WASM_I32},
-        1, (wasm_valkind_t[]){WASM_I32});
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "stream_available", host_audio_stream_available);
+    WAPI_DEFINE_1_1(linker, "wapi_audio", "stream_queued",    host_audio_stream_queued);
 }

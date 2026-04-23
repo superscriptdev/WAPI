@@ -258,6 +258,11 @@ public static class WapiEventType
     public const uint PointerCancel     = 0x0903;
     public const uint PointerEnter      = 0x0904;
     public const uint PointerLeave      = 0x0905;
+    // Device / role lifecycle
+    public const uint DeviceAdded       = 0x0500;
+    public const uint DeviceRemoved     = 0x0501;
+    public const uint RoleRerouted      = 0x0502;
+    public const uint RoleRevoked       = 0x0503;
     // IO Completion
     public const uint IoCompletion      = 0x2000;
 }
@@ -324,6 +329,13 @@ public unsafe struct WapiEvent
     [FieldOffset(16)] public int IoResult;          // bytes transferred / new fd / negative error
     [FieldOffset(20)] public uint IoFlags;          // WAPI_IO_CQE_F_* flags
     [FieldOffset(24)] public ulong IoUserData;      // echoed from WapiIoOp.UserData
+
+    // Device / role lifecycle overlay — mirrors wapi_device_event_t (40 bytes).
+    // Fires for DEVICE_ADDED, DEVICE_REMOVED, ROLE_REROUTED, ROLE_REVOKED.
+    [FieldOffset(16)] public uint DeviceRoleKind;   // wapi_role_kind_t
+    [FieldOffset(20)] public int DeviceHandle;      // endpoint handle, or WAPI_HANDLE_INVALID
+    [FieldOffset(24)] public ulong DeviceUid0;      // first 8 bytes of uid[16]
+    [FieldOffset(32)] public ulong DeviceUid1;      // last 8 bytes of uid[16]
 }
 
 // ── Input constants ─────────────────────────────────────────────────────────
@@ -399,6 +411,161 @@ public struct WapiAudioSpec
     public uint Format;
     public int Channels;
     public int Freq;
+}
+
+public static class WapiAudioForm
+{
+    public const uint Unknown    = 0;
+    public const uint Speakers   = 1;
+    public const uint Headphones = 2;
+    public const uint Headset    = 3;
+    public const uint LineOut    = 4;
+    public const uint BuiltIn    = 5;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 32)]
+public unsafe struct WapiAudioEndpointInfo
+{
+    public WapiAudioSpec NativeSpec;
+    public uint Form;
+    public fixed byte Uid[16];
+}
+
+// ── Role system (device access, spec §9.10) ─────────────────────────────────
+
+public static class WapiRoleKind
+{
+    public const uint AudioPlayback  = 0x01;
+    public const uint AudioRecording = 0x02;
+    public const uint Camera         = 0x03;
+    public const uint MidiInput      = 0x04;
+    public const uint MidiOutput     = 0x05;
+    public const uint Keyboard       = 0x06;
+    public const uint Mouse          = 0x07;
+    public const uint Gamepad        = 0x08;
+    public const uint Haptic         = 0x09;
+    public const uint Sensor         = 0x0A;
+    public const uint Display        = 0x0B;
+    public const uint Hid            = 0x0C;
+    public const uint Touch          = 0x0D;
+    public const uint Pen            = 0x0E;
+    public const uint Pointer        = 0x0F;
+}
+
+public static class WapiRoleFlags
+{
+    public const uint None          = 0;
+    public const uint Optional      = 1u << 0;
+    public const uint FollowDefault = 1u << 1;
+    public const uint PinSpecific   = 1u << 2;
+    public const uint All           = 1u << 3;
+    public const uint WaitForDevice = 1u << 4;
+}
+
+// wapi_role_request_t: 56 bytes, 8-byte aligned.
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 56)]
+public unsafe struct WapiRoleRequest
+{
+    public uint Kind;
+    public uint Flags;
+    public ulong PrefsAddr;
+    public uint PrefsLen;
+    public uint _Pad;
+    public ulong OutHandle;
+    public ulong OutResult;
+    public fixed byte TargetUid[16];
+}
+
+// ── HID prefs + endpoint info (for WAPI_ROLE_HID) ───────────────────────────
+
+public static class WapiHidTransport
+{
+    public const uint Unknown = 0;
+    public const uint Usb     = 1;
+    public const uint Bt      = 2;
+    public const uint Ble     = 3;
+    public const uint I2c     = 4;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 2, Size = 8)]
+public struct WapiHidPrefs
+{
+    public ushort VendorId;
+    public ushort ProductId;
+    public ushort UsagePage;
+    public ushort Usage;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 32)]
+public unsafe struct WapiHidEndpointInfo
+{
+    public ushort VendorId;
+    public ushort ProductId;
+    public ushort UsagePage;
+    public ushort Usage;
+    public uint Transport;
+    public uint ReportDescriptorLen;
+    public fixed byte Uid[16];
+}
+
+// ── Camera / MIDI / Sensor / Haptic prefs + endpoint info ───────────────────
+
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 16)]
+public struct WapiCameraDesc
+{
+    public uint Facing;
+    public int Width;
+    public int Height;
+    public int Fps;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 40)]
+public unsafe struct WapiCameraEndpointInfo
+{
+    public int Width;
+    public int Height;
+    public int Fps;
+    public uint Facing;
+    public uint NativeFormat;
+    public uint _Pad;
+    public fixed byte Uid[16];
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 4)]
+public struct WapiMidiPrefs
+{
+    public uint Flags; // 1 = sysex
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 24)]
+public unsafe struct WapiMidiEndpointInfo
+{
+    public uint ManufacturerId;
+    public uint Flags;
+    public fixed byte Uid[16];
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4, Size = 8)]
+public struct WapiSensorPrefs
+{
+    public uint Type;
+    public uint FreqHzBits; // f32 raw bits, 0 = default
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 24)]
+public unsafe struct WapiSensorEndpointInfo
+{
+    public uint Type;
+    public uint NativeFreqBits;
+    public fixed byte Uid[16];
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8, Size = 24)]
+public unsafe struct WapiHapticEndpointInfo
+{
+    public uint Features;
+    public uint _Pad;
+    public fixed byte Uid[16];
 }
 
 // ── IO ─────────────────────────────────────────────────────────────────────
@@ -1295,6 +1462,9 @@ public static unsafe class Core
 public static unsafe class Io
 {
     // Opcodes — keep in sync with wapi.h.
+    public const uint OpCapRequest      = 0x01;
+    public const uint OpRoleRequest     = 0x16;
+    public const uint OpRoleRepick      = 0x17;
     public const uint OpHttpFetch       = 0x060;
     public const uint OpCompressProcess = 0x140;
 
@@ -1372,6 +1542,30 @@ public static unsafe class Io
         op->Len    = (ulong)inLen;
         op->Addr2  = (ulong)(nuint)outPtr;
         op->Len2   = (ulong)outCap;
+    }
+
+    /// <summary>
+    /// Submit a batched role request. Each WapiRoleRequest carries its own
+    /// OutHandle / OutResult pointers; dispatch results land per-entry.
+    /// </summary>
+    public static void FillRoleRequest(WapiIoOp* op, WapiRoleRequest* reqs, int count)
+    {
+        *op = default;
+        op->Opcode = OpRoleRequest;
+        op->Addr   = (ulong)(nuint)reqs;
+        op->Len    = (ulong)(count * sizeof(WapiRoleRequest));
+        op->Flags2 = (uint)count;
+    }
+
+    /// <summary>
+    /// Ask the runtime to re-pick the endpoint behind an existing role handle.
+    /// </summary>
+    public static void FillRoleRepick(WapiIoOp* op, int endpointHandle, int* outHandle)
+    {
+        *op = default;
+        op->Opcode    = OpRoleRepick;
+        op->Fd        = endpointHandle;
+        op->ResultPtr = (ulong)(nuint)outHandle;
     }
 
     /// <summary>

@@ -308,6 +308,75 @@ typedef enum wapi_cap_state_t {
  * ################################################################ */
 
 /* ============================================================
+ * Role System
+ * ============================================================
+ * A role is a request for a specific capability-bound device (an
+ * endpoint). Opening any device of any kind — audio, camera, gamepad,
+ * hid, midi, haptic, sensor, display — is a role request. See the
+ * spec "Role system" section for flow, grant semantics, and hot-plug
+ * behavior.
+ *
+ * Cross-kind correlation (headset detection, per-player binding) is
+ * done by UID (uint8_t[16]), which matches the UID on device events.
+ * Module headers own the typed prefs and endpoint_info structs; wapi.h
+ * only sees prefs_addr/prefs_len as opaque bytes.
+ */
+
+typedef enum wapi_role_kind_t {
+    WAPI_ROLE_AUDIO_PLAYBACK   = 0x01,
+    WAPI_ROLE_AUDIO_RECORDING  = 0x02,
+    WAPI_ROLE_CAMERA           = 0x03,
+    WAPI_ROLE_MIDI_INPUT       = 0x04,
+    WAPI_ROLE_MIDI_OUTPUT      = 0x05,
+    WAPI_ROLE_KEYBOARD         = 0x06,
+    WAPI_ROLE_MOUSE            = 0x07,
+    WAPI_ROLE_GAMEPAD          = 0x08,
+    WAPI_ROLE_HAPTIC           = 0x09,
+    WAPI_ROLE_SENSOR           = 0x0A,
+    WAPI_ROLE_DISPLAY          = 0x0B,
+    WAPI_ROLE_HID              = 0x0C,
+    WAPI_ROLE_TOUCH            = 0x0D,
+    WAPI_ROLE_PEN              = 0x0E,
+    WAPI_ROLE_POINTER          = 0x0F, /* any endpoint producing pointer-shaped events (mouse, touch, pen, gamepad touchpad, …) */
+    WAPI_ROLE_FORCE32          = 0x7FFFFFFF
+} wapi_role_kind_t;
+
+typedef enum wapi_role_flags_t {
+    WAPI_ROLE_OPTIONAL         = 1 << 0, /* UX hint: runtime may de-emphasize or default-deny */
+    WAPI_ROLE_FOLLOW_DEFAULT   = 1 << 1, /* runtime reroutes on OS default change */
+    WAPI_ROLE_PIN_SPECIFIC     = 1 << 2, /* handle revoked if target device disappears */
+    WAPI_ROLE_ALL              = 1 << 3, /* bind every granted endpoint of this kind */
+    WAPI_ROLE_WAIT_FOR_DEVICE  = 1 << 4  /* park until a matching device appears instead of NOT_FOUND */
+} wapi_role_flags_t;
+
+/**
+ * Role request entry.
+ *
+ * Layout (56 bytes, align 8):
+ *   Offset  0: uint32_t kind          (wapi_role_kind_t)
+ *   Offset  4: uint32_t flags         (wapi_role_flags_t bitmask)
+ *   Offset  8: uint64_t prefs_addr    (kind-specific prefs struct, 0 for none)
+ *   Offset 16: uint32_t prefs_len     (prefs struct size in bytes)
+ *   Offset 20: uint32_t _pad
+ *   Offset 24: uint64_t out_handle    (wapi_handle_t* or handle array for ALL)
+ *   Offset 32: uint64_t out_result    (wapi_result_t* for per-role outcome, 0 to ignore)
+ *   Offset 40: uint8_t  target_uid[16] (all-zero = runtime picks)
+ */
+typedef struct wapi_role_request_t {
+    uint32_t kind;
+    uint32_t flags;
+    uint64_t prefs_addr;
+    uint32_t prefs_len;
+    uint32_t _pad;
+    uint64_t out_handle;
+    uint64_t out_result;
+    uint8_t  target_uid[16];
+} wapi_role_request_t;
+
+_Static_assert(sizeof(wapi_role_request_t) == 56, "wapi_role_request_t must be 56 bytes");
+_Static_assert(_Alignof(wapi_role_request_t) == 8, "wapi_role_request_t must be 8-byte aligned");
+
+/* ============================================================
  * Operation Types
  * ============================================================
  *
@@ -327,9 +396,10 @@ typedef enum wapi_cap_state_t {
  *                log, watch). FS ops gate on wapi.filesystem; LOG on wapi.log.
  *   0x00A-0x011  Network (connect/accept/send/recv + listen, channel, resolve)
  *   0x014-0x015  Timers (gated by wapi.clock)
+ *   0x016-0x017  Role system (unified device request / repick)
  *   0x01E-0x01F  Audio
  *   0x060-0x06F  HTTP
- *   0x080-0x0DF  Hardware I/O (serial, MIDI, BT, USB, NFC, camera)
+ *   0x080-0x0DF  Hardware I/O data ops (serial, MIDI send/recv, BT, USB, NFC, camera frame). Open/access for MIDI, camera, sensors goes through the role system (0x16).
  *   0x100-0x17F  Media (codec, video, compression, font-bytes, speech, capture)
  *   0x180-0x1FF  User interaction (dialog, auth, pickers)
  *   0x200-0x27F  Spatial (XR, geolocation)
@@ -391,6 +461,13 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_TIMEOUT      = 0x14, /* offset=duration_ns */
     WAPI_IO_OP_TIMEOUT_ABS  = 0x15, /* offset=abs_time_ns */
 
+    /* ---- Role system (0x16-0x17) ----
+     * Unified device access: request/repick a role (audio_playback,
+     * camera, gamepad, hid, ...). Prefs are opaque bytes; each kind's
+     * module header owns the typed layout. */
+    WAPI_IO_OP_ROLE_REQUEST = 0x16, /* addr/len=wapi_role_request_t[], flags2=count */
+    WAPI_IO_OP_ROLE_REPICK  = 0x17, /* fd=endpoint_handle -> result_ptr=new_handle */
+
     /* ---- Audio (0x1E-0x1F) ---- */
     WAPI_IO_OP_AUDIO_WRITE  = 0x1E,  /* fd=stream, addr/len=samples */
     WAPI_IO_OP_AUDIO_READ   = 0x1F,  /* fd=stream, addr/len=buf -> result_ptr=bytes_read */
@@ -404,9 +481,7 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_SERIAL_READ         = 0x082, /* fd=port, addr/len=buf -> result_ptr=bytes_read */
     WAPI_IO_OP_SERIAL_WRITE        = 0x083, /* fd=port, addr/len=data */
 
-    /* ---- MIDI (0x090-0x09F) ---- */
-    WAPI_IO_OP_MIDI_ACCESS_REQUEST = 0x090, /* flags=sysex_flag */
-    WAPI_IO_OP_MIDI_PORT_OPEN      = 0x091, /* flags=port_type, flags2=port_index -> result_ptr=port_handle */
+    /* ---- MIDI (0x090-0x09F) ---- open/access via role system */
     WAPI_IO_OP_MIDI_SEND           = 0x092, /* fd=port, addr/len=data */
     WAPI_IO_OP_MIDI_RECV           = 0x093, /* fd=port, addr/len=buf -> result_ptr=msg_len */
 
@@ -431,8 +506,7 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_NFC_SCAN_START = 0x0C0, /* (completions arrive per tag discovered) */
     WAPI_IO_OP_NFC_WRITE      = 0x0C1, /* addr/len=records, flags=record_count */
 
-    /* ---- Camera (0x0D0-0x0DF) ---- */
-    WAPI_IO_OP_CAMERA_OPEN       = 0x0D0, /* addr/len=config -> result_ptr=camera_handle */
+    /* ---- Camera (0x0D0-0x0DF) ---- open via role system */
     WAPI_IO_OP_CAMERA_FRAME_READ = 0x0D1, /* fd=camera, addr/len=buf, addr2/len2=frame_info -> result_ptr=data_size */
 
     /* ---- Codec (0x100-0x10F) ---- */
@@ -524,8 +598,7 @@ typedef enum wapi_io_opcode_t {
     WAPI_IO_OP_POWER_WAKE_ACQUIRE       = 0x2E9, /* flags=lock_type -> result_ptr=lock_handle */
     WAPI_IO_OP_POWER_IDLE_START         = 0x2EA, /* flags=threshold_ms */
 
-    /* ---- wapi.sensor (0x2F0-0x2F7) ---- */
-    WAPI_IO_OP_SENSOR_START             = 0x2F0, /* flags=sensor_type, offset=freq_hz_f32_as_bits -> result_ptr=sensor_handle */
+    /* ---- wapi.sensor (0x2F0-0x2F7) ---- start via role system */
 
     /* ---- wapi.notify (0x2F8-0x2FB) ---- */
     WAPI_IO_OP_NOTIFY_SHOW              = 0x2F8, /* addr/len=notify_desc -> result_ptr=notification_handle */
@@ -664,6 +737,8 @@ typedef enum wapi_event_type_t {
     /* Input device lifecycle events (0x500-0x5FF) */
     WAPI_EVENT_DEVICE_ADDED     = 0x500,
     WAPI_EVENT_DEVICE_REMOVED   = 0x501,
+    WAPI_EVENT_ROLE_REROUTED    = 0x502, /* FOLLOW_DEFAULT handle switched endpoint */
+    WAPI_EVENT_ROLE_REVOKED     = 0x503, /* PIN_SPECIFIC handle lost its device */
 
     /* Touch events (0x700-0x7FF) */
     WAPI_EVENT_TOUCH_DOWN       = 0x700,
@@ -1021,13 +1096,14 @@ typedef struct wapi_gamepad_button_event_t {
     uint8_t     _pad[2];
 } wapi_gamepad_button_event_t;
 
-/** Device lifecycle event (DEVICE_ADDED / DEVICE_REMOVED) */
+/** Device / role lifecycle event.
+ *  Fires for DEVICE_ADDED, DEVICE_REMOVED, ROLE_REROUTED, ROLE_REVOKED. */
 typedef struct wapi_device_event_t {
     uint32_t    type;
     uint32_t    surface_id;     /* 0 for device events */
     uint64_t    timestamp;
-    uint32_t    device_type;    /* wapi_device_type_t (defined in wapi_input.h) */
-    int32_t     device_handle;  /* Handle if open, WAPI_HANDLE_INVALID otherwise */
+    uint32_t    role_kind;      /* wapi_role_kind_t */
+    int32_t     device_handle;  /* Handle if bound, WAPI_HANDLE_INVALID otherwise */
     uint8_t     uid[16];        /* Stable device identity */
 } wapi_device_event_t;
 
@@ -1438,6 +1514,43 @@ static inline wapi_result_t wapi_cap_request(
     op.addr       = capability.data;
     op.len        = capability.length;
     op.result_ptr = (uint64_t)(uintptr_t)out_state;
+    op.user_data  = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+/**
+ * Submit a batched role request.
+ * Per-role outcomes are written via each entry's out_handle / out_result.
+ */
+static inline wapi_result_t wapi_role_request(
+    const wapi_io_t* io,
+    const wapi_role_request_t* reqs,
+    wapi_size_t count,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode    = WAPI_IO_OP_ROLE_REQUEST;
+    op.addr      = (uint64_t)(uintptr_t)reqs;
+    op.len       = count * sizeof(wapi_role_request_t);
+    op.flags2    = (uint32_t)count;
+    op.user_data = user_data;
+    return io->submit(io->impl, &op, 1);
+}
+
+/**
+ * Ask the runtime to re-pick the endpoint behind an existing role handle.
+ * Completion writes the new handle to *out_handle; may equal the input.
+ */
+static inline wapi_result_t wapi_role_repick(
+    const wapi_io_t* io,
+    wapi_handle_t endpoint,
+    wapi_handle_t* out_handle,
+    uint64_t user_data)
+{
+    wapi_io_op_t op = {0};
+    op.opcode     = WAPI_IO_OP_ROLE_REPICK;
+    op.fd         = endpoint;
+    op.result_ptr = (uint64_t)(uintptr_t)out_handle;
     op.user_data  = user_data;
     return io->submit(io->impl, &op, 1);
 }
@@ -1935,7 +2048,7 @@ _Static_assert(_Alignof(wapi_gamepad_button_event_t) == 8, "");
 _Static_assert(offsetof(wapi_device_event_t, type)          ==  0, "");
 _Static_assert(offsetof(wapi_device_event_t, surface_id)    ==  4, "");
 _Static_assert(offsetof(wapi_device_event_t, timestamp)     ==  8, "");
-_Static_assert(offsetof(wapi_device_event_t, device_type)   == 16, "");
+_Static_assert(offsetof(wapi_device_event_t, role_kind)     == 16, "");
 _Static_assert(offsetof(wapi_device_event_t, device_handle) == 20, "");
 _Static_assert(offsetof(wapi_device_event_t, uid)           == 24, "");
 _Static_assert(sizeof(wapi_device_event_t) == 40, "");

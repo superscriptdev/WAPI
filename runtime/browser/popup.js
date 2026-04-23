@@ -116,23 +116,27 @@ function renderServices(list) {
 
     list.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
 
-    const rows = list.map((s) => `<tr>
+    const rows = list.map((s) => {
+        const host = s.hostedIn === 'page' ? (s.origin || originOf(s.url) || 'page') : 'sw';
+        return `<tr>
             <td class="hash" title="${escapeHtml(s.hashHex)}">${escapeHtml(fmtHash(s.hashHex))}</td>
             <td title="${escapeHtml(s.name || '')}">${escapeHtml(s.name || '-')}</td>
             <td title="${escapeHtml(s.url || '')}">${escapeHtml(originOf(s.url))}</td>
+            <td title="${escapeHtml(host)}">${escapeHtml(host)}</td>
             <td class="num">${s.users || 0}</td>
             <td class="num">${s.pending || 0}</td>
             <td class="num" title="${new Date(s.startedAt || 0).toISOString()}">${fmtAgo(s.startedAt)}</td>
-        </tr>`).join('');
+        </tr>`;
+    }).join('');
 
     content.innerHTML = `
         <table>
             <colgroup>
                 <col class="c-hash"><col class="c-name"><col class="c-origin">
-                <col class="c-users"><col class="c-pend"><col class="c-up">
+                <col class="c-host"><col class="c-users"><col class="c-pend"><col class="c-up">
             </colgroup>
             <thead><tr>
-                <th>hash</th><th>name</th><th>origin</th>
+                <th>hash</th><th>name</th><th>origin</th><th>host</th>
                 <th class="num">users</th><th class="num">pend</th><th class="num">up</th>
             </tr></thead>
             <tbody>${rows}</tbody>

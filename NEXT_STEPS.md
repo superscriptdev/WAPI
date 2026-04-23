@@ -40,6 +40,28 @@ Browser shim: opcode unification landed, service-worker host drafted, module cac
 
 ---
 
+## ABI change: role system (2026-04, supersedes per-module device enumeration)
+
+All device access now flows through the role system (spec §9.10). Host impls must be realigned:
+
+- New opcodes: `WAPI_IO_OP_ROLE_REQUEST` (0x16), `WAPI_IO_OP_ROLE_REPICK` (0x17). Inline helpers `wapi_role_request` / `wapi_role_repick` in `wapi.h`.
+- New events: `WAPI_EVENT_ROLE_REROUTED` (0x502), `WAPI_EVENT_ROLE_REVOKED` (0x503). `wapi_device_event_t::device_type` renamed to `role_kind`; offset unchanged.
+- New types in `wapi.h`: `wapi_role_kind_t`, `wapi_role_flags_t`, `wapi_role_request_t` (56B).
+- Removed opcodes: `WAPI_IO_OP_CAMERA_OPEN`, `WAPI_IO_OP_MIDI_ACCESS_REQUEST`, `WAPI_IO_OP_MIDI_PORT_OPEN`, `WAPI_IO_OP_SENSOR_START`. Hosts must dispatch these through the unified role-request path.
+- Removed imports: `wapi_audio_open_device` / `close_device` / `resume_device` / `pause_device` / `playback_device_count` / `recording_device_count` / `device_name` / `open_device_stream` (and `WAPI_AUDIO_DEFAULT_PLAYBACK/RECORDING` sentinels), `wapi_camera_count`, `wapi_camera_open` (static inline), `wapi_midi_port_count` / `port_name` / `request_access` / `open_port`, `wapi_haptic_open`, `wapi_device_count` / `device_open` / `device_close` / `device_get_type` / `device_get_uid` / `device_get_name` / `device_seat`, `wapi_hid_request_device` / `hid_get_info`. Replaced by role_request + per-kind `<module>_endpoint_info`.
+- Renamed imports: audio's `close_device` → `close`, `resume_device` → `resume`, `pause_device` → `pause`; input's `device_*` → `input_*` (close / role_kind / uid / name / seat).
+- `wapi_input.h` no longer defines `wapi_device_type_t`; use `wapi_role_kind_t` from `wapi.h`. `wapi_hotkey_binding_t::device_type` field renamed to `role_kind` (offset unchanged).
+- `wapi_hid_info_t` replaced by `wapi_hid_prefs_t` (8B, role-request filter) + `wapi_hid_endpoint_info_t` (32B, richer metadata incl. `transport` and `report_descriptor_len`). New queries: `wapi_hid_endpoint_info`, `wapi_hid_serial`, `wapi_hid_report_descriptor`.
+- `WAPI_ROLE_WAIT_FOR_DEVICE` flag: runtime parks the role request until a matching device appears. Vendor-specific-hardware apps (iCUE, G Hub, Playdate Mirror) depend on this.
+
+Host realignment checklist (Phase A scope):
+- Route role dispatch through a single op handler that policy-checks, prompts, and fulfills per-role.
+- Persist UIDs across reconnect so `PIN_SPECIFIC` + `DEVICE_ADDED` enables silent re-binding.
+- Redact endpoint names until the app has earned the real label; same for HID serials.
+- Update `wapi_host_input.c`, `wapi_host_audio.c`, and any per-module device code to drop their own open/enumerate paths and register as role resolvers.
+
+---
+
 ## Phase A — 100% Windows coverage (current focus)
 
 The bar: every `include/wapi/*.h` has a real Windows host impl; every deferred `WAPI_IO_OP_*` the Windows platform can support returns real data (NOSYS only where Windows genuinely can't do it). Nothing in Phase B–D starts until this list is zero.
@@ -51,7 +73,7 @@ The bar: every `include/wapi/*.h` has a real Windows host impl; every deferred `
 - ✅ **Hotkeys** — `RegisterHotKey(NULL, atom, ...)` with HID→VK + `WAPI_KMOD_*`→`MOD_*` tables and `MOD_NOREPEAT`; WM_HOTKEY intercepted in `drain_messages` → `WAPI_EVENT_HOTKEY`. All live bindings released on shutdown.
 - ✅ **Raw HID backend scaffold** — `platform/win32/wapi_plat_win32_hid.c` enumerates via SetupDi + `HidD_GetHidGuid`, opens with overlapped R/W fallback to read-only, exposes `hid_enumerate` / `open` / `close` / `get_info` / `read_report` / `write_report` / `send_feature` / `get_feature`. `hid_request_device` / `hid_get_info` / `hid_send_report` / `hid_send_feature_report` / `hid_receive_report` wired through the `WAPI_HTYPE_INPUT_DEVICE` pool with device-close releasing the HANDLE.
 - ✅ **SDL_GameControllerDB loader** — `wapi_host_gamepaddb.c` parses `GUID,name,key:value,...` lines, honors `platform:Windows`, loads from `$WAPI_GAMEPADDB` → `<exe>/data/gamepaddb.txt` → `~/.wapi/gamepaddb.txt`. Stub DB file vendored; refresh from upstream as a separate commit.
-- **HID gamepad decoder** — *remaining*: `HidP_*` report parser that consumes the DB mapping and emits `WAPI_PLAT_EV_GPAD_*` events for non-XInput pads (DualShock / DualSense / Switch Pro / Joy-Cons / flight sticks). Today such pads enumerate via `wapi_hid_*` but do not appear as `WAPI_DEVICE_GAMEPAD`.
+- **HID gamepad decoder** — *remaining*: `HidP_*` report parser that consumes the DB mapping and emits `WAPI_PLAT_EV_GPAD_*` events for non-XInput pads (DualShock / DualSense / Switch Pro / Joy-Cons / flight sticks). Today such pads enumerate via `wapi_hid_*` but do not appear as `WAPI_ROLE_GAMEPAD` endpoints.
 - **Force-feedback on DirectInput** — `IDirectInputDevice8::CreateEffect`. XInput rumble + per-vendor HID covers the common case first.
 - **Gamepad trigger-rumble / LED / sensors / touchpad** — lands with the HID gamepad decoder (no XInput surface for them).
 

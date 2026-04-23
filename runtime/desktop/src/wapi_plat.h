@@ -418,10 +418,11 @@ bool     wapi_plat_pen_get_position    (float* out_x, float* out_y);
 
 /* ---- Raw HID ----
  *
- * Backend enumerates connected HID devices. Guests filter and
- * (implicitly) request a specific device via
- * `wapi_plat_hid_request_device`; once granted, the host allocates
- * a tracked handle and exposes send/receive/feature report I/O.
+ * Backend enumerates connected HID devices. Guest role requests
+ * (WAPI_ROLE_HID with wapi_hid_prefs_t filter) are resolved by
+ * wapi_host_input.c calling wapi_plat_hid_enumerate + wapi_plat_hid_open;
+ * once granted, the host allocates a tracked handle and exposes
+ * send/receive/feature report I/O.
  *
  * Devices are identified by a stable 16-byte uid derived from
  * SetupDi device instance path so reconnect is detectable. */
@@ -468,6 +469,13 @@ int  wapi_plat_hid_send_feature(wapi_plat_hid_device_t* d,
                                 const void* data, int len);
 int  wapi_plat_hid_get_feature (wapi_plat_hid_device_t* d,
                                 void* buf, int buf_len);
+
+/* Raw HID report descriptor access. Size returns 0 if unavailable.
+ * Descriptor returns false if the backend can't expose the bytes. */
+uint32_t wapi_plat_hid_report_descriptor_size(wapi_plat_hid_device_t* d);
+bool     wapi_plat_hid_report_descriptor(wapi_plat_hid_device_t* d,
+                                         const uint8_t** out_bytes,
+                                         uint32_t* out_len);
 
 /* ---- Native menus ----
  *
@@ -559,13 +567,44 @@ bool     wapi_plat_hotkey_register     (uint32_t id, uint32_t mod_mask,
 void     wapi_plat_hotkey_unregister   (uint32_t id);
 
 /* Gamepad snapshot accessors — backend tracks per-slot state in its
- * event-pump loop. `slot` is 0..N-1 (XInput slots 0..3 on Win32). */
+ * event-pump loop. `slot` is 0..WAPI_PLAT_GAMEPAD_SLOTS-1. On Win32
+ * slots 0..3 are XInput, 4..15 are HID. */
+#define WAPI_PLAT_GAMEPAD_SLOTS 16
+
+typedef struct wapi_plat_gamepad_info_t {
+    uint32_t type;                /* wapi_gamepad_type_t */
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint8_t  has_rumble;
+    uint8_t  has_trigger_rumble;
+    uint8_t  has_led;
+    uint8_t  has_sensors;
+    uint8_t  has_touchpad;
+    uint8_t  battery_percent;     /* 0..100, 255 unknown */
+    uint8_t  battery_state;       /* wapi_gamepad_battery_t */
+    uint8_t  _pad;
+} wapi_plat_gamepad_info_t;
+
 bool     wapi_plat_gamepad_connected       (uint32_t slot);
 bool     wapi_plat_gamepad_button_pressed  (uint32_t slot, uint8_t button);
 int16_t  wapi_plat_gamepad_axis_value      (uint32_t slot, uint8_t axis);
+bool     wapi_plat_gamepad_get_info        (uint32_t slot,
+                                            wapi_plat_gamepad_info_t* out);
 bool     wapi_plat_gamepad_rumble          (uint32_t slot,
                                             uint16_t low_freq, uint16_t high_freq,
                                             uint32_t duration_ms);
+bool     wapi_plat_gamepad_rumble_triggers (uint32_t slot,
+                                            uint16_t left, uint16_t right,
+                                            uint32_t duration_ms);
+bool     wapi_plat_gamepad_set_led         (uint32_t slot,
+                                            uint8_t r, uint8_t g, uint8_t b);
+bool     wapi_plat_gamepad_enable_sensor   (uint32_t slot, uint32_t sensor, bool enabled);
+bool     wapi_plat_gamepad_get_sensor      (uint32_t slot, uint32_t sensor, float out_xyz[3]);
+bool     wapi_plat_gamepad_get_touchpad_finger(uint32_t slot,
+                                               uint32_t touchpad, uint32_t finger,
+                                               bool* out_down,
+                                               float* out_x, float* out_y,
+                                               float* out_pressure);
 /* Returns 0..100, or 255 if unknown. */
 uint8_t  wapi_plat_gamepad_battery_percent (uint32_t slot);
 
@@ -643,16 +682,25 @@ typedef struct wapi_plat_audio_stream_t wapi_plat_audio_stream_t;
 #define WAPI_PLAT_AUDIO_DEFAULT_PLAYBACK   (-1)
 #define WAPI_PLAT_AUDIO_DEFAULT_RECORDING  (-2)
 
-/* Device enumeration. index < 0 selects defaults. */
-int  wapi_plat_audio_playback_device_count(void);
-int  wapi_plat_audio_recording_device_count(void);
-size_t wapi_plat_audio_device_name(int device_id, char* out, size_t out_len);
-
+/* Open default endpoint. device_id selects WAPI_PLAT_AUDIO_DEFAULT_PLAYBACK
+ * or WAPI_PLAT_AUDIO_DEFAULT_RECORDING. Specific-device opening happens
+ * through the role dispatcher by UID. */
 wapi_plat_audio_device_t* wapi_plat_audio_open_device (int device_id,
                                                        const wapi_plat_audio_spec_t* spec);
 void                      wapi_plat_audio_close_device(wapi_plat_audio_device_t* d);
 void                      wapi_plat_audio_pause_device(wapi_plat_audio_device_t* d);
 void                      wapi_plat_audio_resume_device(wapi_plat_audio_device_t* d);
+
+/* Endpoint metadata for a granted handle. Fills the caller's native
+ * spec + form-factor enum (wapi_audio_form_t wire values) + 16-byte
+ * UID + UTF-8 display label. The label is copied into name_buf up to
+ * name_buf_cap bytes; the full byte length is written to *out_name_len. */
+void wapi_plat_audio_device_describe(wapi_plat_audio_device_t* d,
+                                     wapi_plat_audio_spec_t* out_native,
+                                     uint32_t* out_form,
+                                     uint8_t out_uid[16],
+                                     char* name_buf, size_t name_buf_cap,
+                                     size_t* out_name_len);
 
 wapi_plat_audio_stream_t* wapi_plat_audio_stream_create(const wapi_plat_audio_spec_t* src,
                                                         const wapi_plat_audio_spec_t* dst);
@@ -660,12 +708,6 @@ void                      wapi_plat_audio_stream_destroy(wapi_plat_audio_stream_
 
 bool wapi_plat_audio_stream_bind  (wapi_plat_audio_device_t* d, wapi_plat_audio_stream_t* s);
 void wapi_plat_audio_stream_unbind(wapi_plat_audio_stream_t* s);
-
-/* Convenience: open a device + stream in one call. Returns false on failure. */
-bool wapi_plat_audio_open_device_stream(int device_id,
-                                        const wapi_plat_audio_spec_t* spec,
-                                        wapi_plat_audio_device_t** out_dev,
-                                        wapi_plat_audio_stream_t** out_stream);
 
 bool wapi_plat_audio_stream_put (wapi_plat_audio_stream_t* s, const void* data, int len);
 int  wapi_plat_audio_stream_get (wapi_plat_audio_stream_t* s, void* data, int len);

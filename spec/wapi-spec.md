@@ -664,6 +664,8 @@ Selected opcodes (full enum in `wapi.h`). All values are method-ids in namespace
 | `WAPI_IO_OP_NETWORK_RESOLVE`      | `0x11` | `wapi.network`     | DNS resolve                                  |
 | `WAPI_IO_OP_TIMEOUT`              | `0x14` | `wapi.clock`       | Wait for a duration                          |
 | `WAPI_IO_OP_TIMEOUT_ABS`          | `0x15` | `wapi.clock`       | Wait until an absolute time                  |
+| `WAPI_IO_OP_ROLE_REQUEST`         | `0x16` | (per-kind)         | Request endpoint(s) for role(s) (see §9.10)  |
+| `WAPI_IO_OP_ROLE_REPICK`          | `0x17` | (per-kind)         | Re-pick the endpoint behind a role handle    |
 | `WAPI_IO_OP_AUDIO_WRITE`          | `0x1E` | `wapi.audio`       | Submit audio samples for playback            |
 | `WAPI_IO_OP_AUDIO_READ`           | `0x1F` | `wapi.audio`       | Read captured audio samples                  |
 | `WAPI_IO_OP_SANDBOX_OPEN`         |`0x2A0` | `wapi.sandbox`     | Open a sandbox-fs file (module-scoped)       |
@@ -1144,6 +1146,145 @@ if (wapi_preset_supported(io, WAPI_PRESET_GRAPHICAL)) {
 }
 ```
 
+### 9.10 Role System
+
+Capabilities grant the *kind* of access an app is allowed ("this app may use wapi.audio"). **Roles** bind that access to a specific device instance — an *endpoint*. Opening any device across the platform (audio playback, audio recording, camera, midi, keyboard, mouse, gamepad, haptic, sensor, display, hid, touch, pen, pointer) is a role request.
+
+Apps **do not enumerate devices before grant**. The runtime is the enumerator and the user-facing picker; the app describes roles it needs, the runtime resolves them to specific endpoints (via policy or prompt), and the app receives bound handles. Post-grant enumeration is available via `WAPI_ROLE_ALL` for apps that need every granted endpoint of a kind.
+
+#### 9.10.1 Role Kinds
+
+```c
+typedef enum wapi_role_kind_t {
+    WAPI_ROLE_AUDIO_PLAYBACK  = 0x01,
+    WAPI_ROLE_AUDIO_RECORDING = 0x02,
+    WAPI_ROLE_CAMERA          = 0x03,
+    WAPI_ROLE_MIDI_INPUT      = 0x04,
+    WAPI_ROLE_MIDI_OUTPUT     = 0x05,
+    WAPI_ROLE_KEYBOARD        = 0x06,
+    WAPI_ROLE_MOUSE           = 0x07,
+    WAPI_ROLE_GAMEPAD         = 0x08,
+    WAPI_ROLE_HAPTIC          = 0x09,
+    WAPI_ROLE_SENSOR          = 0x0A,
+    WAPI_ROLE_DISPLAY         = 0x0B,
+    WAPI_ROLE_HID             = 0x0C,
+    WAPI_ROLE_TOUCH           = 0x0D,
+    WAPI_ROLE_PEN             = 0x0E,
+    WAPI_ROLE_POINTER         = 0x0F, /* any pointer-shaped endpoint */
+} wapi_role_kind_t;
+```
+
+`wapi_role_kind_t` is the central registry of device kinds. Adding a kind is an explicit `wapi.h` edit, not an organic module extension. `wapi_input.h` uses this enum directly — there is no separate `wapi_device_type_t`.
+
+**A single physical device may fulfill multiple role kinds simultaneously, sharing one UID.** A mouse surfaces `HID` (OS permitting) + `MOUSE` + `POINTER`. A DualSense surfaces `HID` (OS permitting) + `GAMEPAD` + `POINTER` (via its touchpad) + `HAPTIC` + `AUDIO_PLAYBACK` + `AUDIO_RECORDING`. The runtime decides which roles a device can fulfill based on hardware capability and platform policy; apps request the role they want and receive an endpoint handle scoped to that role. Cross-kind correlation (e.g. "this POINTER is my gamepad's touchpad") uses UID comparison or `target_uid` targeting.
+
+`WAPI_ROLE_POINTER` specifically covers **any endpoint that produces pointer-shaped (x, y, button) events** — mouse, touchscreen, pen digitizer, gamepad touchpad, trackball-over-HID, etc. Multi-player apps that want per-player pointers request `POINTER` with `target_uid` set to each player's gamepad UID.
+
+#### 9.10.2 Request Flow
+
+```
+App                         Runtime                      User
+ |                             |                           |
+ |--- ROLE_REQUEST([roles])--->|                           |
+ |                             |-- policy check            |
+ |                             |-- ambient-grant silently  |
+ |                             |-- prompt if sensitive --->|
+ |                             |<---------- picks devices--|
+ |<-- handles (1 per role) ----|                           |
+ |                             |                           |
+ |--- query endpoint metadata  |                           |
+ |--- use (push/pull/send/...) |                           |
+ |                             |                           |
+ |--- ROLE_REPICK(handle) ---->|                           |
+ |                             |-- show picker ----------->|
+ |                             |<------ user picks --------|
+ |<-- rebound or new handle ---|                           |
+```
+
+Two opcodes on the `wapi_io_t` vtable:
+
+- `WAPI_IO_OP_ROLE_REQUEST` (0x16): `addr/len` = array of `wapi_role_request_t`, `flags2` = count. Runtime may prompt once for the whole batch.
+- `WAPI_IO_OP_ROLE_REPICK` (0x17): `fd` = existing endpoint handle, `result_ptr` = `wapi_handle_t*` for the rebound handle.
+
+Inline helpers in `wapi.h`: `wapi_role_request()`, `wapi_role_repick()`.
+
+#### 9.10.3 Role Request Descriptor
+
+```c
+typedef struct wapi_role_request_t {
+    uint32_t kind;           /* wapi_role_kind_t */
+    uint32_t flags;          /* wapi_role_flags_t bitmask */
+    uint64_t prefs_addr;     /* kind-specific prefs struct */
+    uint32_t prefs_len;
+    uint32_t _pad;
+    uint64_t out_handle;     /* wapi_handle_t* or handle array for ALL */
+    uint64_t out_result;     /* wapi_result_t* — per-role outcome, optional */
+    uint8_t  target_uid[16]; /* all-zero = runtime picks */
+} wapi_role_request_t; /* 56 bytes */
+```
+
+**Prefs are opaque bytes at the wapi.h level.** Each kind's module header owns the typed prefs layout (`wapi_audio_spec_t`, `wapi_camera_desc_t`, `wapi_hid_prefs_t`, `wapi_sensor_prefs_t`, `wapi_midi_prefs_t`). `wapi.h` never references module-specific types; modules never reference each other. Cross-kind correlation is done purely via UID comparison.
+
+**Per-role outcome**: each request writes its own `wapi_result_t` to `out_result` (if non-null). The top-level `io->submit` return reports only dispatch status, not grant outcomes. A batched prompt may grant some roles and deny others.
+
+#### 9.10.4 Flags
+
+| Flag                         | Meaning                                                                |
+|------------------------------|------------------------------------------------------------------------|
+| `WAPI_ROLE_OPTIONAL`         | UX hint: runtime may de-emphasize or default-deny this row             |
+| `WAPI_ROLE_FOLLOW_DEFAULT`   | Runtime reroutes on OS default-device change (fires `ROLE_REROUTED`)   |
+| `WAPI_ROLE_PIN_SPECIFIC`     | Handle revoked if target device disappears (fires `ROLE_REVOKED`)      |
+| `WAPI_ROLE_ALL`              | Bind every granted endpoint of this kind (post-grant enumeration)      |
+| `WAPI_ROLE_WAIT_FOR_DEVICE`  | Park until a matching device appears instead of failing `NOT_FOUND`    |
+
+#### 9.10.5 Ambient-Grant Policy
+
+Runtime policy decides which role kinds auto-grant vs prompt. Default policy under a desktop / gaming runtime:
+
+| Kind                          | Default policy                                           |
+|-------------------------------|----------------------------------------------------------|
+| `KEYBOARD`, `MOUSE`, `POINTER`| Ambient-grant (app can't function without them)          |
+| `DISPLAY`                     | Ambient-grant (informational; read via `wapi_display.h`) |
+| `AUDIO_PLAYBACK` (default)    | Ambient-grant for the system default only                |
+| `AUDIO_PLAYBACK` (specific)   | Prompt                                                   |
+| `GAMEPAD`                     | Ambient-grant under gaming runtime; prompt otherwise     |
+| `AUDIO_RECORDING`, `CAMERA`   | Always prompt                                            |
+| `MIDI_*`                      | Prompt (sysex gated separately via prefs flag)           |
+| `HID`                         | Always prompt (filter-driven picker)                     |
+| `SENSOR`                      | Prompt, optionally frequency-gated                       |
+| `TOUCH`, `PEN`                | Ambient-grant where hardware exists                      |
+| `HAPTIC`                      | Inherits from the parent device's grant                  |
+
+Runtime is authoritative; policy is configurable per deployment. The app influences only prefs and flags.
+
+#### 9.10.6 UID, Cross-Kind Correlation, and Reconnect
+
+The 16-byte UID is the only cross-module identifier. The runtime derives it from `(vendor_id, product_id, serial)` when a serial is available, otherwise from `(vendor, product, bus_position)`. Same physical device → same UID across reconnects and across app runs.
+
+- **Headset detection**: `audio_playback_endpoint.uid == audio_recording_endpoint.uid` → playback and mic are the same physical device.
+- **Per-player binding**: after acquiring a gamepad handle and reading its UID via `endpoint_info`, request the matching haptic and audio playback endpoints with `target_uid` set.
+- **Reconnect**: `PIN_SPECIFIC` handles revoke on physical removal (`ROLE_REVOKED`). The runtime remembers the previously-granted UID; when `DEVICE_ADDED` fires with the same UID, a follow-up `ROLE_REQUEST(kind, target_uid=...)` binds without re-prompting.
+
+#### 9.10.7 Endpoint Metadata
+
+Each module header declares a kind-specific `wapi_<kind>_endpoint_info_t` struct and a query function that takes a granted handle and fills the struct plus an optional display-name buffer. The name is privacy-gated — the runtime may return a generic label ("Microphone", "Speakers") until the app has earned the real label. Serials on HID endpoints have a separate query (`wapi_hid_serial`) gated the same way.
+
+#### 9.10.8 Vendor-Specific Hardware Apps
+
+Apps built for specific hardware (iCUE, G Hub, Playdate Mirror, Stream Deck console) use the role system plus module-manifest hints:
+
+- Filter-based requests: `ROLE_REQUEST(HID, prefs=wapi_hid_prefs_t{vendor_id=..., product_id=...})` drives a filtered picker.
+- One physical device, multiple endpoints: a vendor keyboard exposing standard-HID keyboard + vendor-usage HID shows up as one device with two endpoints sharing a UID. Granting the vendor endpoint does not intercept standard typing events.
+- `WAPI_ROLE_WAIT_FOR_DEVICE`: park the request until the hardware appears — vendor apps commonly launch before the device is plugged in.
+- Manifest-declared pairing is a **runtime policy hook**, not an ABI construct. A vendor app's module manifest may declare the vendor/product it owns; the runtime may auto-grant matching HID requests without a picker. Other runtimes may ignore the hint.
+- Lower-level transport (USB bulk/control, raw serial) stays on `WAPI_IO_OP_USB_DEVICE_REQUEST` / `WAPI_IO_OP_SERIAL_PORT_REQUEST`. Role system covers HID; those cover transports.
+
+#### 9.10.9 Non-Goal: No "Player" Abstraction
+
+WAPI exposes input as a flat pool of role handles. It does not model "player," "input set," or "seat-as-player." Different games pair devices differently (kb+mouse as a unit, gamepad alone, gamepad+headset via UID, shared keyboard demuxed by keymap). Any `wapi_player_t` abstraction would either restrict those cases or be a pass-through over handles. Consumers build player slots on top of handles; `target_uid` is the primitive that lets them bind related devices into a slot.
+
+Same handle may be routed to multiple app-side consumers (classic shared-keyboard co-op: arrow keys → P1, WASD → P2 on the same keyboard handle). WAPI delivers per-handle event streams; app-side demultiplexing is out of scope.
+
 ---
 
 ## 10. Module Linking
@@ -1424,6 +1565,17 @@ A conforming WAPI module MUST export:
 | `wapi_text_run_t`            |    16       |    4      |
 | `wapi_val_t`                 |    16       |    8      |
 | `wapi_hit_test_result_t`     |    16       |    4      |
+| `wapi_hid_prefs_t`           |     8       |    2      |
+| `wapi_sensor_prefs_t`        |     8       |    4      |
+| `wapi_midi_prefs_t`          |     4       |    4      |
+| `wapi_camera_desc_t`         |    16       |    4      |
+| `wapi_audio_endpoint_info_t` |    32       |    4      |
+| `wapi_hid_endpoint_info_t`   |    32       |    4      |
+| `wapi_camera_endpoint_info_t`|    40       |    4      |
+| `wapi_midi_endpoint_info_t`  |    24       |    4      |
+| `wapi_sensor_endpoint_info_t`|    24       |    4      |
+| `wapi_haptic_endpoint_info_t`|    24       |    4      |
+| `wapi_role_request_t`        |    56       |    8      |
 | `wapi_window_config_t`       |    40       |    8      |
 | `wapi_network_listen_desc_t`     |    20       |    4      |
 | `wapi_io_t`                  |    36       |    4      |

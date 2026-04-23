@@ -51,10 +51,52 @@
 <body>
     <div id="statsbar">booting…</div>
     <div id="loading">Loading...</div>
-    <script src="./wapi_shim.js"></script>
+    <script src="./pako_inflate.min.js"></script>
+    <script>
+        // The WAPI extension content script injects the shim at document_start
+        // in the MAIN world, so window.WAPI is already defined if it's installed.
+        // Only load the page-local copy when the extension hasn't provided it —
+        // loading both re-executes the top-level const declarations and throws
+        // a SyntaxError.
+        if (typeof window.WAPI !== 'function') {
+            document.write('<script src="./wapi_shim.js"><\/script>');
+        }
+    </script>
     <script type="module">
-        const { WAPI } = window;
         const statsEl = document.getElementById('statsbar');
+        const loadingEl = document.getElementById('loading');
+
+        function fatal(title, body) {
+            statsEl.innerHTML = `<span class="bad">${title}</span>`;
+            loadingEl.classList.remove('hidden');
+            loadingEl.innerHTML = body;
+            loadingEl.style.color = '#ddd';
+            loadingEl.style.textAlign = 'left';
+            loadingEl.style.maxWidth = '560px';
+            loadingEl.style.lineHeight = '1.5';
+            console.error('[boot]', title);
+        }
+
+        // The WAPI shim is provided either by the local <script> tag above
+        // or by the WAPI browser extension content script. If neither loaded
+        // (bad deployment, extension not installed) window.WAPI is missing.
+        if (typeof window.WAPI !== 'function') {
+            fatal('WAPI shim not found',
+                `<b>The WAPI runtime is not loaded on this page.</b><br><br>` +
+                `This page expects <code>window.WAPI</code> to be available, ` +
+                `provided by either:<br>` +
+                `&nbsp;&nbsp;• the inline <code>wapi_shim.js</code> script (co-located with this page), or<br>` +
+                `&nbsp;&nbsp;• the <b>WAPI Runtime</b> browser extension.<br><br>` +
+                `To install the extension:<br>` +
+                `&nbsp;&nbsp;1. Open <code>chrome://extensions/</code><br>` +
+                `&nbsp;&nbsp;2. Enable <b>Developer mode</b> (top right)<br>` +
+                `&nbsp;&nbsp;3. Click <b>Load unpacked</b> and select the <code>runtime/browser</code> directory<br>` +
+                `&nbsp;&nbsp;4. Reload this tab<br><br>` +
+                `If the extension is already installed, click its <b>↻ reload</b> button ` +
+                `after any <code>wapi_shim.js</code> rebuild and then reload the tab.`);
+            throw new Error('WAPI shim not available');
+        }
+        const { WAPI } = window;
 
         async function main() {
             const tBoot = performance.now();
@@ -65,6 +107,41 @@
             const wasmUrlBase = params.get('app') || 'app.wasm';
             const wasmUrl = wasmUrlBase + (wasmUrlBase.includes('?') ? '&' : '?') + '_cb=' + Date.now();
             console.log('[boot] wasm =', wasmUrl);
+
+            // Pre-flight the wasm URL so a 404 / text response becomes a
+            // clear error instead of a "magic word" CompileError.
+            let wasmResp;
+            try {
+                wasmResp = await fetch(wasmUrl);
+            } catch (e) {
+                fatal('Wasm fetch failed',
+                    `Could not fetch <code>${wasmUrlBase}</code>: ${e.message || e}`);
+                return;
+            }
+            if (!wasmResp.ok) {
+                fatal(`Wasm ${wasmResp.status}`,
+                    `Server returned <b>${wasmResp.status} ${wasmResp.statusText}</b> for ` +
+                    `<code>${wasmUrlBase}</code>.<br><br>` +
+                    `Pass the app path via <code>?app=&lt;path/to/app.wasm&gt;</code> in the URL, ` +
+                    `or place <code>app.wasm</code> next to this page.`);
+                return;
+            }
+            const contentType = wasmResp.headers.get('content-type') || '';
+            const wasmBytes = await wasmResp.arrayBuffer();
+            if (wasmBytes.byteLength < 8) {
+                fatal('Wasm payload empty',
+                    `Response for <code>${wasmUrlBase}</code> was ${wasmBytes.byteLength} bytes.`);
+                return;
+            }
+            const magic = new Uint8Array(wasmBytes, 0, 4);
+            if (!(magic[0] === 0x00 && magic[1] === 0x61 && magic[2] === 0x73 && magic[3] === 0x6d)) {
+                const head = new TextDecoder().decode(new Uint8Array(wasmBytes, 0, Math.min(80, wasmBytes.byteLength)));
+                fatal('Not a wasm file',
+                    `<code>${wasmUrlBase}</code> did not start with the wasm magic bytes ` +
+                    `(content-type: <code>${contentType || 'unknown'}</code>).<br><br>` +
+                    `First bytes: <code>${head.replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]))}</code>`);
+                return;
+            }
 
             const wapi = new WAPI();
             window.wapi = wapi;
@@ -91,7 +168,7 @@
             }
 
             try {
-                await wapi.load(wasmUrl, {
+                await wapi.load(wasmBytes, {
                     preopens: { '/': {}, '/tmp': {} },
                     args: [wasmUrl, ...params.getAll('arg')],
                     env: { DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1' },

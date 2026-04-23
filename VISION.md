@@ -31,7 +31,7 @@ A single installable binary per OS (Windows MSI, macOS pkg, Linux deb/rpm/flatpa
 - **Host implementations** of every WAPI capability — especially the ones a browser cannot do cleanly: direct GPU, low-level audio, full filesystem, background services, HID, USB, MIDI.
 - **Module cache** keyed by SHA-256 content hash. Already spec'd in [spec/wapi-spec.md](spec/wapi-spec.md) §10: the same `.wasm` fetched from any URL or loaded from any disk path produces the same cache entry. This cache is the backbone of deep integration — every other feature builds on it.
 - **Shared service registry.** `wapi_module_join(hash, url, name, module)` is already declared in [include/wapi/wapi_module.h](include/wapi/wapi_module.h): multiple callers with the same `(hash, name)` attach to one refcounted running instance with shared memory. A UI framework, physics engine, or protocol stack loads once and is reused by every app that imports it.
-- **Permission broker** with OS-native UI. Prompts render as native Windows / macOS / Linux dialogs, not browser chrome.
+- **Permission broker** with OS-native UI. Role requests (spec §9.10) — audio, camera, mic, gamepad, HID, sensors — prompt as native Windows / macOS / Linux dialogs, not browser chrome. Ambient roles (keyboard, mouse, default speaker) auto-grant by runtime policy; sensitive ones show a batched picker where the user selects *which* physical device fulfills each role.
 - **Protocol + file association.** `wapi://` URLs, `.wapp` file open handler, deep links.
 - **Native messaging host** — the standard WebExtension JSON-over-stdio bridge (Chromium, Firefox, Safari all support it). This is how the extension reaches the system runtime.
 

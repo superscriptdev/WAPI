@@ -115,7 +115,7 @@ typedef struct wapi_pipe_t {
  * mouse/keyboard/pointer/touch/pen devices also live here so there is
  * one uniform handle space for all of wapi_input.h's device ids.
  *
- * `kind` mirrors wapi_device_type_t from wapi_input.h. `backend_slot`
+ * `kind` mirrors wapi_role_kind_t from wapi.h. `backend_slot`
  * routes backend queries: for XInput gamepads it is the slot (0..3);
  * for HID devices it's unused (the platform pointer lives in hid_dev).
  * `uid` is a stable 16-byte id that persists across reconnect — for
@@ -123,12 +123,12 @@ typedef struct wapi_pipe_t {
  * we fold the SetupDi device-instance path. */
 struct wapi_plat_hid_device_t;
 typedef struct wapi_input_device_t {
-    uint32_t kind;          /* wapi_device_type_t */
+    uint32_t kind;          /* wapi_role_kind_t */
     uint32_t backend_slot;  /* gamepad: XInput slot; other: 0 */
     uint8_t  uid[16];
     char     name[64];
     /* HID-specific: opaque platform device. Only non-NULL when
-     * kind == WAPI_DEVICE_HID. */
+     * kind == WAPI_ROLE_HID. */
     struct wapi_plat_hid_device_t* hid_dev;
     uint16_t hid_vendor;
     uint16_t hid_product;
@@ -224,7 +224,22 @@ typedef struct wapi_module_slot_t {
     bool                     memory_valid;
     uint8_t                  hash[32];    /* SHA-256 of wasm bytes */
     wapi_module_func_slot_t  funcs[WAPI_MODULE_MAX_FUNCS];
+    /* Service mode: refcounted shared instance keyed by (hash, name).
+     * Library mode (cb_load) keeps refcount == 1 with svc_name empty. */
+    uint32_t                 refcount;
+    char                     svc_name[64];
 } wapi_module_slot_t;
+
+/* ---- Module service registry (wapi_module.join) ---- */
+
+#define WAPI_MODULE_SERVICE_MAX 16
+
+typedef struct wapi_module_service_entry_t {
+    uint8_t                  hash[32];
+    char                     name[64];
+    struct wapi_module_slot_t* slot;
+    bool                     in_use;
+} wapi_module_service_entry_t;
 
 /* ---- Shared memory pool (wapi_module memory 1, host-owned) ---- */
 
@@ -373,6 +388,7 @@ typedef struct wapi_runtime_t {
     /* Module linking: host-owned shared memory + hash-path cache */
     wapi_shared_mem_t         shared_mem;
     wapi_module_cache_entry_t module_cache[WAPI_MODULE_CACHE_MAX];
+    wapi_module_service_entry_t module_services[WAPI_MODULE_SERVICE_MAX];
     wasmtime_linker_t*        linker;     /* kept live for child instantiation */
 
     /* Net init state */
@@ -727,6 +743,30 @@ void wapi_host_input_init(void);
 int  wapi_gamepaddb_load (void);
 int  wapi_gamepaddb_count(void);
 
+/* Decoded SDL mapping for a single HID pad. Each field (except hat)
+ * is an encoded source reference or 0 when unmapped:
+ *   bXX     button index XX   → encoded as 0x1000 | XX
+ *   aXX     axis   index XX   → encoded as 0x2000 | XX  (+0x0800 = inverted)
+ *   hN.M    hat N mask M      → encoded as 0x4000 | (N<<8) | M
+ * All 15 WAPI buttons and 6 axes get a slot; 0 = "not bound".
+ * Trigger axes may encode a button source (encoding bit 0x1000) — the
+ * decoder must treat that as "pressed → 32767, released → 0".
+ */
+typedef struct wapi_gpdb_mapping_t {
+    uint16_t buttons[15];   /* index = WAPI_GAMEPAD_BUTTON_* */
+    uint16_t axes[6];       /* index = WAPI_GAMEPAD_AXIS_*   */
+} wapi_gpdb_mapping_t;
+
+/* Look up a decoded mapping by 16-byte SDL GUID. Returns true on hit.
+ * The GUID is constructed from VID/PID/version in the standard SDL
+ * layout (bus + zero + VID LE + zero + PID LE + zero + version LE). */
+bool wapi_gamepaddb_resolve(const uint8_t guid[16], wapi_gpdb_mapping_t* out);
+
+/* Build the standard SDL HID GUID for (vid,pid,version). bus is 0x03
+ * for USB, 0x05 for Bluetooth (caller picks based on its transport). */
+void wapi_gamepaddb_make_guid(uint16_t bus, uint16_t vid, uint16_t pid,
+                              uint16_t version, uint8_t out[16]);
+
 /* Cross-platform device / display reference DB (see NEXT_STEPS.md
  * §A10). A row describes one panel; its fields come entirely from
  * curation because no OS exposes sub-pixel layout, precise gamut
@@ -801,6 +841,7 @@ int         wapi_devicedb_stylus_pressure_levels(const struct wapi_devicedb_entr
 int         wapi_devicedb_stylus_has_tilt(const struct wapi_devicedb_entry_t* e);
 const char* wapi_devicedb_name          (const struct wapi_devicedb_entry_t* e);
 void wapi_host_register_audio(wasmtime_linker_t* linker);
+bool wapi_host_audio_read_spec(uint32_t ptr, wapi_plat_audio_spec_t* out);
 void wapi_host_register_wgpu(wasmtime_linker_t* linker);
 void wapi_host_register_fs(wasmtime_linker_t* linker);
 void wapi_host_register_memory(wasmtime_linker_t* linker);

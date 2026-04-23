@@ -1,3 +1,5 @@
+console.log("[WAPI] shim loaded (audio: AudioWorkletNode, module: page-local cache)");
+
 /**
  * WAPI - Browser Shim
  * Maps WAPI ABI imports to browser Web APIs.
@@ -47,6 +49,45 @@ const WAPI_ERR_NOTSUP        = -25;
 const WAPI_ERR_OVERFLOW       = -26;
 const WAPI_ERR_CANCELED      = -27;
 const WAPI_ERR_NOSYS         = -32;
+
+/* Name resolver: turn a negative WAPI_ERR_* code into a human-readable
+ * string like "WAPI_ERR_TIMEDOUT (-16)". Falls back to the numeric
+ * code for unmapped values. */
+const WAPI_ERR_NAMES = {
+    [WAPI_OK]:              "WAPI_OK",
+    [WAPI_ERR_UNKNOWN]:     "WAPI_ERR_UNKNOWN",
+    [WAPI_ERR_INVAL]:       "WAPI_ERR_INVAL",
+    [WAPI_ERR_BADF]:        "WAPI_ERR_BADF",
+    [WAPI_ERR_ACCES]:       "WAPI_ERR_ACCES",
+    [WAPI_ERR_NOENT]:       "WAPI_ERR_NOENT",
+    [WAPI_ERR_EXIST]:       "WAPI_ERR_EXIST",
+    [WAPI_ERR_NOTDIR]:      "WAPI_ERR_NOTDIR",
+    [WAPI_ERR_ISDIR]:       "WAPI_ERR_ISDIR",
+    [WAPI_ERR_NOSPC]:       "WAPI_ERR_NOSPC",
+    [WAPI_ERR_NOMEM]:       "WAPI_ERR_NOMEM",
+    [WAPI_ERR_NAMETOOLONG]: "WAPI_ERR_NAMETOOLONG",
+    [WAPI_ERR_NOTEMPTY]:    "WAPI_ERR_NOTEMPTY",
+    [WAPI_ERR_IO]:          "WAPI_ERR_IO",
+    [WAPI_ERR_AGAIN]:       "WAPI_ERR_AGAIN",
+    [WAPI_ERR_BUSY]:        "WAPI_ERR_BUSY",
+    [WAPI_ERR_TIMEDOUT]:    "WAPI_ERR_TIMEDOUT",
+    [WAPI_ERR_CONNREFUSED]: "WAPI_ERR_CONNREFUSED",
+    [WAPI_ERR_CONNRESET]:   "WAPI_ERR_CONNRESET",
+    [WAPI_ERR_CONNABORTED]: "WAPI_ERR_CONNABORTED",
+    [WAPI_ERR_NETUNREACH]:  "WAPI_ERR_NETUNREACH",
+    [WAPI_ERR_HOSTUNREACH]: "WAPI_ERR_HOSTUNREACH",
+    [WAPI_ERR_ADDRINUSE]:   "WAPI_ERR_ADDRINUSE",
+    [WAPI_ERR_PIPE]:        "WAPI_ERR_PIPE",
+    [WAPI_ERR_NOTCAPABLE]:  "WAPI_ERR_NOTCAPABLE",
+    [WAPI_ERR_NOTSUP]:      "WAPI_ERR_NOTSUP",
+    [WAPI_ERR_OVERFLOW]:    "WAPI_ERR_OVERFLOW",
+    [WAPI_ERR_CANCELED]:    "WAPI_ERR_CANCELED",
+    [WAPI_ERR_NOSYS]:       "WAPI_ERR_NOSYS",
+};
+function wapiErrName(code) {
+    const name = WAPI_ERR_NAMES[code];
+    return name ? `${name} (${code})` : `code ${code}`;
+}
 
 const WAPI_HANDLE_INVALID = 0;
 const WAPI_STDIN  = 1;
@@ -106,12 +147,13 @@ const WAPI_IO_OP_NETWORK_CHANNEL_ACCEPT   = 0x10;
 const WAPI_IO_OP_NETWORK_RESOLVE          = 0x11;
 
 // Core opcodes (namespace 0x0000) — mirror wapi.h's enum values.
+const WAPI_IO_OP_ROLE_REQUEST             = 0x016;
+const WAPI_IO_OP_ROLE_REPICK              = 0x017;
 const WAPI_IO_OP_SERIAL_PORT_REQUEST      = 0x080;
 const WAPI_IO_OP_SERIAL_OPEN              = 0x081;
 const WAPI_IO_OP_SERIAL_READ              = 0x082;
 const WAPI_IO_OP_SERIAL_WRITE             = 0x083;
-const WAPI_IO_OP_MIDI_ACCESS_REQUEST      = 0x090;
-const WAPI_IO_OP_MIDI_PORT_OPEN           = 0x091;
+// MIDI port acquisition folded into WAPI_IO_OP_ROLE_REQUEST (spec §9.10).
 const WAPI_IO_OP_MIDI_SEND                = 0x092;
 const WAPI_IO_OP_MIDI_RECV                = 0x093;
 const WAPI_IO_OP_BT_DEVICE_REQUEST        = 0x0A0;
@@ -129,7 +171,7 @@ const WAPI_IO_OP_USB_TRANSFER_OUT         = 0x0B4;
 const WAPI_IO_OP_USB_CONTROL_TRANSFER     = 0x0B5;
 const WAPI_IO_OP_NFC_SCAN_START           = 0x0C0;
 const WAPI_IO_OP_NFC_WRITE                = 0x0C1;
-const WAPI_IO_OP_CAMERA_OPEN              = 0x0D0;
+// Camera open folded into WAPI_IO_OP_ROLE_REQUEST (spec §9.10).
 const WAPI_IO_OP_CAMERA_FRAME_READ        = 0x0D1;
 const WAPI_IO_OP_CODEC_DECODE             = 0x100;
 const WAPI_IO_OP_CODEC_ENCODE             = 0x101;
@@ -181,7 +223,7 @@ const WAPI_IO_OP_BARCODE_DETECT_CAMERA      = 0x2D9;
 const WAPI_IO_OP_POWER_INFO_GET             = 0x2E8;
 const WAPI_IO_OP_POWER_WAKE_ACQUIRE         = 0x2E9;
 const WAPI_IO_OP_POWER_IDLE_START           = 0x2EA;
-const WAPI_IO_OP_SENSOR_START               = 0x2F0;
+// Sensor start folded into WAPI_IO_OP_ROLE_REQUEST (spec §9.10).
 const WAPI_IO_OP_NOTIFY_SHOW                = 0x2F8;
 const WAPI_IO_OP_FONT_FAMILY_INFO           = 0x2FC;
 const WAPI_IO_OP_TRANSFER_OFFER             = 0x310;
@@ -254,8 +296,32 @@ const WAPI_AUDIO_S16 = 0x8010;
 const WAPI_AUDIO_S32 = 0x8020;
 const WAPI_AUDIO_F32 = 0x8120;
 
-const WAPI_AUDIO_DEFAULT_PLAYBACK  = -1;
-const WAPI_AUDIO_DEFAULT_RECORDING = -2;
+function _wapiAudioBytesPerSample(format) {
+    switch (format) {
+        case WAPI_AUDIO_U8:  return 1;
+        case WAPI_AUDIO_S16: return 2;
+        case WAPI_AUDIO_S32: return 4;
+        case WAPI_AUDIO_F32: return 4;
+        default:             return 0;
+    }
+}
+
+// Role kinds (wapi_role_kind_t from wapi.h — spec §9.10)
+const WAPI_ROLE_AUDIO_PLAYBACK  = 0x01;
+const WAPI_ROLE_AUDIO_RECORDING = 0x02;
+const WAPI_ROLE_CAMERA          = 0x03;
+const WAPI_ROLE_MIDI_INPUT      = 0x04;
+const WAPI_ROLE_MIDI_OUTPUT     = 0x05;
+const WAPI_ROLE_KEYBOARD        = 0x06;
+const WAPI_ROLE_MOUSE           = 0x07;
+const WAPI_ROLE_GAMEPAD         = 0x08;
+const WAPI_ROLE_HAPTIC          = 0x09;
+const WAPI_ROLE_SENSOR          = 0x0A;
+const WAPI_ROLE_DISPLAY         = 0x0B;
+const WAPI_ROLE_HID             = 0x0C;
+const WAPI_ROLE_TOUCH           = 0x0D;
+const WAPI_ROLE_PEN             = 0x0E;
+const WAPI_ROLE_POINTER         = 0x0F;
 
 // GPU texture formats (matching WGPUTextureFormat values from webgpu.h)
 const WAPI_GPU_FORMAT_RGBA8_UNORM      = 0x0016;
@@ -665,19 +731,47 @@ function _wapiHexHash(u8) {
 // Keyed by lowercase hex hash.
 const _wapiModuleCache = new Map();
 
-// Page-local state for wapi_module.join (service mode). Services are
-// hosted inside the extension service worker; join is fundamentally an
-// async round-trip (postMessage → bridge → SW) but wasm imports are sync.
-// We resolve this with a poll loop: the first call kicks off the SW
-// services.join request and returns WAPI_ERR_AGAIN; subsequent calls
-// return the same AGAIN until the SW replies, at which point the entry
-// flips to "ready" and join writes the handle and returns WAPI_OK.
+// Page-local service registry for wapi_module.join. Per spec §10 memory
+// model, memory 1 belongs to the application — on the web the application
+// is a single page, so the live instance MUST live here. Intra-page sharing
+// is the point of service mode: multiple wasm callers that agree on
+// (hash, name) see the same instance and the instance is refcounted.
 //
-// Keyed by "<hashHex>:<name>". Entries:
-//   pending — { state: "pending",  promise: Promise<void> }
-//   ready   — { state: "ready",    handle: i32 }  (handle is SW-side service handle)
-//   failed  — { state: "failed",   error: string }
-const _wapiServiceJoins = new Map();
+// Keyed by "<hashHex>:<name>". Entry:
+//   { state, module, instance, memory, childMemHelpers, refcount,
+//     hashHex, name, url, announceTimer }
+// state ∈ { "pending", "ready", "failed" }.
+//
+// Cross-tab visibility is via services.announce to the extension SW —
+// the SW is a federated observer, not a host (the application's memory 1
+// can't live in the SW without SAB+Atomics.wait to make imports sync).
+const _wapiPageServices = new Map();
+
+// Single heartbeat interval that refreshes announces for every ready
+// entry in _wapiPageServices. Started on the first successful join,
+// cleared when the last service is withdrawn.
+let _wapiAnnounceInterval = null;
+const WAPI_ANNOUNCE_HEARTBEAT_MS = 5000;
+
+function _wapiStartHeartbeat() {
+    if (_wapiAnnounceInterval) return;
+    _wapiAnnounceInterval = setInterval(() => {
+        let any = false;
+        for (const svc of _wapiPageServices.values()) {
+            if (svc.state !== "ready") continue;
+            any = true;
+            _wapiExtPost("services.announce", {
+                hashHex: svc.hashHex,
+                name:    svc.name,
+                url:     svc.url,
+                origin:  (typeof window !== "undefined" && window.location)
+                         ? window.location.origin : "",
+                refcount: svc.refcount,
+            });
+        }
+        if (!any) { clearInterval(_wapiAnnounceInterval); _wapiAnnounceInterval = null; }
+    }, WAPI_ANNOUNCE_HEARTBEAT_MS);
+}
 
 // Fetch bytes by hash through the extension cache, then network as a
 // fallback. Verifies the SHA-256 matches the requested hash before
@@ -686,20 +780,23 @@ async function _wapiFetchAndCompile(hashHex, url) {
     let bytes = null;
     let gotFromCache = false;
 
-    const resp = await _wapiExtSend("modules.fetch", { hash: hashHex });
+    const resp = await _wapiExtSend("modules.fetch", { hash: hashHex }, 1500);
     if (resp && resp.bytesB64) {
         bytes = _wapiB64ToBytes(resp.bytesB64);
         gotFromCache = true;
+        console.log(`[WAPI] cache hit for ${hashHex.slice(0,10)}… (${bytes.length} bytes)`);
     }
 
     if (!bytes) {
         if (!url) throw new Error("module not cached and no url provided");
+        console.log(`[WAPI] network fetch ${url}`);
         const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`fetch ${url} failed: ${response.status}`);
         }
         const ab = await response.arrayBuffer();
         bytes = new Uint8Array(ab);
+        console.log(`[WAPI] fetched ${bytes.length} bytes from ${url}`);
     }
 
     if (typeof crypto !== "undefined" && crypto.subtle) {
@@ -796,6 +893,15 @@ class WAPI {
 
         // Audio state
         this._audioCtx = null;
+
+        // wapi_module shared memory (memory 1 in the module spec).
+        // A single host-owned buffer; shared_alloc bumps into it,
+        // shared_read/write copies between it and the caller's memory 0.
+        // Child module instances share this buffer with the parent so
+        // data passed via (offset, len) is visible on both sides.
+        this._sharedMem   = new Uint8Array(16 * 1024 * 1024);
+        this._sharedBump  = 16;  // skip 0 so it doubles as "unallocated"
+        this._sharedAllocs = new Map();  // offset -> size
 
         // Content state - Canvas2D for text/image rendering
         this._contentCanvas = null;
@@ -1218,6 +1324,95 @@ class WAPI {
         if (typeof navigator !== "undefined" && navigator.getBattery) caps.push("wapi.battery");
 
         return caps;
+    }
+
+    // -----------------------------------------------------------------------
+    // wapi_module: shared memory arena + child instantiation
+    // -----------------------------------------------------------------------
+
+    // Align `off` up to `align` (power of two).
+    _alignUp(off, align) {
+        return (off + align - 1) & ~(align - 1);
+    }
+
+    // Bump allocator over this._sharedMem. Returns an offset (>0) or 0 on
+    // failure. Tracks size so shared_free/usable_size can answer correctly
+    // even though we never reclaim the space.
+    _sharedAlloc(size, align) {
+        if (size <= 0) return 0;
+        if (align < 1) align = 1;
+        const off = this._alignUp(this._sharedBump, align);
+        if (off + size > this._sharedMem.length) return 0;
+        this._sharedBump = off + size;
+        this._sharedAllocs.set(off, size);
+        return off;
+    }
+    _sharedFree(off) {
+        // Bump allocator never reclaims; just drop the accounting entry.
+        this._sharedAllocs.delete(off);
+        return WAPI_OK;
+    }
+
+    // Instantiate a compiled child wasm module with imports tailored to
+    // its private memory 0. The shared-memory import closures are bound
+    // to the child's memory so shared_read/write copy to/from the child,
+    // not the host.
+    _instantiateChildModule(compiledModule, hashHex, serviceName) {
+        const self = this;
+        const imports = self._buildImports();
+        const childCtx = { u8: null, dv: null, memory: null };
+
+        const childU8 = () => {
+            if (!childCtx.memory) return null;
+            if (childCtx.u8 === null || childCtx.u8.buffer !== childCtx.memory.buffer) {
+                childCtx.u8 = new Uint8Array(childCtx.memory.buffer);
+                childCtx.dv = new DataView(childCtx.memory.buffer);
+            }
+            return childCtx.u8;
+        };
+
+        // Override only the memory-accessing wapi_module calls. Everything
+        // else (including non-memory wapi_module calls like shared_alloc)
+        // can stay on the parent's bindings. shared_read/write must use the
+        // CHILD's memory for the dstPtr/srcPtr side of the copy.
+        imports.wapi_module = Object.assign({}, imports.wapi_module, {
+            shared_read(srcOffset, dstPtr, len) {
+                const u8 = childU8();
+                if (!u8) return WAPI_ERR_BADF;
+                const s = Number(srcOffset), d = Number(dstPtr), n = Number(len);
+                if (s + n > self._sharedMem.length) return WAPI_ERR_RANGE || -2;
+                if (d + n > u8.length)              return WAPI_ERR_RANGE || -2;
+                u8.set(self._sharedMem.subarray(s, s + n), d);
+                return WAPI_OK;
+            },
+            shared_write(dstOffset, srcPtr, len) {
+                const u8 = childU8();
+                if (!u8) return WAPI_ERR_BADF;
+                const d = Number(dstOffset), s = Number(srcPtr), n = Number(len);
+                if (d + n > self._sharedMem.length) return WAPI_ERR_RANGE || -2;
+                if (s + n > u8.length)              return WAPI_ERR_RANGE || -2;
+                self._sharedMem.set(u8.subarray(s, s + n), d);
+                return WAPI_OK;
+            },
+        });
+
+        const inst = new WebAssembly.Instance(compiledModule, imports);
+        childCtx.memory = inst.exports.memory;
+
+        // wasi-libc's reactor modules run _initialize() (if exported) before
+        // any of their other exports are invoked. hello_game's tracker
+        // doesn't declare one, but be safe.
+        if (typeof inst.exports._initialize === "function") {
+            try { inst.exports._initialize(); } catch (e) { /* non-fatal */ }
+        }
+
+        return self.handles.insert({
+            type: "module",
+            instance: inst,
+            module: compiledModule,
+            hash: hashHex,
+            name: serviceName || "",
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -2413,14 +2608,39 @@ class WAPI {
                 if (!format) { _pushIoCompletion(userData, -1, 0); return; }
 
                 const decompress = mode === 1;
+
+                /* Snapshot input now — linear memory may grow during async. */
+                self._refreshViews();
+                const input = self._u8.slice(addr, addr + len);
+
+                /* Sync path via pako. Required for guest code that polls
+                 * inside wapi_main (can't yield to microtasks). On failure
+                 * we fall through to the async CompressionStream path. */
+                if (decompress && typeof pako !== "undefined") {
+                    try {
+                        const fn = algo === 0 ? pako.ungzip
+                                 : algo === 1 ? pako.inflate
+                                 : algo === 2 ? pako.inflateRaw
+                                              : null;
+                        if (fn) {
+                            const out = fn(input);
+                            self._refreshViews();
+                            const n = Math.min(len2, out.byteLength);
+                            if (n > 0) self._u8.set(out.subarray(0, n), addr2);
+                            _pushIoCompletion(userData, out.byteLength > len2 ? -2 : n, 0);
+                            return;
+                        }
+                    } catch (err) {
+                        console.warn("[wapi_compression] sync pako failed:", err);
+                        _pushIoCompletion(userData, -1, 0);
+                        return;
+                    }
+                }
+
                 const Stream = decompress
                     ? (typeof DecompressionStream !== "undefined" ? DecompressionStream : null)
                     : (typeof CompressionStream   !== "undefined" ? CompressionStream   : null);
                 if (!Stream) { _pushIoCompletion(userData, -1, 0); return; }
-
-                // Snapshot input bytes now — linear memory may grow during await.
-                self._refreshViews();
-                const input = self._u8.slice(addr, addr + len);
 
                 (async () => {
                     try {
@@ -3246,32 +3466,20 @@ class WAPI {
             },
 
             // void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, const void* data, size_t size)
-            // Wasm sig: (i32, i32, i64, i32, i32) -> void
-            // No _refreshViews() call — we construct the Uint8Array directly
-            // from self.memory.buffer, so none of the cached views matter.
-            queue_write_buffer(queue, buffer, bufferOffsetLo, bufferOffsetHi, dataPtr, size) {
+            // Wasm sig: (i32, i32, i64, i32, i32) -> void.
+            // Clang's wasm32 target passes i64 as a single param (BigInt in JS),
+            // size_t as i32. No _refreshViews — we slice self.memory.buffer directly.
+            queue_write_buffer(queue, buffer, bufferOffset, dataPtr, size) {
                 const q = gpuH(queue);
                 const buf = gpuH(buffer);
                 if (!q || !buf) return;
-                // On wasm32 with 64-bit args, they may be split. Handle both cases.
-                let bufferOffset, data, dataSize;
-                if (typeof bufferOffsetHi === 'number' && bufferOffsetHi > 0xFFFF) {
-                    // Arguments: queue, buffer, bufferOffset(i64 as single BigInt), dataPtr, size
-                    // This path handles when the runtime passes i64 as BigInt
-                    bufferOffset = Number(bufferOffsetLo);
-                    data = bufferOffsetHi; // actually dataPtr
-                    dataSize = dataPtr;    // actually size
-                } else {
-                    bufferOffset = Number(bufferOffsetLo);
-                    data = dataPtr;
-                    dataSize = size;
-                }
-                const src = new Uint8Array(self.memory.buffer, data, dataSize);
+                const off = Number(bufferOffset);
+                const src = new Uint8Array(self.memory.buffer, dataPtr, size);
                 if (self._drawTrace) {
-                    self._drawTrace.push(`writeBuffer(buf#${buffer}, off=${bufferOffset}, size=${dataSize})`);
+                    self._drawTrace.push(`writeBuffer(buf#${buffer}, off=${off}, size=${size})`);
                 }
                 self._drawStats.writes = (self._drawStats.writes | 0) + 1;
-                q.writeBuffer(buf, bufferOffset, src);
+                q.writeBuffer(buf, off, src);
             },
 
             // void wgpuQueueWriteTexture(WGPUQueue queue, const WGPUTexelCopyTextureInfo* destination, const void* data, size_t dataSize, const WGPUTexelCopyBufferLayout* dataLayout, const WGPUExtent3D* writeSize)
@@ -3409,13 +3617,13 @@ class WAPI {
                 return gpuInsert("gpu_compute_pass_encoder", pass);
             },
 
-            // void wgpuCommandEncoderCopyBufferToBuffer(...)
-            command_encoder_copy_buffer_to_buffer(encoder, source, sourceOffsetLo, sourceOffsetHi, destination, destinationOffsetLo, destinationOffsetHi, sizeLo, sizeHi) {
+            // void wgpuCommandEncoderCopyBufferToBuffer(encoder, source, srcOff:u64, dest, dstOff:u64, size:u64)
+            command_encoder_copy_buffer_to_buffer(encoder, source, sourceOffset, destination, destinationOffset, size) {
                 const enc = gpuH(encoder);
                 if (!enc) return;
                 const src = gpuH(source);
                 const dst = gpuH(destination);
-                enc.copyBufferToBuffer(src, Number(sourceOffsetLo), dst, Number(destinationOffsetLo), Number(sizeLo));
+                enc.copyBufferToBuffer(src, Number(sourceOffset), dst, Number(destinationOffset), Number(size));
             },
 
             // void wgpuCommandEncoderCopyBufferToTexture(encoder, source, destination, copySize)
@@ -3559,26 +3767,26 @@ class WAPI {
                 pass.setBindGroup(groupIndex, bg, offsets);
             },
 
-            // void wgpuRenderPassEncoderSetVertexBuffer(encoder, slot, buffer, offset, size)
-            render_pass_set_vertex_buffer(encoder, slot, buffer, offsetLo, offsetHi, sizeLo, sizeHi) {
+            // void wgpuRenderPassEncoderSetVertexBuffer(encoder, slot, buffer, offset:u64, size:u64)
+            // wasm32: (i32, i32, i32, i64, i64) -> void. i64 → BigInt in JS.
+            render_pass_set_vertex_buffer(encoder, slot, buffer, offset, size) {
                 const pass = passH(encoder);
                 if (!pass) return;
                 const buf = gpuH(buffer);
-                // wasm32 passes uint64_t as two i32 args
-                const offset = Number(offsetLo);
-                const size = Number(sizeLo);
-                pass.setVertexBuffer(slot, buf, offset, size === 0 ? undefined : size);
+                const off = Number(offset);
+                const sz  = Number(size);
+                pass.setVertexBuffer(slot, buf, off, sz === 0 ? undefined : sz);
             },
 
-            // void wgpuRenderPassEncoderSetIndexBuffer(encoder, buffer, format, offset, size)
-            render_pass_set_index_buffer(encoder, buffer, format, offsetLo, offsetHi, sizeLo, sizeHi) {
+            // void wgpuRenderPassEncoderSetIndexBuffer(encoder, buffer, format, offset:u64, size:u64)
+            render_pass_set_index_buffer(encoder, buffer, format, offset, size) {
                 const pass = passH(encoder);
                 if (!pass) return;
                 const buf = gpuH(buffer);
                 const fmt = WGPU_INDEX_FORMAT[format] || "uint16";
-                const offset = Number(offsetLo);
-                const size = Number(sizeLo);
-                pass.setIndexBuffer(buf, fmt, offset, size === 0 ? undefined : size);
+                const off = Number(offset);
+                const sz  = Number(size);
+                pass.setIndexBuffer(buf, fmt, off, sz === 0 ? undefined : sz);
             },
 
             // void wgpuRenderPassEncoderSetViewport(encoder, x, y, width, height, minDepth, maxDepth)
@@ -3661,11 +3869,10 @@ class WAPI {
 
             // --- Buffer functions ---
 
-            buffer_get_mapped_range(buffer, offsetLo, offsetHi, sizeLo, sizeHi) {
-                // Returns a pointer into wasm linear memory where the mapped data is
-                // This is complex in browser WebGPU - the mapped range is a JS ArrayBuffer,
-                // not wasm memory. We'd need to copy. Return 0 for now.
-                // TODO: proper buffer mapping with staging
+            // void* wgpuBufferGetMappedRange(WGPUBuffer buffer, size_t offset, size_t size)
+            // wasm32: size_t is i32 (NOT i64). Signature: (i32, i32, i32) -> i32.
+            // Full impl requires bouncing JS ArrayBuffer into linear memory; stub 0.
+            buffer_get_mapped_range(buffer, offset, size) {
                 return 0;
             },
 
@@ -3952,44 +4159,30 @@ class WAPI {
         const WAPI_INPUT_HANDLE_POINTER  = 0x10000003;
 
         const wapi_input = {
-            // ---- Device enumeration ------------------------------------
-            device_count(type) {
-                // type: 0=mouse, 1=keyboard, 2=touch, 3=pen, 4=gamepad, 5=pointer, 6=hid
-                if (type === 0 || type === 1 || type === 5) return 1;
-                return 0;
-            },
-            device_open(type, index, outHandlePtr) {
-                if (index !== 0) return WAPI_ERR_RANGE;
-                let handle;
-                if (type === 0)      handle = WAPI_INPUT_HANDLE_MOUSE;
-                else if (type === 1) handle = WAPI_INPUT_HANDLE_KEYBOARD;
-                else if (type === 5) handle = WAPI_INPUT_HANDLE_POINTER;
-                else return WAPI_ERR_NOTSUP;
-                self._writeI32(outHandlePtr, handle);
-                return WAPI_OK;
-            },
-            device_close(handle) { return WAPI_OK; },
-            device_get_type(handle) {
-                if (handle === WAPI_INPUT_HANDLE_MOUSE)    return 0;
-                if (handle === WAPI_INPUT_HANDLE_KEYBOARD) return 1;
-                if (handle === WAPI_INPUT_HANDLE_POINTER)  return 5;
+            // ---- Endpoint lifecycle (endpoints come from ROLE_REQUEST) --
+            close(handle) { return WAPI_OK; },
+            role_kind(handle) {
+                if (handle === WAPI_INPUT_HANDLE_MOUSE)    return WAPI_ROLE_MOUSE;
+                if (handle === WAPI_INPUT_HANDLE_KEYBOARD) return WAPI_ROLE_KEYBOARD;
+                if (handle === WAPI_INPUT_HANDLE_POINTER)  return WAPI_ROLE_POINTER;
                 return -1;
             },
-            device_get_uid(handle, uidPtr) {
+            uid(handle, uidPtr) {
                 self._refreshViews();
                 for (let i = 0; i < 16; i++) self._u8[uidPtr + i] = 0;
                 self._u8[uidPtr + 0] = handle & 0xFF;
                 return WAPI_OK;
             },
-            device_get_name(handle, bufPtr, bufLen, nameLenPtr) {
-                let name = "unknown";
-                if (handle === WAPI_INPUT_HANDLE_MOUSE)    name = "Browser Mouse";
-                else if (handle === WAPI_INPUT_HANDLE_KEYBOARD) name = "Browser Keyboard";
-                else if (handle === WAPI_INPUT_HANDLE_POINTER)  name = "Browser Pointer";
-                const written = self._writeString(bufPtr, bufLen, name);
+            name(handle, bufPtr, bufLen, nameLenPtr) {
+                let text = "unknown";
+                if (handle === WAPI_INPUT_HANDLE_MOUSE)    text = "Browser Mouse";
+                else if (handle === WAPI_INPUT_HANDLE_KEYBOARD) text = "Browser Keyboard";
+                else if (handle === WAPI_INPUT_HANDLE_POINTER)  text = "Browser Pointer";
+                const written = self._writeString(bufPtr, bufLen, text);
                 self._writeU32(nameLenPtr, written);
                 return WAPI_OK;
             },
+            seat(handle) { return 0; },
 
             // ---- Mouse --------------------------------------------------
             mouse_get_info(handle, infoPtr) { return WAPI_ERR_NOTSUP; },
@@ -4075,12 +4268,13 @@ class WAPI {
                 return self._pointerButtons;
             },
 
-            // ---- HID ----------------------------------------------------
-            hid_request_device(vendorId, productId, usagePage, outHandlePtr) { return WAPI_ERR_NOTSUP; },
-            hid_get_info(handle, infoPtr)                                    { return WAPI_ERR_NOTSUP; },
-            hid_send_report(handle, reportId, dataPtr, dataLen)              { return WAPI_ERR_NOTSUP; },
-            hid_send_feature_report(handle, reportId, dataPtr, dataLen)      { return WAPI_ERR_NOTSUP; },
-            hid_receive_report(handle, bufPtr, bufLen, bytesReadPtr)         { return WAPI_ERR_NOTSUP; },
+            // ---- HID -- post-grant metadata + report I/O (endpoints come from ROLE_REQUEST) -
+            hid_endpoint_info(handle, infoOut, nameBuf, nameCap, nameLenOut)    { return WAPI_ERR_NOTSUP; },
+            hid_serial(handle, bufPtr, bufLen, outLenPtr)                       { return WAPI_ERR_NOENT; },
+            hid_report_descriptor(handle, bufPtr, bufLen, outLenPtr)            { return WAPI_ERR_NOTSUP; },
+            hid_send_report(handle, reportId, dataPtr, dataLen)                 { return WAPI_ERR_NOTSUP; },
+            hid_send_feature_report(handle, reportId, dataPtr, dataLen)         { return WAPI_ERR_NOTSUP; },
+            hid_receive_report(handle, bufPtr, bufLen, bytesReadPtr)            { return WAPI_ERR_NOTSUP; },
 
             // ---- IME ----------------------------------------------------
             ime_enable(surfaceId, hint)                          { return WAPI_ERR_NOTSUP; },
@@ -4099,42 +4293,181 @@ class WAPI {
         // -------------------------------------------------------------------
         // wapi_audio (Web Audio API)
         // -------------------------------------------------------------------
-        const wapi_audio = {
-            open_device(deviceId, specPtr, deviceOutPtr) {
-                if (!self._audioCtx) {
-                    const AC = window.AudioContext || window.webkitAudioContext;
-                    if (!AC) return WAPI_ERR_NOTCAPABLE;
-                    self._audioCtx = new AC();
+        // AudioContext creation is gated on the module's first audio call
+        // (role request or create_stream). We never call ctx.resume() from
+        // a non-gesture path — Chrome prints an autoplay warning if we do.
+        // Instead, window/document-level listeners retry resume() on every
+        // pointer/key event; resume() on a running ctx is a no-op, so these
+        // stay attached permanently.
+        //
+        // Audio output uses AudioWorkletNode (not ScriptProcessorNode — SPN
+        // is deprecated and runs on the main thread). The worklet processor
+        // is loaded once per context from a blob URL. bind_stream is sync
+        // from wasm but addModule is async, so we kick off module loading
+        // in ensureAudioCtx and defer actual node construction until the
+        // promise resolves; queued data waits in stream.pending until then.
+        const _wapiAudioWorkletSrc = `
+            class WapiStreamProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    this._queue = [];
+                    this._channels = 1;
+                    this.port.onmessage = (e) => {
+                        const m = e.data;
+                        if (m.cmd === 'push')    this._queue.push(m.samples);
+                        else if (m.cmd === 'clear') this._queue = [];
+                        else if (m.cmd === 'channels') this._channels = m.n|0 || 1;
+                    };
                 }
-                const h = self.handles.insert({
-                    type: "audio_device",
-                    ctx: self._audioCtx,
-                    streams: [],
-                    paused: true,
-                });
-                self._writeI32(deviceOutPtr, h);
+                process(inputs, outputs, params) {
+                    const out = outputs[0];
+                    const frames = out[0].length;
+                    const channels = this._channels;
+                    let written = 0;
+                    while (written < frames && this._queue.length > 0) {
+                        const chunk = this._queue[0];
+                        const chunkFrames = (chunk.length / channels) | 0;
+                        const copy = Math.min(frames - written, chunkFrames);
+                        for (let ch = 0; ch < out.length; ch++) {
+                            const dst = out[ch];
+                            const srcCh = Math.min(ch, channels - 1);
+                            for (let i = 0; i < copy; i++) {
+                                dst[written + i] = chunk[i * channels + srcCh] || 0;
+                            }
+                        }
+                        written += copy;
+                        if (copy >= chunkFrames) this._queue.shift();
+                        else this._queue[0] = chunk.subarray(copy * channels);
+                    }
+                    for (let ch = 0; ch < out.length; ch++) {
+                        const dst = out[ch];
+                        for (let i = written; i < frames; i++) dst[i] = 0;
+                    }
+                    return true;
+                }
+            }
+            registerProcessor('wapi-stream', WapiStreamProcessor);
+        `;
+
+        function ensureAudioCtx() {
+            if (self._audioCtx) return self._audioCtx;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return null;
+            const ctx = new AC();
+            self._audioCtx = ctx;
+            console.log(`[WAPI] AudioContext created (state=${ctx.state}, sampleRate=${ctx.sampleRate})`);
+
+            const unlock = () => {
+                if (ctx.state !== "running") {
+                    ctx.resume().then(
+                        () => console.log("[WAPI] AudioContext resumed by user gesture"),
+                        (e) => console.warn("[WAPI] AudioContext resume failed:", e),
+                    );
+                }
+            };
+            for (const t of [window, document]) {
+                for (const e of ["pointerdown", "keydown", "touchstart", "mousedown", "click"]) {
+                    try { t.addEventListener(e, unlock, { capture: true, passive: true }); }
+                    catch { /* passive rejection on some targets — ignore */ }
+                }
+            }
+
+            // Kick off the worklet module. Streams that bind before this
+            // resolves enqueue their chunks in stream.buffer; the resolve
+            // handler materializes their AudioWorkletNodes and drains the
+            // backlog.
+            const blobUrl = URL.createObjectURL(
+                new Blob([_wapiAudioWorkletSrc], { type: "application/javascript" })
+            );
+            self._audioWorkletReady = ctx.audioWorklet.addModule(blobUrl).then(
+                () => {
+                    console.log("[WAPI] AudioWorklet module ready");
+                    self._audioWorkletReadyFlag = true;
+                    for (const s of self._audioPendingBinds) _wapiMaterializeStream(s);
+                    self._audioPendingBinds.length = 0;
+                },
+                (e) => {
+                    console.error("[WAPI] AudioWorklet addModule failed:", e);
+                    self._audioWorkletReadyFlag = false;
+                },
+            );
+            return ctx;
+        }
+
+        // Build an AudioWorkletNode for a stream that was bound before the
+        // worklet module resolved. Connects to destination, flushes any
+        // chunks queued in stream.buffer to the node's port, and stores
+        // the node on the stream so future put_stream_data goes straight
+        // to the audio thread.
+        function _wapiMaterializeStream(stream) {
+            const ctx = self._audioCtx;
+            if (!ctx || stream.node) return;
+            const node = new AudioWorkletNode(ctx, "wapi-stream", {
+                numberOfInputs: 0,
+                numberOfOutputs: 1,
+                outputChannelCount: [Math.max(1, stream.channels | 0)],
+            });
+            node.port.postMessage({ cmd: "channels", n: stream.channels });
+            node.connect(ctx.destination);
+            stream.node = node;
+            // Drain any samples queued before the node existed.
+            for (const chunk of stream.buffer) {
+                node.port.postMessage({ cmd: "push", samples: chunk }, [chunk.buffer]);
+            }
+            stream.buffer.length = 0;
+        }
+
+        if (!self._audioPendingBinds) self._audioPendingBinds = [];
+
+        // Shared creator used by the ROLE_REQUEST handler to allocate an
+        // audio endpoint handle on behalf of role dispatch.
+        function wapi_audio_open_default_endpoint() {
+            if (!ensureAudioCtx()) return 0;
+            return self.handles.insert({
+                type: "audio_device",
+                ctx: self._audioCtx,
+                streams: [],
+                paused: true,
+            });
+        }
+
+        const wapi_audio = {
+            endpoint_info(handle, infoOut, nameBuf, nameCap, nameLenOut) {
+                const obj = self.handles.get(handle);
+                if (!obj || obj.type !== "audio_device") return WAPI_ERR_BADF;
+                self._refreshViews();
+                // wapi_audio_endpoint_info_t (32B): native_spec(12) + form(4) + uid[16]
+                const sr = obj.ctx ? (obj.ctx.sampleRate | 0) : 48000;
+                self._writeU32(infoOut + 0, WAPI_AUDIO_F32);
+                self._writeI32(infoOut + 4, 2);
+                self._writeI32(infoOut + 8, sr);
+                self._writeU32(infoOut + 12, 0); // form: unknown
+                for (let i = 0; i < 16; i++) self._u8[infoOut + 16 + i] = 0;
+                const text = "Default Audio Device";
+                const written = self._writeString(nameBuf, nameCap, text);
+                self._writeU64(nameLenOut, BigInt(text.length));
                 return WAPI_OK;
             },
 
-            close_device(deviceHandle) {
-                const obj = self.handles.remove(deviceHandle);
+            close(handle) {
+                const obj = self.handles.remove(handle);
                 if (!obj) return WAPI_ERR_BADF;
-                // Don't close the shared AudioContext
+                // Shared AudioContext is kept alive across handles.
                 return WAPI_OK;
             },
 
-            resume_device(deviceHandle) {
-                const obj = self.handles.get(deviceHandle);
+            resume(handle) {
+                const obj = self.handles.get(handle);
                 if (!obj || obj.type !== "audio_device") return WAPI_ERR_BADF;
                 obj.paused = false;
-                if (obj.ctx.state === "suspended") {
-                    obj.ctx.resume().catch(() => {});
-                }
+                // Don't call ctx.resume() here — wapi_main is not a user
+                // gesture, so Chrome would print an autoplay warning. The
+                // gesture listener in ensureAudioCtx handles resume.
                 return WAPI_OK;
             },
 
-            pause_device(deviceHandle) {
-                const obj = self.handles.get(deviceHandle);
+            pause(handle) {
+                const obj = self.handles.get(handle);
                 if (!obj || obj.type !== "audio_device") return WAPI_ERR_BADF;
                 obj.paused = true;
                 return WAPI_OK;
@@ -4146,21 +4479,21 @@ class WAPI {
                 const srcChannels = self._readI32(srcSpecPtr + 4);
                 const srcFreq     = self._readI32(srcSpecPtr + 8);
 
-                if (!self._audioCtx) {
-                    const AC = window.AudioContext || window.webkitAudioContext;
-                    if (!AC) return WAPI_ERR_NOTCAPABLE;
-                    self._audioCtx = new AC();
-                }
+                if (!ensureAudioCtx()) return WAPI_ERR_NOTCAPABLE;
 
                 const h = self.handles.insert({
                     type: "audio_stream",
                     srcFormat,
-                    channels: srcChannels,
+                    channels: srcChannels || 1,
                     sampleRate: srcFreq,
-                    buffer: [],       // queued Float32Array chunks
-                    totalBytes: 0,
+                    buffer: [],        // pending Float32 chunks before node exists
+                    node: null,
                     deviceHandle: null,
-                    scriptNode: null,
+                    // Time-based queue accounting. endTime is the absolute
+                    // ctx.currentTime at which the last sample pushed so far
+                    // will have finished playing. stream_queued answers from
+                    // this, converted back to source bytes.
+                    endTime: 0,
                 });
                 self._writeI32(streamOutPtr, h);
                 return WAPI_OK;
@@ -4169,10 +4502,7 @@ class WAPI {
             destroy_stream(streamHandle) {
                 const obj = self.handles.remove(streamHandle);
                 if (!obj) return WAPI_ERR_BADF;
-                if (obj.scriptNode) {
-                    obj.scriptNode.disconnect();
-                    obj.scriptNode = null;
-                }
+                if (obj.node) { obj.node.disconnect(); obj.node = null; }
                 return WAPI_OK;
             },
 
@@ -4182,65 +4512,41 @@ class WAPI {
                 if (!dev || !stream) return WAPI_ERR_BADF;
 
                 stream.deviceHandle = deviceHandle;
-                const ctx = dev.ctx;
-                const bufSize = 4096;
-                const channels = stream.channels;
-
-                // Use ScriptProcessorNode (AudioWorklet would be better but
-                // requires a separate JS file served from a URL)
-                const node = ctx.createScriptProcessor(bufSize, 0, channels);
-                node.onaudioprocess = (e) => {
-                    if (dev.paused) return;
-                    const output = e.outputBuffer;
-                    const framesNeeded = output.length;
-
-                    for (let ch = 0; ch < channels; ch++) {
-                        const out = output.getChannelData(ch);
-                        let written = 0;
-                        while (written < framesNeeded && stream.buffer.length > 0) {
-                            const chunk = stream.buffer[0];
-                            const available = chunk.length / channels - 0;
-                            const toCopy = Math.min(framesNeeded - written, chunk.length / channels);
-                            for (let i = 0; i < toCopy; i++) {
-                                out[written + i] = chunk[i * channels + ch] || 0;
-                            }
-                            written += toCopy;
-                            if (toCopy * channels >= chunk.length) {
-                                stream.buffer.shift();
-                            } else {
-                                stream.buffer[0] = chunk.subarray(toCopy * channels);
-                            }
-                        }
-                        // Fill remainder with silence
-                        for (let i = written; i < framesNeeded; i++) {
-                            out[i] = 0;
-                        }
-                    }
-                };
-                node.connect(ctx.destination);
-                stream.scriptNode = node;
                 dev.streams.push(streamHandle);
 
+                // Need an AudioWorkletNode; worklet module may not be
+                // registered yet. If not, stash stream for later. Once
+                // addModule resolves, _wapiMaterializeStream creates the
+                // node and flushes stream.buffer to its port.
+                if (self._audioWorkletReadyFlag) {
+                    _wapiMaterializeStream(stream);
+                    console.log(`[WAPI] bound stream ${streamHandle} (${stream.channels}ch @ ${stream.sampleRate}Hz) — node ready`);
+                } else {
+                    self._audioPendingBinds.push(stream);
+                    console.log(`[WAPI] bound stream ${streamHandle} (${stream.channels}ch @ ${stream.sampleRate}Hz) — deferred until worklet ready`);
+                }
                 return WAPI_OK;
             },
 
             unbind_stream(streamHandle) {
                 const stream = self.handles.get(streamHandle);
                 if (!stream) return WAPI_ERR_BADF;
-                if (stream.scriptNode) {
-                    stream.scriptNode.disconnect();
-                    stream.scriptNode = null;
-                }
+                if (stream.node) { stream.node.disconnect(); stream.node = null; }
+                const idx = self._audioPendingBinds.indexOf(stream);
+                if (idx >= 0) self._audioPendingBinds.splice(idx, 1);
                 stream.deviceHandle = null;
                 return WAPI_OK;
             },
 
-            put_stream_data(streamHandle, bufPtr, len) {
+            // wapi_result_t wapi_audio_put_stream_data(handle stream, const void* buf, wapi_size_t len)
+            // wapi_size_t is uint64_t — JS receives it as a BigInt. Normalize to Number.
+            put_stream_data(streamHandle, bufPtr, lenArg) {
                 const stream = self.handles.get(streamHandle);
                 if (!stream || stream.type !== "audio_stream") return WAPI_ERR_BADF;
 
                 self._refreshViews();
                 const srcFormat = stream.srcFormat;
+                const len = Number(lenArg);
 
                 // Convert incoming data to Float32Array
                 let floats;
@@ -4271,8 +4577,54 @@ class WAPI {
                     return WAPI_ERR_INVAL;
                 }
 
-                stream.buffer.push(floats);
-                stream.totalBytes += len;
+                // The worklet's output runs at ctx.sampleRate. Resample
+                // the stream's declared rate to match, otherwise playback
+                // pitch/duration drifts (22050 Hz source played at 48 kHz
+                // sounds ~2× fast and half as long).
+                const ctxRate = self._audioCtx ? self._audioCtx.sampleRate : stream.sampleRate;
+                if (ctxRate !== stream.sampleRate && stream.sampleRate > 0) {
+                    const channels = stream.channels;
+                    const srcFrames = (floats.length / channels) | 0;
+                    const ratio = stream.sampleRate / ctxRate;
+                    const dstFrames = Math.max(1, Math.floor(srcFrames / ratio));
+                    const resampled = new Float32Array(dstFrames * channels);
+                    for (let f = 0; f < dstFrames; f++) {
+                        const s = f * ratio;
+                        const i0 = Math.floor(s);
+                        const i1 = Math.min(i0 + 1, srcFrames - 1);
+                        const t = s - i0;
+                        for (let c = 0; c < channels; c++) {
+                            const a = floats[i0 * channels + c];
+                            const b = floats[i1 * channels + c];
+                            resampled[f * channels + c] = a + (b - a) * t;
+                        }
+                    }
+                    floats = resampled;
+                }
+
+                // Time-based queue accounting. Used by stream_queued so the
+                // caller (e.g. pump_music) can pace its pushes against what
+                // the audio thread has yet to consume.
+                const ctx = self._audioCtx;
+                if (ctx) {
+                    const durSec = (floats.length / stream.channels) / ctxRate;
+                    if (stream.endTime < ctx.currentTime) stream.endTime = ctx.currentTime;
+                    stream.endTime += durSec;
+                }
+
+                if (stream.node) {
+                    // Transfer the underlying buffer to the worklet thread
+                    // (zero copy). floats is a freshly-allocated array, so
+                    // detaching it is safe.
+                    stream.node.port.postMessage(
+                        { cmd: "push", samples: floats },
+                        [floats.buffer],
+                    );
+                } else {
+                    // Node not yet materialized — queue for drain in
+                    // _wapiMaterializeStream.
+                    stream.buffer.push(floats);
+                }
                 return WAPI_OK;
             },
 
@@ -4283,45 +4635,304 @@ class WAPI {
             },
 
             stream_available(streamHandle) {
-                const stream = self.handles.get(streamHandle);
-                if (!stream) return 0;
-                let total = 0;
-                for (const chunk of stream.buffer) total += chunk.length * 4;
-                return total;
-            },
-
-            stream_queued(streamHandle) {
-                const stream = self.handles.get(streamHandle);
-                if (!stream) return 0;
-                // Report how much more we can accept (essentially unlimited)
-                return 65536;
-            },
-
-            open_device_stream(deviceId, specPtr, deviceOutPtr, streamOutPtr) {
-                let r = wapi_audio.open_device(deviceId, specPtr, deviceOutPtr);
-                if (r !== WAPI_OK) return r;
-                r = wapi_audio.create_stream(specPtr, 0, streamOutPtr);
-                if (r !== WAPI_OK) return r;
-                self._refreshViews();
-                const devH = self._readI32(deviceOutPtr);
-                const strH = self._readI32(streamOutPtr);
-                return wapi_audio.bind_stream(devH, strH);
-            },
-
-            playback_device_count() {
-                return 1; // Default device
-            },
-
-            recording_device_count() {
+                // Playback stream: capture path has nothing to offer.
                 return 0;
             },
 
-            device_name(deviceId, bufPtr, bufLen, nameLenPtr) {
-                const name = "Default Audio Device";
-                const written = self._writeString(bufPtr, bufLen, name);
-                self._writeU32(nameLenPtr, written);
-                return WAPI_OK;
+            // int32_t: bytes currently queued in SOURCE format, matching
+            // what put_stream_data was given. Lets callers pace pushes
+            // without knowing about internal resampling.
+            stream_queued(streamHandle) {
+                const stream = self.handles.get(streamHandle);
+                if (!stream) return 0;
+                const ctx = self._audioCtx;
+                if (!ctx) return 0;
+                const remainingSec = Math.max(0, stream.endTime - ctx.currentTime);
+                const bytesPerSample = _wapiAudioBytesPerSample(stream.srcFormat);
+                if (!bytesPerSample) return 0;
+                const bytesPerSec = stream.sampleRate * bytesPerSample * stream.channels;
+                return Math.floor(remainingSec * bytesPerSec) | 0;
             },
+
+        };
+
+        // -------------------------------------------------------------------
+        // env: vanilla webgpu.h direct imports (wasm32 C ABI)
+        // -------------------------------------------------------------------
+        // Guests that #include <webgpu/webgpu.h> without adding import-module
+        // attributes emit `wgpuXxx` names under module "env". Mirrors
+        // wapi_host_wgpu.c:wapi_host_register_wgpu on the desktop side.
+        // Per-resource ops delegate to the wapi_wgpu snake_case helpers;
+        // instance/adapter/surface/queue acquisition lives here.
+
+        let _wgpuInstanceHandle = 0;
+        const _wgpuPendingCBs = [];
+        let _wgpuNextFuture = 1n;
+
+        const _wgpuPushStringView = (msg) => {
+            let strPtr = 0, len = 0;
+            if (msg) {
+                const encoded = new TextEncoder().encode(msg);
+                len = encoded.length;
+                strPtr = self._hostAlloc(len || 1, 1);
+                self._refreshViews();
+                self._u8.set(encoded, strPtr);
+            }
+            const svPtr = self._hostAlloc(8, 4);
+            self._refreshViews();
+            self._dv.setUint32(svPtr + 0, strPtr, true);
+            self._dv.setUint32(svPtr + 4, len, true);
+            return svPtr;
+        };
+
+        const _wgpuEnqueueCB = (funcref, status, handle, msg, ud1, ud2) => {
+            _wgpuPendingCBs.push({
+                funcref, status, handle,
+                msgSvPtr: _wgpuPushStringView(msg),
+                ud1, ud2,
+            });
+        };
+
+        const env = {
+            /* ---- Instance / Adapter / Device / Queue ---- */
+            wgpuCreateInstance(_descPtr) {
+                if (!_wgpuInstanceHandle) {
+                    _wgpuInstanceHandle = self.handles.insert({
+                        type: "gpu_instance",
+                        gpuObj: { _isWgpuInstance: true },
+                    });
+                }
+                return _wgpuInstanceHandle;
+            },
+
+            wgpuInstanceRelease(_instance) { return 0; },
+
+            wgpuInstanceProcessEvents(_instance) {
+                const table = self.instance.exports.__indirect_function_table;
+                if (!table) return;
+                while (_wgpuPendingCBs.length > 0) {
+                    const p = _wgpuPendingCBs.shift();
+                    try {
+                        const fn = table.get(p.funcref);
+                        if (fn) fn(p.status, p.handle, p.msgSvPtr, p.ud1, p.ud2);
+                    } catch (e) {
+                        console.error("[wgpu] callback trap:", e);
+                    }
+                }
+            },
+
+            /* WGPURequestAdapterCallbackInfo wasm32:
+             *   +0 nextInChain, +4 mode, +8 callback (funcref),
+             *  +12 userdata1, +16 userdata2 */
+            wgpuInstanceRequestAdapter(_instance, _optsPtr, cbInfoPtr) {
+                self._refreshViews();
+                const funcref = self._readU32(cbInfoPtr + 8);
+                const ud1     = self._readU32(cbInfoPtr + 12);
+                const ud2     = self._readU32(cbInfoPtr + 16);
+                const adapter = self._gpuAdapter;
+                let handle = 0;
+                const status = adapter ? 1 : 0; /* Success : Unavailable */
+                if (adapter) {
+                    handle = self.handles.insert({ type: "gpu_adapter", gpuObj: adapter });
+                }
+                _wgpuEnqueueCB(funcref, status, handle, null, ud1, ud2);
+                return _wgpuNextFuture++;
+            },
+
+            wgpuAdapterRequestDevice(_adapter, _descPtr, cbInfoPtr) {
+                self._refreshViews();
+                const funcref = self._readU32(cbInfoPtr + 8);
+                const ud1     = self._readU32(cbInfoPtr + 12);
+                const ud2     = self._readU32(cbInfoPtr + 16);
+                const device = self._gpuDevice;
+                let handle = 0;
+                const status = device ? 1 : 0; /* Success : Error */
+                if (device) {
+                    handle = self.handles.insert({ type: "gpu_device", gpuObj: device });
+                }
+                _wgpuEnqueueCB(funcref, status, handle, null, ud1, ud2);
+                return _wgpuNextFuture++;
+            },
+
+            wgpuDeviceGetQueue(device) {
+                const entry = self.handles.get(device);
+                const dev = (entry && entry.gpuObj) ? entry.gpuObj : self._gpuDevice;
+                if (!dev) return 0;
+                return self.handles.insert({ type: "gpu_queue", gpuObj: dev.queue });
+            },
+
+            wgpuDeviceRelease(_h)  { return 0; },
+            wgpuAdapterRelease(_h) { return 0; },
+            wgpuQueueRelease(_h)   { return 0; },
+
+            /* ---- Surface ---- */
+            /* WGPUSurfaceDescriptor wasm32:
+             *   +0 u32 nextInChain, +4 WGPUStringView label (8).
+             * Chain walk for WAPI_STYPE_GPU_SURFACE_SOURCE_WAPI (0x0101):
+             *   wapi_chain_t: u64 next + u32 sType + u32 _pad (16B)
+             *   wapi_gpu_surface_source_t: chain(16) + i32 surface + u32 _pad (24B) */
+            wgpuInstanceCreateSurface(_instance, descPtr) {
+                self._refreshViews();
+                let chainPtr = self._readU32(descPtr + 0);
+                let wapiSurfaceHandle = 0;
+                while (chainPtr) {
+                    const next  = Number(self._dv.getBigUint64(chainPtr + 0, true));
+                    const stype = self._readU32(chainPtr + 8);
+                    if (stype === 0x0101) {
+                        wapiSurfaceHandle = self._dv.getInt32(chainPtr + 16, true);
+                        break;
+                    }
+                    chainPtr = next;
+                }
+                const surfInfo = self._surfaces.get(wapiSurfaceHandle);
+                if (!surfInfo) {
+                    console.error("[wgpu] wgpuInstanceCreateSurface: WAPI surface chain missing");
+                    return 0;
+                }
+                return self.handles.insert({
+                    type: "gpu_surface",
+                    gpuObj: { canvas: surfInfo.canvas, ctx: null, config: null },
+                    wapiSurface: wapiSurfaceHandle,
+                });
+            },
+
+            wgpuSurfaceRelease(surface) {
+                self.handles.remove(surface);
+                return 0;
+            },
+
+            /* WGPUSurfaceConfiguration wasm32 (48B):
+             *  +0 nextInChain, +4 device, +8 format, +16 usage(u64),
+             * +24 width, +28 height, +32 viewFormatCount, +36 viewFormats,
+             * +40 alphaMode, +44 presentMode */
+            wgpuSurfaceConfigure(surface, cfgPtr) {
+                self._refreshViews();
+                const entry = self.handles.get(surface);
+                if (!entry || !entry.gpuObj) return;
+                const deviceH = self._readI32(cfgPtr + 4);
+                const formatId = self._readU32(cfgPtr + 8);
+                const width  = self._readU32(cfgPtr + 24);
+                const height = self._readU32(cfgPtr + 28);
+                const alphaId = self._readU32(cfgPtr + 40);
+                const devEntry = self.handles.get(deviceH);
+                const device = (devEntry && devEntry.gpuObj) || self._gpuDevice;
+                if (!device) return;
+                const format = tpFormatToGPU(formatId);
+                /* WGPUCompositeAlphaMode → GPUCanvasAlphaMode.
+                 *   0=Auto, 1=Opaque, 2=Premultiplied, 3=Unpremultiplied, 4=Inherit.
+                 * Browser accepts only "opaque" | "premultiplied"; others collapse. */
+                const alphaMode = (alphaId === 2 || alphaId === 3) ? "premultiplied" : "opaque";
+                const ctx = entry.gpuObj.canvas.getContext("webgpu");
+                if (!ctx) return;
+                if (width > 0)  entry.gpuObj.canvas.width  = width;
+                if (height > 0) entry.gpuObj.canvas.height = height;
+                ctx.configure({ device, format, alphaMode });
+                entry.gpuObj.ctx = ctx;
+                entry.gpuObj.config = { device, format, alphaMode, width, height };
+            },
+
+            /* WGPUSurfaceCapabilities wasm32 (40B):
+             *   +0 next/_pad(8), +8 usages(u64),
+             *  +16 formatCount, +20 formats, +24 presentModeCount, +28 presentModes,
+             *  +32 alphaModeCount, +36 alphaModes */
+            wgpuSurfaceGetCapabilities(_surface, _adapter, outPtr) {
+                self._refreshViews();
+                const preferred = navigator.gpu.getPreferredCanvasFormat();
+                const formatsOff = self._hostAlloc(4, 4);
+                self._refreshViews();
+                self._writeU32(formatsOff, gpuFormatToTP(preferred));
+                const pmOff = self._hostAlloc(4, 4);
+                self._refreshViews();
+                self._writeU32(pmOff, 2); /* WGPUPresentMode_Fifo */
+                const amOff = self._hostAlloc(8, 4);
+                self._refreshViews();
+                self._writeU32(amOff + 0, 2); /* Opaque */
+                self._writeU32(amOff + 4, 3); /* Premultiplied */
+                self._writeU32(outPtr + 0, 0);
+                self._writeU32(outPtr + 4, 0);
+                self._dv.setBigUint64(outPtr + 8, 0x10n, true); /* RenderAttachment */
+                self._writeU32(outPtr + 16, 1);
+                self._writeU32(outPtr + 20, formatsOff);
+                self._writeU32(outPtr + 24, 1);
+                self._writeU32(outPtr + 28, pmOff);
+                self._writeU32(outPtr + 32, 2);
+                self._writeU32(outPtr + 36, amOff);
+                return 1; /* WGPUStatus_Success */
+            },
+
+            /* WGPUSurfaceTexture wasm32:
+             *   +0 nextInChain, +4 texture handle, +8 status */
+            wgpuSurfaceGetCurrentTexture(surface, outPtr) {
+                self._refreshViews();
+                const entry = self.handles.get(surface);
+                if (!entry || !entry.gpuObj || !entry.gpuObj.ctx) {
+                    self._writeU32(outPtr + 0, 0);
+                    self._writeU32(outPtr + 4, 0);
+                    self._writeU32(outPtr + 8, 4); /* Timeout */
+                    return;
+                }
+                const texture = entry.gpuObj.ctx.getCurrentTexture();
+                const th = self.handles.insert({ type: "gpu_texture", gpuObj: texture });
+                self._writeU32(outPtr + 0, 0);
+                self._writeU32(outPtr + 4, th);
+                self._writeU32(outPtr + 8, 1); /* SuccessOptimal */
+            },
+
+            wgpuSurfacePresent(_surface) { return 0; },
+
+            /* ---- Per-resource ops: delegate to wapi_wgpu snake_case impls ---- */
+            wgpuDeviceCreateShaderModule:        wapi_wgpu.device_create_shader_module,
+            wgpuDeviceCreateBuffer:              wapi_wgpu.device_create_buffer,
+            wgpuDeviceCreateTexture:             wapi_wgpu.device_create_texture,
+            wgpuDeviceCreateSampler:             wapi_wgpu.device_create_sampler,
+            wgpuDeviceCreateBindGroupLayout:     wapi_wgpu.device_create_bind_group_layout,
+            wgpuDeviceCreatePipelineLayout:      wapi_wgpu.device_create_pipeline_layout,
+            wgpuDeviceCreateBindGroup:           wapi_wgpu.device_create_bind_group,
+            wgpuDeviceCreateRenderPipeline:      wapi_wgpu.device_create_render_pipeline,
+            wgpuDeviceCreateComputePipeline:     wapi_wgpu.device_create_compute_pipeline,
+            wgpuDeviceCreateQuerySet:            wapi_wgpu.device_create_query_set,
+            wgpuDeviceCreateCommandEncoder:      wapi_wgpu.device_create_command_encoder,
+            wgpuCommandEncoderBeginRenderPass:   wapi_wgpu.command_encoder_begin_render_pass,
+            wgpuCommandEncoderBeginComputePass:  wapi_wgpu.command_encoder_begin_compute_pass,
+            wgpuCommandEncoderCopyBufferToBuffer:  wapi_wgpu.command_encoder_copy_buffer_to_buffer,
+            wgpuCommandEncoderCopyBufferToTexture: wapi_wgpu.command_encoder_copy_buffer_to_texture,
+            wgpuCommandEncoderCopyTextureToBuffer: wapi_wgpu.command_encoder_copy_texture_to_buffer,
+            wgpuCommandEncoderCopyTextureToTexture: wapi_wgpu.command_encoder_copy_texture_to_texture,
+            wgpuCommandEncoderFinish:            wapi_wgpu.command_encoder_finish,
+            wgpuRenderPassEncoderSetPipeline:    wapi_wgpu.render_pass_set_pipeline,
+            wgpuRenderPassEncoderSetBindGroup:   wapi_wgpu.render_pass_set_bind_group,
+            wgpuRenderPassEncoderSetVertexBuffer:wapi_wgpu.render_pass_set_vertex_buffer,
+            wgpuRenderPassEncoderSetIndexBuffer: wapi_wgpu.render_pass_set_index_buffer,
+            wgpuRenderPassEncoderDraw:           wapi_wgpu.render_pass_draw,
+            wgpuRenderPassEncoderDrawIndexed:    wapi_wgpu.render_pass_draw_indexed,
+            wgpuRenderPassEncoderEnd:            wapi_wgpu.render_pass_end,
+            wgpuRenderPassEncoderRelease:        wapi_wgpu.render_pass_encoder_release,
+            wgpuRenderPassEncoderSetScissorRect: wapi_wgpu.render_pass_set_scissor_rect,
+            wgpuRenderPassEncoderSetViewport:    wapi_wgpu.render_pass_set_viewport,
+            wgpuComputePassEncoderSetPipeline:   wapi_wgpu.compute_pass_set_pipeline,
+            wgpuComputePassEncoderSetBindGroup:  wapi_wgpu.compute_pass_set_bind_group,
+            wgpuComputePassEncoderDispatchWorkgroups: wapi_wgpu.compute_pass_dispatch_workgroups,
+            wgpuComputePassEncoderEnd:           wapi_wgpu.compute_pass_end,
+            wgpuComputePassEncoderRelease:       wapi_wgpu.compute_pass_release,
+            wgpuQueueSubmit:                     wapi_wgpu.queue_submit,
+            wgpuQueueWriteBuffer:                wapi_wgpu.queue_write_buffer,
+            wgpuQueueWriteTexture:               wapi_wgpu.queue_write_texture,
+            wgpuBufferGetMappedRange:            wapi_wgpu.buffer_get_mapped_range,
+            wgpuBufferUnmap:                     wapi_wgpu.buffer_unmap,
+            wgpuBufferRelease:                   wapi_wgpu.buffer_release,
+            wgpuCommandBufferRelease:            wapi_wgpu.command_buffer_release,
+            wgpuCommandEncoderRelease:           wapi_wgpu.command_encoder_release,
+            wgpuTextureCreateView:               wapi_wgpu.texture_create_view,
+            wgpuTextureViewRelease:              wapi_wgpu.texture_view_release,
+            wgpuTextureRelease:                  wapi_wgpu.texture_release,
+            wgpuBindGroupRelease:                wapi_wgpu.bind_group_release,
+            wgpuBindGroupLayoutRelease:          wapi_wgpu.bind_group_layout_release,
+            wgpuPipelineLayoutRelease:           wapi_wgpu.pipeline_layout_release,
+            wgpuSamplerRelease:                  wapi_wgpu.sampler_release,
+            wgpuShaderModuleRelease:             wapi_wgpu.shader_module_release,
+            wgpuRenderPipelineRelease:           wapi_wgpu.render_pipeline_release,
+            wgpuComputePipelineRelease:          wapi_wgpu.compute_pipeline_release,
+            wgpuQuerySetRelease:                 wapi_wgpu.query_set_release,
         };
 
         // -------------------------------------------------------------------
@@ -5085,17 +5696,7 @@ class WAPI {
                 }
 
                 try {
-                    const imports = self._buildImports();
-                    // WebAssembly.instantiate is async when given a
-                    // Module, but instantiate() with a compiled Module
-                    // has a sync form: `new WebAssembly.Instance(...)`.
-                    const inst = new WebAssembly.Instance(entry.module, imports);
-                    const handle = self.handles.insert({
-                        type: "module",
-                        instance: inst,
-                        module: entry.module,
-                        hash: hashHex,
-                    });
+                    const handle = self._instantiateChildModule(entry.module, hashHex);
                     self._writeI32(modulePtr, handle);
                     return WAPI_OK;
                 } catch (e) {
@@ -5103,7 +5704,27 @@ class WAPI {
                     return WAPI_ERR_IO;
                 }
             },
-            get_func(mod, nameSvPtr, funcPtr) { return WAPI_ERR_NOTSUP; },
+            // (i32 mod, i32 name_sv_ptr, i32 func_ptr_out) -> i32
+            // The name stringview is in the CALLER'S memory (the parent),
+            // so using self._readStringView is correct here.
+            get_func(mod, nameSvPtr, funcOutPtr) {
+                const entry = self.handles.get(mod);
+                if (!entry) return WAPI_ERR_BADF;
+                const inst = entry.instance;
+                if (!inst) return WAPI_ERR_BADF;
+                self._refreshViews();
+                const name = self._readStringView(nameSvPtr);
+                const fn = inst.exports[name];
+                if (typeof fn !== "function") return WAPI_ERR_NOENT;
+                const h = self.handles.insert({
+                    type: "module_func",
+                    module: mod,
+                    name,
+                    fn,
+                });
+                self._writeI32(funcOutPtr, h);
+                return WAPI_OK;
+            },
             get_desc(mod, descPtr) { return WAPI_ERR_NOTSUP; },
             get_hash(mod, hashPtr) {
                 self._refreshViews();
@@ -5118,84 +5739,238 @@ class WAPI {
             release(mod) {
                 const entry = self.handles.get(mod);
                 if (!entry) return WAPI_OK;
-                if (entry.type === "module") {
-                    self.handles.remove(mod);
-                } else if (entry.type === "service") {
-                    // Notify SW to decrement refcount; drop local handle
-                    // regardless of reply (fire-and-forget).
-                    _wapiExtPost("services.release", { handle: entry.swHandle });
-                    self.handles.remove(mod);
+                self.handles.remove(mod);
+                if (entry.type === "module" && entry.serviceKey) {
+                    const svc = _wapiPageServices.get(entry.serviceKey);
+                    if (svc && --svc.refcount <= 0) {
+                        _wapiPageServices.delete(entry.serviceKey);
+                        _wapiExtPost("services.withdraw", {
+                            hashHex: svc.hashHex, name: svc.name,
+                        });
+                        console.log(`[WAPI] service released ${svc.hashHex.slice(0,10)}… (${svc.name || "default"})`);
+                    }
                 }
                 return WAPI_OK;
             },
 
             // (i32 hash_ptr, i32 url_sv_ptr, i32 name_sv_ptr, i32 module_out_ptr) -> i32
             //
-            // Service-mode join. First call kicks off an async SW round
-            // trip and returns WAPI_ERR_AGAIN. Caller polls by re-calling
-            // with the same args until WAPI_OK is returned and *module_out_ptr
-            // is populated with a service handle. See _wapiServiceJoins for
-            // the state machine.
+            // Service mode per spec §10:
+            //   - The application owns memory 1; the live child instance
+            //     must live in the same address space so shared_read/write
+            //     and call remain synchronous. That's the page.
+            //   - Intra-application sharing: if a service with the same
+            //     (hash, name) already exists in this page, attach to it
+            //     (refcount++) and return a fresh handle. The underlying
+            //     wasm Instance is NOT duplicated.
+            //   - The extension SW hosts the content-addressed bytes cache
+            //     (cross-origin), not the instance. The page announces the
+            //     service to the SW for popup observability.
             join(hashPtr, urlSvPtr, nameSvPtr, modulePtr) {
                 self._refreshViews();
                 const hashHex = _wapiReadModuleHash(self._u8, hashPtr);
                 if (!hashHex) return WAPI_ERR_INVAL;
-                const url = urlSvPtr ? self._readStringView(urlSvPtr) : null;
+                const url  = urlSvPtr  ? self._readStringView(urlSvPtr)  : "";
                 const name = nameSvPtr ? self._readStringView(nameSvPtr) : "";
-                const key = hashHex + ":" + (name || "");
+                const svcKey = hashHex + ":" + name;
 
-                const entry = _wapiServiceJoins.get(key);
-                if (entry) {
-                    if (entry.state === "pending") return WAPI_ERR_AGAIN;
-                    if (entry.state === "failed") {
-                        _wapiServiceJoins.delete(key);
-                        return WAPI_ERR_IO;
-                    }
-                    // ready
-                    const handle = self.handles.insert({
-                        type: "service",
-                        swHandle: entry.handle,
+                // 1. Intra-application attach: service already instantiated
+                // in this page.
+                const existing = _wapiPageServices.get(svcKey);
+                if (existing && existing.state === "ready") {
+                    existing.refcount++;
+                    const h = self.handles.insert({
+                        type: "module",
+                        instance: existing.instance,
+                        module: existing.module,
                         hash: hashHex,
                         name,
+                        serviceKey: svcKey,
                     });
-                    self._writeI32(modulePtr, handle);
-                    _wapiServiceJoins.delete(key);
+                    self._writeI32(modulePtr, h);
+                    _wapiExtPost("services.announce", {
+                        hashHex, name, url: existing.url,
+                        origin: (typeof window !== "undefined" && window.location)
+                                ? window.location.origin : "",
+                        refcount: existing.refcount,
+                    });
                     return WAPI_OK;
                 }
+                if (existing && existing.state === "pending") return WAPI_ERR_AGAIN;
+                if (existing && existing.state === "failed") {
+                    _wapiPageServices.delete(svcKey);
+                    return WAPI_ERR_IO;
+                }
 
-                // Kick off SW round trip.
-                _wapiServiceJoins.set(key, { state: "pending" });
-                _wapiExtSend("services.join", { hashHex, name, url }).then(
-                    (resp) => {
-                        if (resp && typeof resp.handle === "number") {
-                            _wapiServiceJoins.set(key, {
-                                state: "ready",
-                                handle: resp.handle,
-                            });
-                        } else {
-                            _wapiServiceJoins.set(key, {
-                                state: "failed",
-                                error: (resp && resp.error) || "no response",
-                            });
+                // 2. Need to instantiate. Do we have bytes?
+                const cached = _wapiModuleCache.get(hashHex);
+                if (cached && cached.state === "ready") {
+                    try {
+                        const handle = self._instantiateChildModule(cached.module, hashHex, name);
+                        const entry  = self.handles.get(handle);
+                        const svc = {
+                            state:     "ready",
+                            module:    entry.module,
+                            instance:  entry.instance,
+                            refcount:  1,
+                            hashHex,  name,  url,
+                        };
+                        _wapiPageServices.set(svcKey, svc);
+                        // Mark the handle as belonging to this service so
+                        // release decrements the right refcount.
+                        entry.serviceKey = svcKey;
+                        self._writeI32(modulePtr, handle);
+                        _wapiExtPost("services.announce", {
+                            hashHex, name, url,
+                            origin: (typeof window !== "undefined" && window.location)
+                                    ? window.location.origin : "",
+                            refcount: 1,
+                        });
+                        _wapiStartHeartbeat();
+                        console.log(`[WAPI] service started ${hashHex.slice(0,10)}… (${name || "default"})`);
+                        return WAPI_OK;
+                    } catch (e) {
+                        console.error("[WAPI] wapi_module.join instantiate failed:", e);
+                        return WAPI_ERR_IO;
+                    }
+                }
+                if (cached && cached.state === "pending") {
+                    _wapiPageServices.set(svcKey, { state: "pending", hashHex, name, url });
+                    return WAPI_ERR_AGAIN;
+                }
+
+                // 3. No bytes yet — fetch. Require URL.
+                if (!url) return WAPI_ERR_NOENT;
+                console.log(`[WAPI] fetching module ${url} (hash ${hashHex.slice(0,10)}…)`);
+                _wapiModuleCache.set(hashHex, { state: "pending" });
+                _wapiPageServices.set(svcKey, { state: "pending", hashHex, name, url });
+                _wapiFetchAndCompile(hashHex, url).then(
+                    (mod) => {
+                        console.log(`[WAPI] module compiled ${hashHex.slice(0,10)}…`);
+                        _wapiModuleCache.set(hashHex, {
+                            state: "ready", module: mod, hash: hashHex,
+                        });
+                        // Clear the stale pending service entry so the next
+                        // join iteration falls through to instantiation.
+                        const pending = _wapiPageServices.get(svcKey);
+                        if (pending && pending.state === "pending") {
+                            _wapiPageServices.delete(svcKey);
                         }
                     },
                     (err) => {
-                        _wapiServiceJoins.set(key, {
-                            state: "failed",
-                            error: String(err && err.message || err),
-                        });
+                        console.error("[WAPI] module fetch failed:", err);
+                        _wapiModuleCache.set(hashHex, { state: "failed", error: String(err) });
+                        const pending = _wapiPageServices.get(svcKey);
+                        if (pending && pending.state === "pending") {
+                            _wapiPageServices.set(svcKey, { state: "failed", hashHex, name });
+                        }
                     },
                 );
                 return WAPI_ERR_AGAIN;
             },
-            call(mod, func, argsPtr, nargs, resultsPtr, nresults) { return WAPI_ERR_NOTSUP; },
-            // Shared memory
-            shared_alloc(size, align) { return 0; },
-            shared_free(offset) { return WAPI_ERR_NOTSUP; },
-            shared_realloc(offset, newSize, align) { return 0; },
-            shared_usable_size(offset) { return 0; },
-            shared_read(srcOffset, dstPtr, len) { return WAPI_ERR_NOTSUP; },
-            shared_write(dstOffset, srcPtr, len) { return WAPI_ERR_NOTSUP; },
+            // (i32 mod, i32 func, i32 args_ptr, i64 nargs,
+            //  i32 results_ptr, i64 nresults) -> i32
+            // args/results are arrays of wapi_val_t (16 bytes each) in the
+            // CALLER's private memory.
+            call(mod, func, argsPtr, nargs, resultsPtr, nresults) {
+                const fnEntry = self.handles.get(func);
+                if (!fnEntry || fnEntry.type !== "module_func") {
+                    console.error("[WAPI] wapi_module.call: bad func handle", func);
+                    return WAPI_ERR_BADF;
+                }
+                self._refreshViews();
+
+                const nArgs = Number(nargs);
+                const jsArgs = new Array(nArgs);
+                for (let i = 0; i < nArgs; i++) {
+                    const p = Number(argsPtr) + i * 16;
+                    const kind = self._u8[p];
+                    switch (kind) {
+                        case 0: jsArgs[i] = self._dv.getInt32(p + 8, true); break;
+                        case 1: jsArgs[i] = self._dv.getBigInt64(p + 8, true); break;
+                        case 2: jsArgs[i] = self._dv.getFloat32(p + 8, true); break;
+                        case 3: jsArgs[i] = self._dv.getFloat64(p + 8, true); break;
+                        default:
+                            console.error("[WAPI] wapi_module.call: bad arg kind", kind, "at", p);
+                            return WAPI_ERR_INVAL;
+                    }
+                }
+
+                let result;
+                try {
+                    console.log(`[WAPI] call ${fnEntry.name}(`, ...jsArgs, `)`);
+                    result = fnEntry.fn(...jsArgs);
+                    console.log(`[WAPI] call ${fnEntry.name} -> ${result}`);
+                } catch (e) {
+                    console.error(`[WAPI] call ${fnEntry.name} trapped:`, e);
+                    return WAPI_ERR_UNKNOWN;
+                }
+
+                const nRes = Number(nresults);
+                if (nRes > 0 && resultsPtr) {
+                    // Single-value writeback; the common case. Multi-return
+                    // is not exercised by current modules.
+                    const p = Number(resultsPtr);
+                    self._refreshViews();
+                    let kind = 0;
+                    if (typeof result === "bigint") kind = 1;
+                    else if (typeof result === "number" && !Number.isInteger(result)) kind = 3;
+                    self._u8[p] = kind;
+                    for (let k = 1; k < 8; k++) self._u8[p + k] = 0;
+                    switch (kind) {
+                        case 0: self._dv.setInt32    (p + 8, (result | 0),        true); break;
+                        case 1: self._dv.setBigInt64 (p + 8, BigInt(result),      true); break;
+                        case 2: self._dv.setFloat32  (p + 8, result,              true); break;
+                        case 3: self._dv.setFloat64  (p + 8, result,              true); break;
+                    }
+                }
+                return WAPI_OK;
+            },
+            // Shared memory — all callers (parent and children) route to
+            // the same arena on the shim. Per-caller memory accesses are
+            // bound in _instantiateChildModule for child instances.
+            // wapi_size_t is uint64_t in wasm, so offset/size returns must
+            // be BigInt or the engine traps with "Cannot convert … to BigInt".
+            shared_alloc(size, align) {
+                return BigInt(self._sharedAlloc(Number(size), Number(align) || 1));
+            },
+            shared_free(offset) {
+                return self._sharedFree(Number(offset));
+            },
+            shared_realloc(offset, newSize, align) {
+                const sz = Number(newSize);
+                const al = Number(align) || 1;
+                const off = Number(offset);
+                if (!off) return BigInt(self._sharedAlloc(sz, al));
+                if (sz === 0) { self._sharedFree(off); return 0n; }
+                const old = self._sharedAllocs.get(off);
+                if (!old) return 0n;
+                if (sz <= old) return BigInt(off);
+                const next = self._sharedAlloc(sz, al);
+                if (!next) return 0n;
+                self._sharedMem.copyWithin(next, off, off + old);
+                self._sharedFree(off);
+                return BigInt(next);
+            },
+            shared_usable_size(offset) {
+                return BigInt(self._sharedAllocs.get(Number(offset)) || 0);
+            },
+            // Parent-side shared memory copy. Child instances override these
+            // with closures bound to their own memory in _instantiateChildModule.
+            shared_read(srcOffset, dstPtr, len) {
+                self._refreshViews();
+                const s = Number(srcOffset), d = Number(dstPtr), n = Number(len);
+                if (s + n > self._sharedMem.length) return WAPI_ERR_RANGE || -2;
+                self._u8.set(self._sharedMem.subarray(s, s + n), d);
+                return WAPI_OK;
+            },
+            shared_write(dstOffset, srcPtr, len) {
+                self._refreshViews();
+                const d = Number(dstOffset), s = Number(srcPtr), n = Number(len);
+                if (d + n > self._sharedMem.length) return WAPI_ERR_RANGE || -2;
+                self._sharedMem.set(self._u8.subarray(s, s + n), d);
+                return WAPI_OK;
+            },
             // Borrow system
             lend(mod, offset, flags, borrowPtr) { return WAPI_ERR_NOTSUP; },
             reclaim(borrow) { return WAPI_ERR_NOTSUP; },
@@ -9320,38 +10095,8 @@ class WAPI {
         });
 
         // ====================================================================
-        // MIDI (0x090-0x093)
+        // MIDI (0x092-0x093) — send/recv. Port acquisition goes through ROLE_REQUEST.
         // ====================================================================
-
-        H.set(WAPI_IO_OP_MIDI_ACCESS_REQUEST, ({ flags, userData, self: inst }) => {
-            if (!navigator.requestMIDIAccess) return complete(inst, userData, WAPI_ERR_NOTSUP);
-            navigator.requestMIDIAccess({ sysex: !!flags }).then(
-                (a) => { inst._midiAccess = a; complete(inst, userData, WAPI_OK); },
-                () => complete(inst, userData, WAPI_ERR_ACCES)
-            );
-        });
-
-        H.set(WAPI_IO_OP_MIDI_PORT_OPEN, ({ flags, flags2, resultPtr, userData, self: inst }) => {
-            const a = inst._midiAccess;
-            if (!a) return complete(inst, userData, WAPI_ERR_BADF);
-            const coll = flags === 0 ? a.inputs : a.outputs;
-            const arr = Array.from(coll.values());
-            if (flags2 < 0 || flags2 >= arr.length) return complete(inst, userData, WAPI_ERR_OVERFLOW);
-            const port = arr[flags2];
-            const entry = { type: "midi", port, inbox: [], kind: flags };
-            if (flags === 0) {
-                port.onmidimessage = (e) => {
-                    entry.inbox.push({
-                        data: e.data,
-                        ts: BigInt(Math.round((e.timeStamp || performance.now()) * 1e6)),
-                    });
-                };
-            }
-            try { port.open && port.open(); } catch (_) {}
-            const h = inst.handles.insert(entry);
-            inst._writeI32(resultPtr, h);
-            complete(inst, userData, WAPI_OK);
-        });
 
         H.set(WAPI_IO_OP_MIDI_SEND, ({ fd, addr, len, userData, self: inst }) => {
             const e = inst.handles.get(fd);
@@ -9418,41 +10163,7 @@ class WAPI {
             } catch (_) { complete(inst, userData, WAPI_ERR_IO); }
         });
 
-        // ====================================================================
-        // CAMERA (0x0D0) — only OPEN is async; frame read is bounded-local
-        // ====================================================================
-
-        H.set(WAPI_IO_OP_CAMERA_OPEN, ({ addr, resultPtr, userData, self: inst }) => {
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                return complete(inst, userData, WAPI_ERR_NOTSUP);
-            }
-            inst._refreshViews();
-            const facing = inst._dv.getUint32(addr + 0, true);
-            const w = inst._dv.getUint32(addr + 4, true);
-            const h = inst._dv.getUint32(addr + 8, true);
-            navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: facing === 1 ? "environment" : "user",
-                    width: w > 0 ? w : undefined,
-                    height: h > 0 ? h : undefined,
-                },
-                audio: false,
-            }).then(
-                (stream) => {
-                    const video = document.createElement("video");
-                    video.srcObject = stream; video.muted = true; video.playsInline = true;
-                    video.play().catch(() => {});
-                    const canvas = document.createElement("canvas");
-                    const handle = inst.handles.insert({
-                        type: "camera", stream, video, canvas,
-                        ctx: canvas.getContext("2d"),
-                    });
-                    inst._writeI32(resultPtr, handle);
-                    complete(inst, userData, WAPI_OK);
-                },
-                (err) => complete(inst, userData, abortErr(err))
-            );
-        });
+        // CAMERA: acquisition via ROLE_REQUEST; frame read is bounded-local.
 
         // ====================================================================
         // CAPTURE (0x130)
@@ -10022,9 +10733,7 @@ class WAPI {
             });
         });
 
-        // ====================================================================
-        // SENSOR (0x2F0)
-        // ====================================================================
+        // SENSOR: acquisition via ROLE_REQUEST (see ROLE_REQUEST handler below).
 
         const SENSOR_CTORS = {
             0: typeof Accelerometer !== "undefined" ? Accelerometer : null,
@@ -10035,30 +10744,231 @@ class WAPI {
             6: typeof LinearAccelerationSensor !== "undefined" ? LinearAccelerationSensor : null,
         };
 
-        H.set(WAPI_IO_OP_SENSOR_START, ({ flags, offset, resultPtr, userData, self: inst }) => {
-            const Ctor = SENSOR_CTORS[flags];
-            if (!Ctor) return complete(inst, userData, WAPI_ERR_NOTSUP);
-            const freqBits = Number(offset);
-            const buf = new ArrayBuffer(4);
-            new DataView(buf).setUint32(0, freqBits, true);
-            const freq = new DataView(buf).getFloat32(0, true);
-            try {
-                const sensor = new Ctor({ frequency: freq > 0 ? freq : 60 });
-                const entry = { type: "sensor", sensor, kind: flags, xyz: null, scalar: null };
-                sensor.onreading = () => {
-                    const ts = BigInt(Math.round(performance.now() * 1e6));
-                    if (flags === 3 || flags === 4) {
-                        entry.scalar = { value: sensor.illuminance ?? sensor.distance ?? 0, ts };
-                    } else {
-                        entry.xyz = { x: sensor.x || 0, y: sensor.y || 0, z: sensor.z || 0, ts };
-                    }
-                };
-                sensor.onerror = () => complete(inst, userData, WAPI_ERR_IO, 0x0001 /* MORE */);
-                sensor.start();
-                const h = inst.handles.insert(entry);
-                inst._writeI32(resultPtr, h);
+        // ====================================================================
+        // ROLE_REQUEST / ROLE_REPICK (0x16 / 0x17) — spec §9.10
+        //
+        // Reads an array of wapi_role_request_t (56B each) from addr,
+        // fulfills each role via a Web API, writes the resulting handle
+        // and wapi_result_t back into the per-entry out_handle / out_result
+        // slots. Completion fires once for the whole batch.
+        // ====================================================================
+
+        function role_write_handle(inst, outAddr, handle) {
+            if (outAddr) inst._writeI32(Number(outAddr), handle);
+        }
+        function role_write_result(inst, outAddr, code) {
+            if (outAddr) inst._writeI32(Number(outAddr), code);
+        }
+
+        function role_fulfill_one(inst, entryAddr) {
+            inst._refreshViews();
+            const kind       = inst._dv.getUint32(entryAddr +  0, true);
+            const flags      = inst._dv.getUint32(entryAddr +  4, true);
+            const prefsAddr  = inst._dv.getBigUint64(entryAddr +  8, true);
+            const prefsLen   = inst._dv.getUint32(entryAddr + 16, true);
+            const outHandle  = inst._dv.getBigUint64(entryAddr + 24, true);
+            const outResult  = inst._dv.getBigUint64(entryAddr + 32, true);
+            // target_uid[16] at offset 40 — ignored until UID tracking lands.
+            void flags;
+
+            switch (kind) {
+            case WAPI_ROLE_AUDIO_PLAYBACK: {
+                const h = wapi_audio_open_default_endpoint();
+                if (h) role_write_handle(inst, outHandle, h);
+                role_write_result(inst, outResult, h ? WAPI_OK : WAPI_ERR_NOTCAPABLE);
+                return null;
+            }
+            case WAPI_ROLE_AUDIO_RECORDING: {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    role_write_result(inst, outResult, WAPI_ERR_NOTSUP);
+                    return null;
+                }
+                return navigator.mediaDevices.getUserMedia({ audio: true }).then(
+                    (stream) => {
+                        const h = inst.handles.insert({ type: "audio_recording", stream });
+                        role_write_handle(inst, outHandle, h);
+                        role_write_result(inst, outResult, WAPI_OK);
+                    },
+                    () => role_write_result(inst, outResult, WAPI_ERR_ACCES)
+                );
+            }
+            case WAPI_ROLE_CAMERA: {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    role_write_result(inst, outResult, WAPI_ERR_NOTSUP);
+                    return null;
+                }
+                let facing = 0, w = 0, h = 0;
+                if (Number(prefsAddr) && prefsLen >= 16) {
+                    const p = Number(prefsAddr);
+                    facing = inst._dv.getUint32(p + 0, true);
+                    w      = inst._dv.getInt32 (p + 4, true);
+                    h      = inst._dv.getInt32 (p + 8, true);
+                }
+                return navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: facing === 2 ? "environment" : "user",
+                        width:  w > 0 ? w : undefined,
+                        height: h > 0 ? h : undefined,
+                    },
+                    audio: false,
+                }).then(
+                    (stream) => {
+                        const video = document.createElement("video");
+                        video.srcObject = stream; video.muted = true; video.playsInline = true;
+                        video.play().catch(() => {});
+                        const canvas = document.createElement("canvas");
+                        const handle = inst.handles.insert({
+                            type: "camera", stream, video, canvas,
+                            ctx: canvas.getContext("2d"),
+                        });
+                        role_write_handle(inst, outHandle, handle);
+                        role_write_result(inst, outResult, WAPI_OK);
+                    },
+                    () => role_write_result(inst, outResult, WAPI_ERR_ACCES)
+                );
+            }
+            case WAPI_ROLE_MIDI_INPUT:
+            case WAPI_ROLE_MIDI_OUTPUT: {
+                if (!navigator.requestMIDIAccess) {
+                    role_write_result(inst, outResult, WAPI_ERR_NOTSUP);
+                    return null;
+                }
+                let sysex = false;
+                if (Number(prefsAddr) && prefsLen >= 4) {
+                    sysex = (inst._dv.getUint32(Number(prefsAddr) + 0, true) & 1) !== 0;
+                }
+                return navigator.requestMIDIAccess({ sysex }).then(
+                    (a) => {
+                        const coll = kind === WAPI_ROLE_MIDI_INPUT ? a.inputs : a.outputs;
+                        const port = Array.from(coll.values())[0];
+                        if (!port) { role_write_result(inst, outResult, WAPI_ERR_NOENT); return; }
+                        const entry = { type: "midi", port, inbox: [], kind: kind === WAPI_ROLE_MIDI_INPUT ? 0 : 1 };
+                        if (kind === WAPI_ROLE_MIDI_INPUT) {
+                            port.onmidimessage = (e) => {
+                                entry.inbox.push({
+                                    data: e.data,
+                                    ts: BigInt(Math.round((e.timeStamp || performance.now()) * 1e6)),
+                                });
+                            };
+                        }
+                        try { port.open && port.open(); } catch (_) {}
+                        const h = inst.handles.insert(entry);
+                        role_write_handle(inst, outHandle, h);
+                        role_write_result(inst, outResult, WAPI_OK);
+                    },
+                    () => role_write_result(inst, outResult, WAPI_ERR_ACCES)
+                );
+            }
+            case WAPI_ROLE_KEYBOARD:
+                role_write_handle(inst, outHandle, WAPI_INPUT_HANDLE_KEYBOARD);
+                role_write_result(inst, outResult, WAPI_OK);
+                return null;
+            case WAPI_ROLE_MOUSE:
+                role_write_handle(inst, outHandle, WAPI_INPUT_HANDLE_MOUSE);
+                role_write_result(inst, outResult, WAPI_OK);
+                return null;
+            case WAPI_ROLE_POINTER:
+                role_write_handle(inst, outHandle, WAPI_INPUT_HANDLE_POINTER);
+                role_write_result(inst, outResult, WAPI_OK);
+                return null;
+            case WAPI_ROLE_HID: {
+                if (!navigator.hid || !navigator.hid.requestDevice) {
+                    role_write_result(inst, outResult, WAPI_ERR_NOTSUP);
+                    return null;
+                }
+                const filter = {};
+                if (Number(prefsAddr) && prefsLen >= 8) {
+                    const p = Number(prefsAddr);
+                    const v = inst._dv.getUint16(p + 0, true);
+                    const pid = inst._dv.getUint16(p + 2, true);
+                    const up = inst._dv.getUint16(p + 4, true);
+                    const us = inst._dv.getUint16(p + 6, true);
+                    if (v)   filter.vendorId   = v;
+                    if (pid) filter.productId  = pid;
+                    if (up)  filter.usagePage  = up;
+                    if (us)  filter.usage      = us;
+                }
+                return navigator.hid.requestDevice({ filters: Object.keys(filter).length ? [filter] : [] }).then(
+                    (devs) => {
+                        const dev = devs && devs[0];
+                        if (!dev) { role_write_result(inst, outResult, WAPI_ERR_ACCES); return; }
+                        return dev.open().then(() => {
+                            const handle = inst.handles.insert({ type: "hid", dev });
+                            role_write_handle(inst, outHandle, handle);
+                            role_write_result(inst, outResult, WAPI_OK);
+                        }, () => role_write_result(inst, outResult, WAPI_ERR_ACCES));
+                    },
+                    () => role_write_result(inst, outResult, WAPI_ERR_ACCES)
+                );
+            }
+            case WAPI_ROLE_SENSOR: {
+                let sensorType = 0, freq = 0;
+                if (Number(prefsAddr) && prefsLen >= 8) {
+                    const p = Number(prefsAddr);
+                    sensorType = inst._dv.getUint32(p + 0, true);
+                    const bits = inst._dv.getUint32(p + 4, true);
+                    const b = new ArrayBuffer(4);
+                    new DataView(b).setUint32(0, bits, true);
+                    freq = new DataView(b).getFloat32(0, true);
+                }
+                const Ctor = SENSOR_CTORS[sensorType];
+                if (!Ctor) { role_write_result(inst, outResult, WAPI_ERR_NOTSUP); return null; }
+                try {
+                    const sensor = new Ctor({ frequency: freq > 0 ? freq : 60 });
+                    const entry = { type: "sensor", sensor, kind: sensorType, xyz: null, scalar: null };
+                    sensor.onreading = () => {
+                        const ts = BigInt(Math.round(performance.now() * 1e6));
+                        if (sensorType === 3 || sensorType === 4) {
+                            entry.scalar = { value: sensor.illuminance ?? sensor.distance ?? 0, ts };
+                        } else {
+                            entry.xyz = { x: sensor.x || 0, y: sensor.y || 0, z: sensor.z || 0, ts };
+                        }
+                    };
+                    sensor.start();
+                    const h = inst.handles.insert(entry);
+                    role_write_handle(inst, outHandle, h);
+                    role_write_result(inst, outResult, WAPI_OK);
+                } catch (_) {
+                    role_write_result(inst, outResult, WAPI_ERR_ACCES);
+                }
+                return null;
+            }
+            case WAPI_ROLE_GAMEPAD:
+            case WAPI_ROLE_TOUCH:
+            case WAPI_ROLE_PEN:
+            case WAPI_ROLE_HAPTIC:
+            case WAPI_ROLE_DISPLAY:
+            default:
+                role_write_result(inst, outResult, WAPI_ERR_NOSYS);
+                return null;
+            }
+        }
+
+        /* role_fulfill_one returns null for sync-resolved entries (handle +
+         * result already written before return) and a Promise for async
+         * ones. If the whole batch is synchronous we fire the IO
+         * completion immediately so the guest's synchronous poll loop
+         * inside wapi_main sees it without having to yield to the browser
+         * event loop. If any entry is async, we wait for all before
+         * completing. */
+        H.set(WAPI_IO_OP_ROLE_REQUEST, ({ addr, flags2, len, userData, self: inst }) => {
+            const count = flags2 || Math.floor(Number(len) / 56);
+            const pending = [];
+            for (let i = 0; i < count; i++) {
+                const p = role_fulfill_one(inst, Number(addr) + i * 56);
+                if (p && typeof p.then === "function") pending.push(p);
+            }
+            if (pending.length === 0) {
                 complete(inst, userData, WAPI_OK);
-            } catch (_) { complete(inst, userData, WAPI_ERR_ACCES); }
+            } else {
+                Promise.all(pending).then(() => complete(inst, userData, WAPI_OK));
+            }
+        });
+
+        H.set(WAPI_IO_OP_ROLE_REPICK, ({ fd, resultPtr, userData, self: inst }) => {
+            // No browser-side picker yet — re-issue the same handle.
+            if (resultPtr) inst._writeI32(resultPtr, fd);
+            complete(inst, userData, WAPI_OK);
         });
 
         // ====================================================================
@@ -10214,12 +11124,87 @@ class WAPI {
             );
         });
 
-        // Add wapi_input.device_seat into the existing wapi_input module.
-        // Single-seat browser host: always returns WAPI_SEAT_DEFAULT.
-        wapi_input.device_seat = (_device) => 0;
+        // Single-seat browser host: wapi_input.seat is registered in the
+        // wapi_input object above and always returns WAPI_SEAT_DEFAULT.
+
+        // wapi_random (spec §9: separate capability / import module "wapi_random")
+        const wapi_random = {
+            get(bufPtr, len) {
+                self._refreshViews();
+                const n = Number(len);
+                const sub = self._u8.subarray(bufPtr, bufPtr + n);
+                crypto.getRandomValues(sub);
+                return WAPI_OK;
+            },
+            get_nonblock(bufPtr, len) {
+                self._refreshViews();
+                const n = Number(len);
+                const sub = self._u8.subarray(bufPtr, bufPtr + n);
+                crypto.getRandomValues(sub);
+                return WAPI_OK;
+            },
+            fill_seed(bufPtr, len) {
+                self._refreshViews();
+                const n = Number(len);
+                const sub = self._u8.subarray(bufPtr, bufPtr + n);
+                crypto.getRandomValues(sub);
+                return WAPI_OK;
+            },
+        };
+
+        /* wapi_io_bridge: the 10-function host-import module that guest
+         * reactor shims import from. Five live on the wapi_io dispatch
+         * object; five are capability/namespace queries. */
+        const wapi_io_bridge = {
+            submit:          wapi_io.submit,
+            cancel:          wapi_io.cancel,
+            poll:            wapi_io.poll,
+            wait:            wapi_io.wait,
+            flush:           wapi_io.flush,
+            cap_supported:   wapi.cap_supported,
+            cap_version:     wapi.cap_version,
+            cap_query(capSvPtr, statePtr) {
+                const cap = self._readStringView(capSvPtr);
+                if (!cap) { self._writeU32(statePtr, 0); return WAPI_ERR_INVAL; }
+                /* 0=GRANTED, 1=DENIED, 2=PROMPT. Every supported cap is
+                 * granted until WAPI_IO_OP_CAP_REQUEST prompts for real. */
+                const state = supportedCaps.includes(cap) ? 0 : 2;
+                self._writeU32(statePtr, state);
+                return WAPI_OK;
+            },
+            namespace_register(svPtr, outIdPtr) {
+                const name = self._readStringView(svPtr);
+                if (!name) return WAPI_ERR_INVAL;
+                if (!self._nsRegistry) {
+                    self._nsRegistry = new Map();
+                    self._nsRegistryRev = new Map();
+                    self._nsRegistryNext = 0x4000;
+                }
+                let id = self._nsRegistry.get(name);
+                if (id === undefined) {
+                    if (self._nsRegistryNext > 0xFFFF) return WAPI_ERR_NOSPC;
+                    id = self._nsRegistryNext++;
+                    self._nsRegistry.set(name, id);
+                    self._nsRegistryRev.set(id, name);
+                }
+                self._refreshViews();
+                self._dv.setUint16(outIdPtr, id, true);
+                return WAPI_OK;
+            },
+            namespace_name(id, bufPtr, bufLen, nameLenPtr) {
+                const name = self._nsRegistryRev && self._nsRegistryRev.get(id);
+                if (!name) return WAPI_ERR_NOENT;
+                const written = self._writeString(bufPtr, Number(bufLen), name);
+                self._writeU64(nameLenPtr, written);
+                return WAPI_OK;
+            },
+        };
 
         return { wapi, wapi_env, wapi_memory, wapi_clock, wapi_filesystem,
-                 wapi_gpu, wapi_wgpu, wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_text,
+                 wapi_random,
+                 wapi_io_bridge,
+                 wapi_gpu, wapi_wgpu, env,
+                 wapi_surface, wapi_input, wapi_audio, wapi_content, wapi_text,
                  wapi_transfer, wapi_seat,
                  wapi_kv, wapi_font, wapi_crypto, wapi_video, wapi_module,
                  wapi_notify, wapi_geo, wapi_sensor, wapi_speech, wapi_bio,
@@ -10859,9 +11844,10 @@ class WAPI {
     async _initGPU(config) {
         if (!navigator.gpu) return;
         try {
-            this._gpuAdapter = await navigator.gpu.requestAdapter({
-                powerPreference: config.gpuPowerPreference || "high-performance",
-            });
+            // Chrome ignores powerPreference on Windows (crbug/369219127)
+            // and prints a deprecation warning if we pass it. Leave it out;
+            // the default adapter is fine for WAPI's use cases.
+            this._gpuAdapter = await navigator.gpu.requestAdapter();
             if (!this._gpuAdapter) return;
             this._gpuDevice = await this._gpuAdapter.requestDevice();
             this._gpuDevice.lost.then((info) => {
@@ -11091,7 +12077,7 @@ class WAPI {
             console.log('[WAPI] calling wapi_main...');
             const result = wasmInstance.exports.wapi_main();
             if (result < 0) {
-                throw new Error(`[WAPI] wapi_main returned error: ${result}`);
+                throw new Error(`[WAPI] wapi_main returned ${wapiErrName(result)}`);
             }
         }
 

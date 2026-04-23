@@ -2,9 +2,8 @@
  * WAPI Desktop Runtime - Seat
  *
  * Single-seat host: count == 1, the only seat is WAPI_SEAT_DEFAULT (0),
- * its name is the OS user. Also registers wapi_input.device_seat which
- * always returns WAPI_SEAT_DEFAULT for any valid device on a single-seat
- * machine.
+ * its name is the OS user. The `wapi_input.seat` import lives alongside
+ * the rest of the input module in wapi_host_input.c.
  */
 
 #include "wapi_host.h"
@@ -158,18 +157,6 @@ static wasm_trap_t* host_seat_user_id(
     return NULL;
 }
 
-/* wapi_input.device_seat: (i32 device) -> i32
- * Always returns WAPI_SEAT_DEFAULT on this single-seat host. */
-static wasm_trap_t* host_input_device_seat(
-    void* env, wasmtime_caller_t* caller,
-    const wasmtime_val_t* args, size_t nargs,
-    wasmtime_val_t* results, size_t nresults)
-{
-    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
-    WAPI_RET_I32(0);  /* WAPI_SEAT_DEFAULT */
-    return NULL;
-}
-
 void wapi_host_register_seat(wasmtime_linker_t* linker) {
     /* count: () -> i64 */
     wapi_linker_define(linker, "wapi_seat", "count", host_seat_count,
@@ -190,9 +177,4 @@ void wapi_host_register_seat(wasmtime_linker_t* linker) {
     wapi_linker_define(linker, "wapi_seat", "user_id", host_seat_user_id,
         4, (wasm_valkind_t[]){WASM_I32, WASM_I32, WASM_I64, WASM_I32},
         1, (wasm_valkind_t[]){WASM_I32});
-
-    /* wapi_input.device_seat is already registered in
-     * wapi_host_input.c alongside the rest of the wapi_input
-     * module — registering it a second time here would collide. */
-    (void)host_input_device_seat;
 }

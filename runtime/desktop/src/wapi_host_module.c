@@ -193,7 +193,106 @@ static wapi_module_slot_t* module_unpack(int32_t packed, int* out_func_index) {
 }
 
 /* ============================================================
- * load  (library mode)
+ * Shared load helper — fetches bytes from the CLI cache, verifies
+ * hash, compiles, instantiates, returns a fresh slot with refcount 1.
+ * Returns a wapi_result_t in *out_result and the populated slot on
+ * success. The caller registers the slot against a handle.
+ * ============================================================ */
+
+static wapi_module_slot_t* instantiate_from_cache(const uint8_t wanted_hash[32],
+                                                  int32_t* out_result) {
+    wapi_module_cache_entry_t* entry = cache_find(wanted_hash);
+    if (!entry) { *out_result = WAPI_ERR_NOENT; return NULL; }
+
+    FILE* f = fopen(entry->path, "rb");
+    if (!f) { *out_result = WAPI_ERR_NOENT; return NULL; }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); *out_result = WAPI_ERR_IO; return NULL; }
+    uint8_t* bytes = (uint8_t*)malloc((size_t)sz);
+    if (!bytes) { fclose(f); *out_result = WAPI_ERR_NOMEM; return NULL; }
+    if (fread(bytes, 1, (size_t)sz, f) != (size_t)sz) {
+        free(bytes); fclose(f); *out_result = WAPI_ERR_IO; return NULL;
+    }
+    fclose(f);
+
+    uint8_t got_hash[32];
+    if (!sha256_bytes(bytes, (size_t)sz, got_hash)) {
+        free(bytes); *out_result = WAPI_ERR_IO; return NULL;
+    }
+    if (memcmp(got_hash, wanted_hash, 32) != 0) {
+        free(bytes); *out_result = WAPI_ERR_INVAL; return NULL;
+    }
+
+    wasmtime_module_t* module = NULL;
+    wasmtime_error_t* err = wasmtime_module_new(g_rt.engine, bytes, (size_t)sz, &module);
+    free(bytes);
+    if (err) {
+        wasmtime_error_delete(err);
+        *out_result = WAPI_ERR_INVAL;
+        return NULL;
+    }
+
+    wapi_module_slot_t* slot = slot_alloc();
+    if (!slot) {
+        wasmtime_module_delete(module);
+        *out_result = WAPI_ERR_NOMEM;
+        return NULL;
+    }
+    memset(slot, 0, sizeof(*slot));
+    slot->module = module;
+    memcpy(slot->hash, got_hash, 32);
+
+    wasm_trap_t* trap = NULL;
+    err = wasmtime_linker_instantiate(g_rt.linker, g_rt.context, module,
+                                      &slot->instance, &trap);
+    if (err || trap) {
+        if (err) wasmtime_error_delete(err);
+        if (trap) wasm_trap_delete(trap);
+        slot_free(slot);
+        *out_result = WAPI_ERR_INVAL;
+        return NULL;
+    }
+
+    wasmtime_extern_t mem_extern;
+    if (wasmtime_instance_export_get(g_rt.context, &slot->instance,
+                                     "memory", 6, &mem_extern) &&
+        mem_extern.kind == WASMTIME_EXTERN_MEMORY) {
+        slot->memory = mem_extern.of.memory;
+        slot->memory_valid = true;
+    }
+
+    slot->refcount = 1;
+    *out_result = WAPI_OK;
+    return slot;
+}
+
+/* ============================================================
+ * Service registry (wapi_module.join)
+ * ============================================================ */
+
+static wapi_module_service_entry_t* service_find(const uint8_t hash[32],
+                                                 const char* name) {
+    for (int i = 0; i < WAPI_MODULE_SERVICE_MAX; i++) {
+        wapi_module_service_entry_t* e = &g_rt.module_services[i];
+        if (!e->in_use) continue;
+        if (memcmp(e->hash, hash, 32) != 0) continue;
+        if (strcmp(e->name, name) != 0) continue;
+        return e;
+    }
+    return NULL;
+}
+
+static wapi_module_service_entry_t* service_alloc(void) {
+    for (int i = 0; i < WAPI_MODULE_SERVICE_MAX; i++) {
+        if (!g_rt.module_services[i].in_use) return &g_rt.module_services[i];
+    }
+    return NULL;
+}
+
+/* ============================================================
+ * load  (library mode) — fresh instance, refcount 1, no service entry
  * ============================================================ */
 
 static wasm_trap_t* cb_load(void* env, wasmtime_caller_t* caller,
@@ -211,64 +310,9 @@ static wasm_trap_t* cb_load(void* env, wasmtime_caller_t* caller,
     uint8_t wanted_hash[32];
     memcpy(wanted_hash, hp, 32);
 
-    wapi_module_cache_entry_t* entry = cache_find(wanted_hash);
-    if (!entry) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
-
-    /* Read file */
-    FILE* f = fopen(entry->path, "rb");
-    if (!f) { WAPI_RET_I32(WAPI_ERR_NOENT); return NULL; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { fclose(f); WAPI_RET_I32(WAPI_ERR_IO); return NULL; }
-    uint8_t* bytes = (uint8_t*)malloc((size_t)sz);
-    if (!bytes) { fclose(f); WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
-    if (fread(bytes, 1, (size_t)sz, f) != (size_t)sz) {
-        free(bytes); fclose(f); WAPI_RET_I32(WAPI_ERR_IO); return NULL;
-    }
-    fclose(f);
-
-    /* Verify content hash */
-    uint8_t got_hash[32];
-    if (!sha256_bytes(bytes, (size_t)sz, got_hash)) {
-        free(bytes); WAPI_RET_I32(WAPI_ERR_IO); return NULL;
-    }
-    if (memcmp(got_hash, wanted_hash, 32) != 0) {
-        free(bytes); WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
-    }
-
-    /* Compile + instantiate */
-    wasmtime_module_t* module = NULL;
-    wasmtime_error_t* err = wasmtime_module_new(g_rt.engine, bytes, (size_t)sz, &module);
-    free(bytes);
-    if (err) {
-        wasmtime_error_delete(err);
-        WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
-    }
-
-    wapi_module_slot_t* slot = slot_alloc();
-    if (!slot) { wasmtime_module_delete(module); WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
-    memset(slot, 0, sizeof(*slot));
-    slot->module = module;
-    memcpy(slot->hash, got_hash, 32);
-
-    wasm_trap_t* trap = NULL;
-    err = wasmtime_linker_instantiate(g_rt.linker, g_rt.context, module, &slot->instance, &trap);
-    if (err || trap) {
-        if (err) wasmtime_error_delete(err);
-        if (trap) wasm_trap_delete(trap);
-        slot_free(slot);
-        WAPI_RET_I32(WAPI_ERR_INVAL); return NULL;
-    }
-
-    /* Optional: child memory for shared_read-style copy-in */
-    wasmtime_extern_t mem_extern;
-    if (wasmtime_instance_export_get(g_rt.context, &slot->instance,
-                                     "memory", 6, &mem_extern) &&
-        mem_extern.kind == WASMTIME_EXTERN_MEMORY) {
-        slot->memory = mem_extern.of.memory;
-        slot->memory_valid = true;
-    }
+    int32_t res = 0;
+    wapi_module_slot_t* slot = instantiate_from_cache(wanted_hash, &res);
+    if (!slot) { WAPI_RET_I32(res); return NULL; }
 
     int32_t h = wapi_handle_alloc(WAPI_HTYPE_MODULE);
     if (h == 0) { slot_free(slot); WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
@@ -278,14 +322,85 @@ static wasm_trap_t* cb_load(void* env, wasmtime_caller_t* caller,
     return NULL;
 }
 
-/* join — service mode. Same machinery as load + name-keyed refcount;
- * deferred until a second caller actually needs it. Returns NOTSUP
- * so guests that only need library mode aren't blocked. */
+/* join — service mode: first caller with a given (hash, name) instantiates
+ * and registers in the service table; subsequent callers attach to the same
+ * slot and bump refcount. Each caller still gets a distinct handle so
+ * release can drop individual references without tearing down a shared
+ * instance before everyone is done. */
 static wasm_trap_t* cb_join(void* env, wasmtime_caller_t* caller,
     const wasmtime_val_t* args, size_t nargs, wasmtime_val_t* results, size_t nresults)
 {
-    (void)env; (void)caller; (void)args; (void)nargs; (void)nresults;
-    WAPI_RET_I32(WAPI_ERR_NOTSUP);
+    (void)env; (void)caller; (void)nargs; (void)nresults;
+    uint32_t hash_ptr    = WAPI_ARG_U32(0);
+    uint32_t url_sv_ptr  = WAPI_ARG_U32(1);
+    uint32_t name_sv_ptr = WAPI_ARG_U32(2);
+    uint32_t out_mod_ptr = WAPI_ARG_U32(3);
+    (void)url_sv_ptr;
+
+    if (!hash_ptr || !out_mod_ptr) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    void* hp = wapi_wasm_ptr(hash_ptr, 32);
+    if (!hp) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+    uint8_t wanted_hash[32];
+    memcpy(wanted_hash, hp, 32);
+
+    /* Read the service name stringview. Empty string = "default instance
+     * of this hash", same as the header documents. */
+    char name_buf[64] = {0};
+    if (name_sv_ptr) {
+        void* svp = wapi_wasm_ptr(name_sv_ptr, 16);
+        if (!svp) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+        uint64_t data, len;
+        memcpy(&data, (uint8_t*)svp + 0, 8);
+        memcpy(&len,  (uint8_t*)svp + 8, 8);
+        if (len == (uint64_t)-1) {
+            const char* s = (const char*)wapi_wasm_ptr((uint32_t)data, 1);
+            if (!s) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+            uint64_t n = 0; while (s[n]) n++;
+            len = n;
+        }
+        if (len >= sizeof(name_buf)) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+        if (len > 0) {
+            const char* s = (const char*)wapi_wasm_ptr((uint32_t)data, (uint32_t)len);
+            if (!s) { WAPI_RET_I32(WAPI_ERR_INVAL); return NULL; }
+            memcpy(name_buf, s, (size_t)len);
+        }
+    }
+
+    wapi_module_slot_t* slot = NULL;
+    wapi_module_service_entry_t* svc = service_find(wanted_hash, name_buf);
+    if (svc) {
+        slot = svc->slot;
+        slot->refcount++;
+    } else {
+        int32_t res = 0;
+        slot = instantiate_from_cache(wanted_hash, &res);
+        if (!slot) { WAPI_RET_I32(res); return NULL; }
+
+        svc = service_alloc();
+        if (!svc) { slot_free(slot); WAPI_RET_I32(WAPI_ERR_NOMEM); return NULL; }
+        memcpy(svc->hash, wanted_hash, 32);
+        memcpy(svc->name, name_buf, sizeof(name_buf));
+        svc->slot   = slot;
+        svc->in_use = true;
+
+        memcpy(slot->svc_name, name_buf, sizeof(slot->svc_name));
+    }
+
+    int32_t h = wapi_handle_alloc(WAPI_HTYPE_MODULE);
+    if (h == 0) {
+        /* Hand back the ref we bumped — teardown if we were the one who
+         * just instantiated. */
+        if (--slot->refcount == 0) {
+            svc->in_use = false;
+            slot_free(slot);
+        }
+        WAPI_RET_I32(WAPI_ERR_NOMEM);
+        return NULL;
+    }
+    g_rt.handles[h].data.module_slot = slot;
+    wapi_wasm_write_i32(out_mod_ptr, h);
+    WAPI_RET_I32(WAPI_OK);
+    return NULL;
     return NULL;
 }
 
@@ -465,8 +580,19 @@ static wasm_trap_t* cb_release(void* env, wasmtime_caller_t* caller,
     (void)env; (void)caller; (void)nargs; (void)nresults;
     int32_t mh = WAPI_ARG_I32(0);
     if (!wapi_handle_valid(mh, WAPI_HTYPE_MODULE)) { WAPI_RET_I32(WAPI_ERR_BADF); return NULL; }
-    slot_free(g_rt.handles[mh].data.module_slot);
+    wapi_module_slot_t* slot = g_rt.handles[mh].data.module_slot;
     wapi_handle_free(mh);
+    if (slot && --slot->refcount == 0) {
+        /* Last reference — clear any matching service entry, then free. */
+        for (int i = 0; i < WAPI_MODULE_SERVICE_MAX; i++) {
+            if (g_rt.module_services[i].in_use &&
+                g_rt.module_services[i].slot == slot) {
+                g_rt.module_services[i].in_use = false;
+                break;
+            }
+        }
+        slot_free(slot);
+    }
     WAPI_RET_I32(WAPI_OK);
     return NULL;
 }

@@ -109,6 +109,7 @@ SDL events are polled before each `wapi_frame` call and translated into WAPI eve
 
 ## Architecture notes
 
+- **Role requests dispatched to SDL enumerators.** `WAPI_IO_OP_ROLE_REQUEST` / `WAPI_IO_OP_ROLE_REPICK` (spec §9.10) are the single entry point for opening any device. The handler switches on `wapi_role_kind_t` and fulfills each role from SDL's own enumeration: `SDL_GetAudioPlaybackDevices` / `SDL_GetAudioRecordingDevices` for audio endpoints, `SDL_GetCameras` for cameras, `SDL_GetMIDI*` for MIDI ports, `SDL_GetJoysticks` for gamepads / haptics, `SDL_GetHIDs` for raw HID. `WAPI_ROLE_ALL` expands to the full SDL list filtered by `prefs`; `target_uid` matches against SDL's serial/vendor tuple; `WAPI_ROLE_FOLLOW_DEFAULT` subscribes to SDL's `SDL_EVENT_AUDIO_DEVICE_ADDED` / `REMOVED` stream and reroutes silently.
 - **One binary, many imports.** Each `wapi_host_*.c` file defines a `static NativeSymbol[]` and a `wapi_host_<name>_registration()` accessor. [main.c](src/main.c) collects them and makes one `wasm_runtime_register_natives()` call per module before instantiation.
 - **Handle table.** All host-owned resources (SDL windows, audio streams, GPU devices, file handles, io queues, haptics, sensors…) are `int32_t` handles in `g_rt.handles[]`. Handles 1–3 are stdin/stdout/stderr.
 - **Memory allocator.** `wapi_memory.alloc` delegates to `wasm_runtime_module_malloc`, with an 8-byte header stashed before each aligned allocation to remember the raw pointer and user-requested size.

@@ -108,6 +108,10 @@ static uint32_t ring_read(byte_ring_t* r, void* dst, uint32_t n) {
  * Types
  * ============================================================ */
 
+/* Max number of streams a single device can mix. Games + OS beep
+ * generally need 2-3 (music + sfx + oneshots). 8 gives headroom. */
+#define WAPI_PLAT_AUDIO_MAX_STREAMS_PER_DEVICE 8
+
 struct wapi_plat_audio_device_t {
     IMMDevice*    mm_device;
     IAudioClient* audio_client;
@@ -115,8 +119,23 @@ struct wapi_plat_audio_device_t {
     UINT32        buffer_frames;
     bool          started;
     bool          is_capture;
-    /* Streams bound to this device (phase 2: one stream per device) */
-    struct wapi_plat_audio_stream_t* stream;
+
+    /* Shared WASAPI client + worker thread. Multiple guest streams bind
+     * into device->streams[] and the single worker thread mixes them
+     * into the render endpoint (or demuxes a capture endpoint). */
+    IAudioRenderClient*  render_client;
+    IAudioCaptureClient* capture_client;
+    HANDLE       wake_event;       /* WASAPI event-driven callback */
+    HANDLE       stop_event;       /* set to end worker */
+    HANDLE       worker_thread;
+
+    /* Streams bound to this device. Protected by streams_lock for
+     * insertions/removals from the guest thread against reads from the
+     * audio worker. The worker runs on its own thread and only reads
+     * the array; the ring inside each stream is already SPSC-safe. */
+    CRITICAL_SECTION streams_lock;
+    struct wapi_plat_audio_stream_t* streams[WAPI_PLAT_AUDIO_MAX_STREAMS_PER_DEVICE];
+    int          num_streams;
 };
 
 struct wapi_plat_audio_stream_t {
@@ -127,16 +146,8 @@ struct wapi_plat_audio_stream_t {
 
     byte_ring_t ring;              /* holds dst-format bytes, ready to play */
 
-    /* Worker thread */
-    HANDLE thread;
-    HANDLE wake_event;             /* WASAPI event-driven callback */
-    HANDLE stop_event;             /* set to end worker */
-
-    /* When bound, these point into the device. Exactly one of
-     * render_client / capture_client is non-NULL depending on flow. */
+    /* When bound, points at the owning device. NULL otherwise. */
     struct wapi_plat_audio_device_t* device;
-    IAudioRenderClient*  render_client;
-    IAudioCaptureClient* capture_client;
 };
 
 /* ============================================================
@@ -286,103 +297,234 @@ static bool ensure_com(void) {
 }
 
 /* ============================================================
- * Worker thread: pulls from ring, pushes into WASAPI endpoint
+ * Per-dst-format sample convert to/from float accumulator
+ * ============================================================
+ * Mixing is always done in F32 space. read_as_float pulls a
+ * stream's ring bytes and promotes to float; write_from_float
+ * writes the mixed accumulator back in the device's dst format.
+ * dst bpf mismatch between streams and the endpoint cannot happen
+ * — every bound stream shares the device's dst format. */
+
+static void promote_to_float(uint32_t fmt,
+                             const void* in, uint32_t samples, float* out) {
+    switch (fmt) {
+    case WAPI_PLAT_AUDIO_U8: {
+        const uint8_t* p = (const uint8_t*)in;
+        for (uint32_t i = 0; i < samples; i++) out[i] = ((float)p[i] - 128.0f) / 128.0f;
+        break;
+    }
+    case WAPI_PLAT_AUDIO_S16: {
+        const int16_t* p = (const int16_t*)in;
+        for (uint32_t i = 0; i < samples; i++) out[i] = (float)p[i] / 32768.0f;
+        break;
+    }
+    case WAPI_PLAT_AUDIO_S32: {
+        const int32_t* p = (const int32_t*)in;
+        for (uint32_t i = 0; i < samples; i++) out[i] = (float)p[i] / 2147483648.0f;
+        break;
+    }
+    case WAPI_PLAT_AUDIO_F32:
+        memcpy(out, in, samples * sizeof(float));
+        break;
+    }
+}
+
+static void demote_from_float(uint32_t fmt,
+                              const float* in, uint32_t samples, void* out) {
+    switch (fmt) {
+    case WAPI_PLAT_AUDIO_U8: {
+        uint8_t* o = (uint8_t*)out;
+        for (uint32_t i = 0; i < samples; i++) {
+            float v = in[i] * 128.0f + 128.0f;
+            if (v < 0.0f) v = 0.0f; else if (v > 255.0f) v = 255.0f;
+            o[i] = (uint8_t)v;
+        }
+        break;
+    }
+    case WAPI_PLAT_AUDIO_S16: {
+        int16_t* o = (int16_t*)out;
+        for (uint32_t i = 0; i < samples; i++) {
+            float v = in[i] * 32767.0f;
+            if (v >  32767.0f) v =  32767.0f;
+            if (v < -32768.0f) v = -32768.0f;
+            o[i] = (int16_t)v;
+        }
+        break;
+    }
+    case WAPI_PLAT_AUDIO_S32: {
+        int32_t* o = (int32_t*)out;
+        for (uint32_t i = 0; i < samples; i++) {
+            double v = (double)in[i] * 2147483647.0;
+            if (v >  2147483647.0) v =  2147483647.0;
+            if (v < -2147483648.0) v = -2147483648.0;
+            o[i] = (int32_t)v;
+        }
+        break;
+    }
+    case WAPI_PLAT_AUDIO_F32:
+        memcpy(out, in, samples * sizeof(float));
+        break;
+    }
+}
+
+/* ============================================================
+ * Worker thread: one per device. Mixes all bound streams into the
+ * single shared render endpoint, or fans capture out to each.
  * ============================================================ */
 
 static DWORD WINAPI audio_worker(LPVOID param) {
-    struct wapi_plat_audio_stream_t* s = (struct wapi_plat_audio_stream_t*)param;
+    struct wapi_plat_audio_device_t* d = (struct wapi_plat_audio_device_t*)param;
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
     DWORD task_index = 0;
     HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
 
-    HANDLE waits[2] = { s->stop_event, s->wake_event };
-    uint32_t bpf_dst = bytes_per_frame(&s->dst);
-    uint32_t bpf_src = bytes_per_frame(&s->src);
-    bool is_capture  = s->device && s->device->is_capture;
+    HANDLE waits[2] = { d->stop_event, d->wake_event };
+
+    /* Float accumulator for mixing. Sized to one WASAPI buffer's worth
+     * of samples (frames * channels). Grows as needed. */
+    float*   mix_buf      = NULL;
+    uint8_t* stream_bytes = NULL;
+    uint32_t mix_cap      = 0;
 
     for (;;) {
         DWORD rc = WaitForMultipleObjects(2, waits, FALSE, 2000);
         if (rc == WAIT_OBJECT_0) break; /* stop */
 
-        if (!is_capture) {
+        wapi_plat_audio_spec_t dst_spec;
+        waveformat_to_spec(d->mix_format, &dst_spec);
+        uint32_t bpf_dst = bytes_per_frame(&dst_spec);
+
+        if (!d->is_capture) {
             UINT32 padding = 0;
-            if (FAILED(IAudioClient_GetCurrentPadding(s->device->audio_client, &padding))) continue;
-            UINT32 avail_frames = s->device->buffer_frames - padding;
+            if (FAILED(IAudioClient_GetCurrentPadding(d->audio_client, &padding))) continue;
+            UINT32 avail_frames = d->buffer_frames - padding;
             if (avail_frames == 0) continue;
 
-            BYTE* dst = NULL;
-            if (FAILED(IAudioRenderClient_GetBuffer(s->render_client, avail_frames, &dst))) continue;
-
-            UINT32 bytes_needed = avail_frames * bpf_dst;
-            UINT32 got = ring_read(&s->ring, dst, bytes_needed);
-            if (got < bytes_needed) {
-                /* Silence the rest to avoid audible glitches on underrun. */
-                memset(dst + got, 0, bytes_needed - got);
+            uint32_t samples   = avail_frames * (uint32_t)dst_spec.channels;
+            uint32_t need_cap  = samples;
+            if (need_cap > mix_cap) {
+                free(mix_buf); free(stream_bytes);
+                mix_buf      = (float*)malloc(need_cap * sizeof(float));
+                stream_bytes = (uint8_t*)malloc(avail_frames * bpf_dst);
+                if (!mix_buf || !stream_bytes) {
+                    mix_cap = 0;
+                    free(mix_buf); free(stream_bytes);
+                    mix_buf = NULL; stream_bytes = NULL;
+                    continue;
+                }
+                mix_cap = need_cap;
             }
-            IAudioRenderClient_ReleaseBuffer(s->render_client, avail_frames, 0);
+            memset(mix_buf, 0, samples * sizeof(float));
+
+            /* Pull from each stream's ring and sum into mix_buf. */
+            EnterCriticalSection(&d->streams_lock);
+            int n = d->num_streams;
+            struct wapi_plat_audio_stream_t* streams[WAPI_PLAT_AUDIO_MAX_STREAMS_PER_DEVICE];
+            for (int i = 0; i < n; i++) streams[i] = d->streams[i];
+            LeaveCriticalSection(&d->streams_lock);
+
+            uint32_t bytes_needed = avail_frames * bpf_dst;
+            float    scratch[2048];
+            for (int i = 0; i < n; i++) {
+                struct wapi_plat_audio_stream_t* s = streams[i];
+                memset(stream_bytes, 0, bytes_needed);
+                ring_read(&s->ring, stream_bytes, bytes_needed);
+                /* Promote stream's dst-format bytes -> float scratch and
+                 * sum. Chunked to avoid allocating for large buffers. */
+                uint32_t remaining = samples;
+                uint32_t cursor    = 0;
+                while (remaining > 0) {
+                    uint32_t chunk = remaining;
+                    if (chunk > sizeof(scratch) / sizeof(scratch[0]))
+                        chunk = sizeof(scratch) / sizeof(scratch[0]);
+                    uint32_t sample_bytes;
+                    switch (s->dst.format) {
+                    case WAPI_PLAT_AUDIO_U8:  sample_bytes = 1; break;
+                    case WAPI_PLAT_AUDIO_S16: sample_bytes = 2; break;
+                    case WAPI_PLAT_AUDIO_S32: sample_bytes = 4; break;
+                    case WAPI_PLAT_AUDIO_F32: sample_bytes = 4; break;
+                    default:                  sample_bytes = 0; break;
+                    }
+                    if (sample_bytes == 0) break;
+                    promote_to_float(s->dst.format,
+                                     stream_bytes + cursor * sample_bytes,
+                                     chunk, scratch);
+                    for (uint32_t k = 0; k < chunk; k++) mix_buf[cursor + k] += scratch[k];
+                    cursor    += chunk;
+                    remaining -= chunk;
+                }
+            }
+
+            /* Soft-clip the sum before quantizing back to device format. */
+            for (uint32_t i = 0; i < samples; i++) {
+                float v = mix_buf[i];
+                if (v >  1.0f) v =  1.0f;
+                if (v < -1.0f) v = -1.0f;
+                mix_buf[i] = v;
+            }
+
+            BYTE* dst = NULL;
+            if (FAILED(IAudioRenderClient_GetBuffer(d->render_client, avail_frames, &dst))) continue;
+            demote_from_float(dst_spec.format, mix_buf, samples, dst);
+            IAudioRenderClient_ReleaseBuffer(d->render_client, avail_frames, 0);
         } else {
-            /* Drain every available packet until the capture client is
-             * empty, then go back to waiting on the event. */
+            /* Capture: fan the endpoint's samples out to each bound stream
+             * (convert to each stream's src format). Preserves current
+             * single-subscriber semantics if only one stream is bound. */
             for (;;) {
                 UINT32 next = 0;
-                if (FAILED(IAudioCaptureClient_GetNextPacketSize(s->capture_client, &next))) break;
+                if (FAILED(IAudioCaptureClient_GetNextPacketSize(d->capture_client, &next))) break;
                 if (next == 0) break;
 
                 BYTE* src = NULL;
                 UINT32 frames = 0;
                 DWORD  flags  = 0;
-                if (FAILED(IAudioCaptureClient_GetBuffer(s->capture_client, &src, &frames,
+                if (FAILED(IAudioCaptureClient_GetBuffer(d->capture_client, &src, &frames,
                                                          &flags, NULL, NULL))) break;
+                bool silent = (flags & 0x1 /* AUDCLNT_BUFFERFLAGS_SILENT */) != 0;
 
-                /* Convert device(dst) -> guest(src) format and stash
-                 * in the ring for stream_get. Silent packets still
-                 * consume frames so timing stays sample-accurate. */
-                uint32_t in_bytes  = frames * bpf_dst;
-                uint32_t out_bytes = frames * bpf_src;
-                uint8_t  stk[4096];
-                uint8_t* out_buf = stk;
-                bool     heap = false;
-                if (out_bytes > sizeof(stk)) {
-                    out_buf = (uint8_t*)malloc(out_bytes);
-                    heap = (out_buf != NULL);
-                    if (!out_buf) {
-                        IAudioCaptureClient_ReleaseBuffer(s->capture_client, frames);
-                        continue;
+                EnterCriticalSection(&d->streams_lock);
+                int n = d->num_streams;
+                struct wapi_plat_audio_stream_t* streams[WAPI_PLAT_AUDIO_MAX_STREAMS_PER_DEVICE];
+                for (int i = 0; i < n; i++) streams[i] = d->streams[i];
+                LeaveCriticalSection(&d->streams_lock);
+
+                for (int i = 0; i < n; i++) {
+                    struct wapi_plat_audio_stream_t* s = streams[i];
+                    uint32_t out_guest_bytes = frames * bytes_per_frame(&s->src);
+                    uint8_t  stk[4096];
+                    uint8_t* buf = stk;
+                    bool     heap = false;
+                    if (out_guest_bytes > sizeof(stk)) {
+                        buf = (uint8_t*)malloc(out_guest_bytes);
+                        heap = (buf != NULL);
+                        if (!buf) continue;
                     }
-                }
+                    if (silent) memset(buf, 0, out_guest_bytes);
+                    else        convert_frames(&s->dst, &s->src, src, frames, buf);
 
-                if (flags & 0x1 /* AUDCLNT_BUFFERFLAGS_SILENT */) {
-                    memset(out_buf, 0, out_bytes);
-                } else {
-                    /* convert_frames treats src/dst as (input, output);
-                     * we flip the roles so device format is "input". */
-                    convert_frames(&s->dst, &s->src, src, frames, out_buf);
-                }
-                (void)in_bytes;
-
-                /* Ring full → drop oldest to keep latency bounded
-                 * (capture is producer-paced; no backpressure signal
-                 * back to the device). */
-                uint32_t free_bytes = ring_free_space(&s->ring);
-                if (free_bytes < out_bytes) {
-                    uint32_t drop = out_bytes - free_bytes;
-                    uint8_t  sink[1024];
-                    while (drop > 0) {
-                        uint32_t n = drop > sizeof(sink) ? (uint32_t)sizeof(sink) : drop;
-                        uint32_t r = ring_read(&s->ring, sink, n);
-                        if (r == 0) break;
-                        drop -= r;
+                    uint32_t free_bytes = ring_free_space(&s->ring);
+                    if (free_bytes < out_guest_bytes) {
+                        uint32_t drop = out_guest_bytes - free_bytes;
+                        uint8_t sink[1024];
+                        while (drop > 0) {
+                            uint32_t take = drop > sizeof(sink) ? (uint32_t)sizeof(sink) : drop;
+                            uint32_t got = ring_read(&s->ring, sink, take);
+                            if (got == 0) break;
+                            drop -= got;
+                        }
                     }
+                    ring_write(&s->ring, buf, out_guest_bytes);
+                    if (heap) free(buf);
                 }
-                ring_write(&s->ring, out_buf, out_bytes);
 
-                IAudioCaptureClient_ReleaseBuffer(s->capture_client, frames);
-                if (heap) free(out_buf);
+                IAudioCaptureClient_ReleaseBuffer(d->capture_client, frames);
             }
         }
     }
 
+    free(mix_buf); free(stream_bytes);
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     CoUninitialize();
     return 0;
@@ -401,62 +543,11 @@ static IMMDeviceEnumerator* get_enumerator(void) {
     return SUCCEEDED(hr) ? e : NULL;
 }
 
-int wapi_plat_audio_playback_device_count(void) {
-    IMMDeviceEnumerator* e = get_enumerator();
-    if (!e) return 0;
-    IMMDeviceCollection* col = NULL;
-    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints(e, eRender, DEVICE_STATE_ACTIVE, &col))) {
-        IMMDeviceEnumerator_Release(e);
-        return 0;
-    }
-    UINT n = 0;
-    IMMDeviceCollection_GetCount(col, &n);
-    IMMDeviceCollection_Release(col);
-    IMMDeviceEnumerator_Release(e);
-    return (int)n;
-}
-
-int wapi_plat_audio_recording_device_count(void) {
-    IMMDeviceEnumerator* e = get_enumerator();
-    if (!e) return 0;
-    IMMDeviceCollection* col = NULL;
-    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints(e, eCapture, DEVICE_STATE_ACTIVE, &col))) {
-        IMMDeviceEnumerator_Release(e);
-        return 0;
-    }
-    UINT n = 0;
-    IMMDeviceCollection_GetCount(col, &n);
-    IMMDeviceCollection_Release(col);
-    IMMDeviceEnumerator_Release(e);
-    return (int)n;
-}
-
-size_t wapi_plat_audio_device_name(int device_id, char* out, size_t out_len) {
-    IMMDeviceEnumerator* e = get_enumerator();
-    if (!e) return 0;
-    IMMDevice* dev = NULL;
-
-    if (device_id == WAPI_PLAT_AUDIO_DEFAULT_PLAYBACK) {
-        IMMDeviceEnumerator_GetDefaultAudioEndpoint(e, eRender, eConsole, &dev);
-    } else if (device_id == WAPI_PLAT_AUDIO_DEFAULT_RECORDING) {
-        IMMDeviceEnumerator_GetDefaultAudioEndpoint(e, eCapture, eConsole, &dev);
-    } else {
-        IMMDeviceCollection* col = NULL;
-        IMMDeviceEnumerator_EnumAudioEndpoints(e, eRender, DEVICE_STATE_ACTIVE, &col);
-        if (col) {
-            IMMDeviceCollection_Item(col, (UINT)device_id, &dev);
-            IMMDeviceCollection_Release(col);
-        }
-    }
-    IMMDeviceEnumerator_Release(e);
+/* FriendlyName + FormFactor lookup used by wapi_plat_audio_device_describe. */
+static size_t immdevice_friendly_name(IMMDevice* dev, char* out, size_t out_len) {
     if (!dev) return 0;
-
     IPropertyStore* props = NULL;
-    if (FAILED(IMMDevice_OpenPropertyStore(dev, STGM_READ, &props))) {
-        IMMDevice_Release(dev);
-        return 0;
-    }
-
+    if (FAILED(IMMDevice_OpenPropertyStore(dev, STGM_READ, &props))) return 0;
     /* PKEY_Device_FriendlyName */
     const PROPERTYKEY pk = { {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14 };
     PROPVARIANT v; PropVariantInit(&v);
@@ -471,8 +562,35 @@ size_t wapi_plat_audio_device_name(int device_id, char* out, size_t out_len) {
     }
     PropVariantClear(&v);
     IPropertyStore_Release(props);
-    IMMDevice_Release(dev);
     return nbytes;
+}
+
+/* WASAPI EndpointFormFactor → wapi_audio_form_t wire values.
+ * Source: mmdeviceapi.h EndpointFormFactor enum. */
+static uint32_t immdevice_form_factor(IMMDevice* dev) {
+    if (!dev) return 0; /* UNKNOWN */
+    IPropertyStore* props = NULL;
+    if (FAILED(IMMDevice_OpenPropertyStore(dev, STGM_READ, &props))) return 0;
+    /* PKEY_AudioEndpoint_FormFactor */
+    const PROPERTYKEY pk = { {0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}}, 0 };
+    PROPVARIANT v; PropVariantInit(&v);
+    uint32_t form = 0;
+    if (SUCCEEDED(IPropertyStore_GetValue(props, &pk, &v)) && v.vt == VT_UI4) {
+        /* WASAPI: 0=RemoteNetworkDevice, 1=Speakers, 2=LineLevel, 3=Headphones,
+         * 4=Microphone, 5=Headset, 6=Handset, 7=UnknownDigitalPassthrough,
+         * 8=SPDIF, 9=DigitalAudioDisplayDevice, 10=UnknownFormFactor. */
+        switch (v.ulVal) {
+        case 1:  form = 1; break; /* Speakers */
+        case 2:  form = 4; break; /* LineOut */
+        case 3:  form = 2; break; /* Headphones */
+        case 5:  form = 3; break; /* Headset */
+        case 4:  form = 3; break; /* Microphone → headset mic bucket */
+        default: form = 0; break;
+        }
+    }
+    PropVariantClear(&v);
+    IPropertyStore_Release(props);
+    return form;
 }
 
 /* ============================================================
@@ -538,13 +656,24 @@ wapi_plat_audio_device_t* wapi_plat_audio_open_device(int device_id,
     }
 
     IAudioClient_GetBufferSize(d->audio_client, &d->buffer_frames);
+    InitializeCriticalSection(&d->streams_lock);
     return d;
 }
 
 void wapi_plat_audio_close_device(wapi_plat_audio_device_t* d) {
     if (!d) return;
-    if (d->stream) wapi_plat_audio_stream_unbind(d->stream);
+    /* Unbind all streams, tearing down the worker via the last unbind. */
+    for (;;) {
+        EnterCriticalSection(&d->streams_lock);
+        struct wapi_plat_audio_stream_t* s = d->num_streams ? d->streams[0] : NULL;
+        LeaveCriticalSection(&d->streams_lock);
+        if (!s) break;
+        wapi_plat_audio_stream_unbind(s);
+    }
     if (d->started) IAudioClient_Stop(d->audio_client);
+    if (d->wake_event)   { CloseHandle(d->wake_event);   d->wake_event = NULL; }
+    if (d->stop_event)   { CloseHandle(d->stop_event);   d->stop_event = NULL; }
+    DeleteCriticalSection(&d->streams_lock);
     if (d->mix_format)    CoTaskMemFree(d->mix_format);
     if (d->audio_client)  IAudioClient_Release(d->audio_client);
     if (d->mm_device)     IMMDevice_Release(d->mm_device);
@@ -583,24 +712,12 @@ wapi_plat_audio_stream_t* wapi_plat_audio_stream_create(const wapi_plat_audio_sp
     if (want < 16384) want = 16384;
     if (!ring_init(&s->ring, want)) { free(s); return NULL; }
 
-    s->wake_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-    s->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!s->wake_event || !s->stop_event) {
-        if (s->wake_event) CloseHandle(s->wake_event);
-        if (s->stop_event) CloseHandle(s->stop_event);
-        ring_free(&s->ring);
-        free(s);
-        return NULL;
-    }
-
     return s;
 }
 
 void wapi_plat_audio_stream_destroy(wapi_plat_audio_stream_t* s) {
     if (!s) return;
     wapi_plat_audio_stream_unbind(s);
-    if (s->wake_event) CloseHandle(s->wake_event);
-    if (s->stop_event) CloseHandle(s->stop_event);
     ring_free(&s->ring);
     free(s);
 }
@@ -609,45 +726,31 @@ void wapi_plat_audio_stream_destroy(wapi_plat_audio_stream_t* s) {
  * Stream bind / unbind
  * ============================================================ */
 
-bool wapi_plat_audio_stream_bind(wapi_plat_audio_device_t* d,
-                                 wapi_plat_audio_stream_t* s) {
-    if (!d || !s || d->stream) return false;
+/* Spin up the device's shared WASAPI client + worker thread on first
+ * stream bind. Subsequent binds just attach to the running worker. */
+static bool device_ensure_worker(wapi_plat_audio_device_t* d) {
+    if (d->worker_thread) return true;
 
-    /* Device's actual format becomes our dst (what the endpoint
-     * consumes for playback, what it produces for capture). */
-    waveformat_to_spec(d->mix_format, &s->dst);
+    if (!d->wake_event)  d->wake_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!d->stop_event)  d->stop_event = CreateEventW(NULL, TRUE,  FALSE, NULL);
+    if (!d->wake_event || !d->stop_event) return false;
 
-    /* Resize ring if bpf changed. For capture we size on src bytes/frame
-     * since the ring holds guest-format data. */
-    uint32_t bpf = d->is_capture ? bytes_per_frame(&s->src) : bytes_per_frame(&s->dst);
-    if (bpf == 0) bpf = 8;
-    uint32_t want = bpf * (uint32_t)s->dst.freq;
-    if (s->ring.cap < want) {
-        ring_free(&s->ring);
-        if (!ring_init(&s->ring, want)) return false;
-    }
-
-    if (FAILED(IAudioClient_SetEventHandle(d->audio_client, s->wake_event))) return false;
+    if (FAILED(IAudioClient_SetEventHandle(d->audio_client, d->wake_event))) return false;
 
     if (d->is_capture) {
         if (FAILED(IAudioClient_GetService(d->audio_client, &IID_IAudioCaptureClient_local,
-                                           (void**)&s->capture_client))) return false;
+                                           (void**)&d->capture_client))) return false;
     } else {
         if (FAILED(IAudioClient_GetService(d->audio_client, &IID_IAudioRenderClient_local,
-                                           (void**)&s->render_client))) return false;
+                                           (void**)&d->render_client))) return false;
     }
 
-    s->device = d;
-    d->stream = s;
-
-    ResetEvent(s->stop_event);
+    ResetEvent(d->stop_event);
     DWORD tid = 0;
-    s->thread = CreateThread(NULL, 0, audio_worker, s, 0, &tid);
-    if (!s->thread) {
-        if (s->render_client)  { IAudioRenderClient_Release(s->render_client);  s->render_client  = NULL; }
-        if (s->capture_client) { IAudioCaptureClient_Release(s->capture_client); s->capture_client = NULL; }
-        s->device = NULL;
-        d->stream = NULL;
+    d->worker_thread = CreateThread(NULL, 0, audio_worker, d, 0, &tid);
+    if (!d->worker_thread) {
+        if (d->render_client)  { IAudioRenderClient_Release(d->render_client);  d->render_client  = NULL; }
+        if (d->capture_client) { IAudioCaptureClient_Release(d->capture_client); d->capture_client = NULL; }
         return false;
     }
 
@@ -658,48 +761,103 @@ bool wapi_plat_audio_stream_bind(wapi_plat_audio_device_t* d,
     return true;
 }
 
-void wapi_plat_audio_stream_unbind(wapi_plat_audio_stream_t* s) {
-    if (!s || !s->device) return;
-    SetEvent(s->stop_event);
-    if (s->thread) {
-        WaitForSingleObject(s->thread, 2000);
-        CloseHandle(s->thread);
-        s->thread = NULL;
-    }
-    if (s->render_client) {
-        IAudioRenderClient_Release(s->render_client);
-        s->render_client = NULL;
-    }
-    if (s->capture_client) {
-        IAudioCaptureClient_Release(s->capture_client);
-        s->capture_client = NULL;
-    }
-    if (s->device->stream == s) s->device->stream = NULL;
-    s->device = NULL;
+/* Tear down the worker + client when the last stream unbinds. */
+static void device_teardown_worker(wapi_plat_audio_device_t* d) {
+    if (!d->worker_thread) return;
+    SetEvent(d->stop_event);
+    WaitForSingleObject(d->worker_thread, 2000);
+    CloseHandle(d->worker_thread);
+    d->worker_thread = NULL;
+    if (d->render_client)  { IAudioRenderClient_Release(d->render_client);  d->render_client  = NULL; }
+    if (d->capture_client) { IAudioCaptureClient_Release(d->capture_client); d->capture_client = NULL; }
 }
 
-bool wapi_plat_audio_open_device_stream(int device_id,
-                                        const wapi_plat_audio_spec_t* spec,
-                                        wapi_plat_audio_device_t** out_dev,
-                                        wapi_plat_audio_stream_t** out_stream) {
-    wapi_plat_audio_device_t* d = wapi_plat_audio_open_device(device_id, spec);
-    if (!d) return false;
+bool wapi_plat_audio_stream_bind(wapi_plat_audio_device_t* d,
+                                 wapi_plat_audio_stream_t* s) {
+    if (!d || !s || s->device) return false;
 
-    wapi_plat_audio_spec_t dst;
-    waveformat_to_spec(d->mix_format, &dst);
+    /* Device's actual format becomes our dst. Every bound stream shares
+     * it so the mixer can sum samples without per-stream rate conversion. */
+    waveformat_to_spec(d->mix_format, &s->dst);
 
-    wapi_plat_audio_stream_t* s = wapi_plat_audio_stream_create(spec, &dst);
-    if (!s) { wapi_plat_audio_close_device(d); return false; }
-
-    if (!wapi_plat_audio_stream_bind(d, s)) {
-        wapi_plat_audio_stream_destroy(s);
-        wapi_plat_audio_close_device(d);
-        return false;
+    uint32_t bpf = d->is_capture ? bytes_per_frame(&s->src) : bytes_per_frame(&s->dst);
+    if (bpf == 0) bpf = 8;
+    uint32_t want = bpf * (uint32_t)s->dst.freq;
+    if (s->ring.cap < want) {
+        ring_free(&s->ring);
+        if (!ring_init(&s->ring, want)) return false;
     }
 
-    *out_dev = d;
-    *out_stream = s;
+    EnterCriticalSection(&d->streams_lock);
+    if (d->num_streams >= WAPI_PLAT_AUDIO_MAX_STREAMS_PER_DEVICE) {
+        LeaveCriticalSection(&d->streams_lock);
+        return false;
+    }
+    d->streams[d->num_streams++] = s;
+    LeaveCriticalSection(&d->streams_lock);
+
+    s->device = d;
+
+    if (!device_ensure_worker(d)) {
+        /* Roll back the append on startup failure. */
+        EnterCriticalSection(&d->streams_lock);
+        for (int i = 0; i < d->num_streams; i++) {
+            if (d->streams[i] == s) {
+                d->streams[i] = d->streams[--d->num_streams];
+                break;
+            }
+        }
+        LeaveCriticalSection(&d->streams_lock);
+        s->device = NULL;
+        return false;
+    }
     return true;
+}
+
+void wapi_plat_audio_stream_unbind(wapi_plat_audio_stream_t* s) {
+    if (!s || !s->device) return;
+    wapi_plat_audio_device_t* d = s->device;
+    EnterCriticalSection(&d->streams_lock);
+    for (int i = 0; i < d->num_streams; i++) {
+        if (d->streams[i] == s) {
+            d->streams[i] = d->streams[--d->num_streams];
+            break;
+        }
+    }
+    int remaining = d->num_streams;
+    LeaveCriticalSection(&d->streams_lock);
+    s->device = NULL;
+
+    if (remaining == 0) device_teardown_worker(d);
+}
+
+void wapi_plat_audio_device_describe(wapi_plat_audio_device_t* d,
+                                     wapi_plat_audio_spec_t* out_native,
+                                     uint32_t* out_form,
+                                     uint8_t out_uid[16],
+                                     char* name_buf, size_t name_buf_cap,
+                                     size_t* out_name_len) {
+    if (out_native) {
+        if (d && d->mix_format) waveformat_to_spec(d->mix_format, out_native);
+        else memset(out_native, 0, sizeof(*out_native));
+    }
+    if (out_form) {
+        *out_form = (d && d->mm_device) ? immdevice_form_factor(d->mm_device) : 0;
+    }
+    if (out_uid) {
+        memset(out_uid, 0, 16);
+        if (d && d->mm_device) {
+            /* Use the IMMDevice pointer as a per-session stable id until
+             * PKEY_Device_ContainerId / DeviceInterface path folding lands. */
+            uintptr_t p = (uintptr_t)d->mm_device;
+            memcpy(out_uid, &p, sizeof(p) < 16 ? sizeof(p) : 16);
+        }
+    }
+    size_t written = 0;
+    if (name_buf && name_buf_cap > 0 && d && d->mm_device) {
+        written = immdevice_friendly_name(d->mm_device, name_buf, name_buf_cap);
+    }
+    if (out_name_len) *out_name_len = written;
 }
 
 /* ============================================================

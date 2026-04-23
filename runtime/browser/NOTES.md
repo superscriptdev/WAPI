@@ -1,5 +1,22 @@
 # WAPI Browser Extension — Status & Resume Notes
 
+## Role system landed (2026-04)
+
+Device access unified under `WAPI_IO_OP_ROLE_REQUEST` (0x16) / `WAPI_IO_OP_ROLE_REPICK` (0x17) — spec §9.10. Every audio / camera / midi / gamepad / hid / haptic / sensor / keyboard / mouse / pointer / touch / pen / display acquisition flows through one opcode with `wapi_role_kind_t` dispatch. The browser shim maps role kinds onto Web APIs:
+
+- `WAPI_ROLE_AUDIO_PLAYBACK` / `_RECORDING` → `navigator.mediaDevices.getUserMedia({audio:true})` / `AudioContext.createMediaStreamDestination`. Default endpoints are ambient-grant; specific endpoints come from `navigator.mediaDevices.enumerateDevices()` after grant.
+- `WAPI_ROLE_CAMERA` → `getUserMedia({video: {facingMode, width, height, frameRate}})`. Prefs struct maps directly.
+- `WAPI_ROLE_HID` → `navigator.hid.requestDevice({filters: [{vendorId, productId, usagePage, usage}]})`. `WAPI_ROLE_ALL` maps to multi-select where the vendor supports it; otherwise expands to `navigator.hid.getDevices()` after grant.
+- `WAPI_ROLE_MIDI_INPUT` / `_OUTPUT` → `navigator.requestMIDIAccess({sysex: ...})`. Sysex flag from `wapi_midi_prefs_t`.
+- `WAPI_ROLE_GAMEPAD` → `Gamepad API` with `WAPI_EVENT_DEVICE_ADDED` from `gamepadconnected`.
+- `WAPI_ROLE_SENSOR` → Generic Sensor API (`Accelerometer`, `Gyroscope`, etc.) with freq from `wapi_sensor_prefs_t`.
+- `WAPI_ROLE_KEYBOARD` / `_MOUSE` / `_POINTER` / `_TOUCH` / `_PEN` — ambient; shim returns a pre-minted aggregate handle tied to the page's focused surface.
+- `WAPI_ROLE_DISPLAY` — read-only via `window.screen` / `Screen Details API`; no handle needed.
+
+`WAPI_ROLE_FOLLOW_DEFAULT` subscribes to `devicechange` events and silently reroutes. `WAPI_ROLE_WAIT_FOR_DEVICE` parks the completion until a matching `devicechange` fires. `target_uid` matches against a runtime-stable digest of `(vendor_id, product_id, serial)` or falls back to `MediaDeviceInfo.deviceId` for audio/video.
+
+---
+
 ## Opcode unification landed (2026-04-19)
 
 The double-API problem (every async-on-web capability exposed both a

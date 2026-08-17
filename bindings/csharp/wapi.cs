@@ -53,29 +53,54 @@ namespace WAPI;
 
 // ── Result codes ────────────────────────────────────────────────────────────
 
+// Values are wapi.h:127-160, in order. They were on an entirely different numbering scheme —
+// NOENT was -1, ACCES -2, NOMEM -4, NOTCAPABLE -19 — so only OK, BADF and TIMEDOUT happened to
+// land on the right number and everything else mis-decoded. `Name(-5)` answered "INVAL" where the
+// header says NOENT. There is no compatibility to preserve here: a wrong constant was never
+// talking to a conforming host.
+//
+// The header is the authority (NEXT_STEPS.md: "Headers are authoritative — when something doesn't
+// fit, fix the host, not the header"), so this is the full table rather than the subset that was
+// here, and `ErrPerm` is gone — wapi.h has no PERM.
 public static class WapiResult
 {
-    public const int Ok             =  0;
-    public const int ErrNoEnt       = -1;
-    public const int ErrAcces       = -2;
-    public const int ErrBadf        = -3;
-    public const int ErrNoMem       = -4;
-    public const int ErrInval       = -5;
-    public const int ErrNotSup      = -6;
-    public const int ErrOverflow    = -7;
-    public const int ErrIo          = -8;
-    public const int ErrBusy        = -9;
-    public const int ErrExist       = -10;
-    public const int ErrIsDir       = -11;
-    public const int ErrNotDir      = -12;
-    public const int ErrNotEmpty    = -13;
-    public const int ErrPerm        = -14;
-    public const int ErrCanceled    = -15;
+    public const int Ok             =   0;
+    public const int ErrUnknown     =  -1;
+    public const int ErrInval       =  -2;
+    public const int ErrBadf        =  -3;
+    public const int ErrAcces       =  -4;
+    public const int ErrNoEnt       =  -5;
+    public const int ErrExist       =  -6;
+    public const int ErrNotDir      =  -7;
+    public const int ErrIsDir       =  -8;
+    public const int ErrNoSpc       =  -9;
+    public const int ErrNoMem       = -10;
+    public const int ErrNameTooLong = -11;
+    public const int ErrNotEmpty    = -12;
+    public const int ErrIo          = -13;
+    public const int ErrAgain       = -14;
+    public const int ErrBusy        = -15;
     public const int ErrTimedOut    = -16;
-    public const int ErrRange       = -17;
-    public const int ErrAgain       = -18;
-    public const int ErrNotCapable  = -19;
-    public const int ErrUnknown     = -20;
+    public const int ErrConnRefused = -17;
+    public const int ErrConnReset   = -18;
+    public const int ErrConnAborted = -19;
+    public const int ErrNetUnreach  = -20;
+    public const int ErrHostUnreach = -21;
+    public const int ErrAddrInUse   = -22;
+    public const int ErrNotCapable  = -24;
+    public const int ErrNotSup      = -25;
+    public const int ErrOverflow    = -26;
+    public const int ErrCanceled    = -27;
+    public const int ErrFBig        = -28;
+    public const int ErrRoFs        = -29;
+    public const int ErrRange       = -30;
+    public const int ErrDeadlk      = -31;
+    public const int ErrNoSys       = -32;
+    public const int ErrLoop        = -33;
+
+    // -23 is WAPI_ERR_PIPE. Named `ErrBrokenPipe` because `Pipe` alone reads as a thing rather
+    // than a failure.
+    public const int ErrBrokenPipe  = -23;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool Failed(int result) { return result < 0; }
@@ -85,26 +110,39 @@ public static class WapiResult
         return code switch
         {
             Ok             => "OK",
-            ErrNoEnt       => "NOENT",
-            ErrAcces       => "ACCES",
-            ErrBadf        => "BADF",
-            ErrNoMem       => "NOMEM",
+            ErrUnknown     => "UNKNOWN",
             ErrInval       => "INVAL",
+            ErrBadf        => "BADF",
+            ErrAcces       => "ACCES",
+            ErrNoEnt       => "NOENT",
+            ErrExist       => "EXIST",
+            ErrNotDir      => "NOTDIR",
+            ErrIsDir       => "ISDIR",
+            ErrNoSpc       => "NOSPC",
+            ErrNoMem       => "NOMEM",
+            ErrNameTooLong => "NAMETOOLONG",
+            ErrNotEmpty    => "NOTEMPTY",
+            ErrIo          => "IO",
+            ErrAgain       => "AGAIN",
+            ErrBusy        => "BUSY",
+            ErrTimedOut    => "TIMEDOUT",
+            ErrConnRefused => "CONNREFUSED",
+            ErrConnReset   => "CONNRESET",
+            ErrConnAborted => "CONNABORTED",
+            ErrNetUnreach  => "NETUNREACH",
+            ErrHostUnreach => "HOSTUNREACH",
+            ErrAddrInUse   => "ADDRINUSE",
+            ErrBrokenPipe  => "PIPE",
+            ErrNotCapable  => "NOTCAPABLE",
             ErrNotSup      => "NOTSUP",
             ErrOverflow    => "OVERFLOW",
-            ErrIo          => "IO",
-            ErrBusy        => "BUSY",
-            ErrExist       => "EXIST",
-            ErrIsDir       => "ISDIR",
-            ErrNotDir      => "NOTDIR",
-            ErrNotEmpty    => "NOTEMPTY",
-            ErrPerm        => "PERM",
             ErrCanceled    => "CANCELED",
-            ErrTimedOut    => "TIMEDOUT",
+            ErrFBig        => "FBIG",
+            ErrRoFs        => "ROFS",
             ErrRange       => "RANGE",
-            ErrAgain       => "AGAIN",
-            ErrNotCapable  => "NOTCAPABLE",
-            ErrUnknown     => "UNKNOWN",
+            ErrDeadlk      => "DEADLK",
+            ErrNoSys       => "NOSYS",
+            ErrLoop        => "LOOP",
             _              => "?",
         };
     }
